@@ -173,6 +173,25 @@ type (
 		// the zone, so use one only on a zone you control.
 		FederationAllowlist string `ini:"federation_allowlist"`
 
+		// InstanceAnnounce turns on the instance-wide announce actor: the
+		// server actor at /api/collections/<host> accepts follows of its own
+		// and Announces every new post from every PUBLIC blog to whoever
+		// follows it, so one follow reaches the whole instance instead of one
+		// follow per blog.
+		//
+		// It ships off. Turning it on is a federation-policy decision, not a
+		// tuning knob: it publishes a firehose of the instance's public
+		// writing under a single actor, and an operator who never asked for
+		// that must not acquire it by upgrading. Off, the actor behaves
+		// exactly as it did before this option existed — discoverable, and
+		// used to sign the instance's own outbound fetches, nothing more.
+		//
+		// It never widens who may receive a post. Unlisted, private and
+		// protected blogs are excluded, silenced authors are excluded, and
+		// delivery goes through makeActivityPost, so FederationAllowlist
+		// still governs every destination.
+		InstanceAnnounce bool `ini:"instance_announce"`
+
 		// Additional functions
 		LocalTimeline bool   `ini:"local_timeline"`
 		UserInvites   string `ini:"user_invites"`
@@ -350,6 +369,26 @@ func Load(fname string) (*Config, error) {
 	// "/css/.css" and the instance renders with no styling at all.
 	if uc.App.Theme == "" {
 		uc.App.Theme = DefaultTheme
+	}
+
+	// The same problem, for a boolean, where it cannot be fixed by testing
+	// the parsed value: after MapTo an absent key and a deliberate `false`
+	// are both `false`, so the file has to be asked directly.
+	//
+	// local_timeline gates two things, and the second is the one that bites:
+	// the reader at /read, and the Public option in a blog's own settings
+	// (see the option list built in collections.go). Upstream documents the
+	// default as true, but that default is written by the interactive
+	// generator, so a hand-written config.ini that never mentions the key
+	// silently resolves it to false. The symptom is a blog owner who cannot
+	// make a blog public at all, told only "The public reader is currently
+	// turned off for this community", with nothing in the configuration to
+	// explain it.
+	//
+	// A file that sets the key either way is left alone, including a
+	// deliberate `local_timeline = false`.
+	if s, err := cfg.GetSection("app"); err == nil && !s.HasKey("local_timeline") {
+		uc.App.LocalTimeline = true
 	}
 
 	// The asset directories are empty in every configuration written for

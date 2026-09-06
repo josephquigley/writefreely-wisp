@@ -41,6 +41,7 @@ import (
 
 const (
 	collAttrLetterReplyTo = "letter_reply_to"
+	collAttrReplyDelegate = "reply_delegate"
 
 	collMaxLengthTitle       = 255
 	collMaxLengthDescription = 160
@@ -79,6 +80,12 @@ type (
 		// a client written against the single-link API keeps working, and
 		// it can only ever report one of what may be several links.
 		VerificationLink string `json:"verification_link"`
+
+		// ReplyDelegate is a fediverse handle, on another instance, that every
+		// federated post from this blog addresses as a mention, so that replies
+		// reach somewhere a conversation can actually happen. Empty means the
+		// blog federates unaddressed, as it always did. See reply_delegate.go.
+		ReplyDelegate string `json:"reply_delegate,omitempty"`
 
 		// ShowSubscribeIndex controls whether the email subscribe form is
 		// rendered at the bottom of the blog's index page. It defaults to
@@ -130,17 +137,18 @@ type (
 		Handle    string `schema:"handle" json:"handle"`
 
 		// Actual collection values updated in the DB
-		Alias        *string         `schema:"alias" json:"alias"`
-		Title        *string         `schema:"title" json:"title"`
-		Description  *string         `schema:"description" json:"description"`
-		StyleSheet   *string         `schema:"style_sheet" json:"style_sheet"`
-		Script       *string         `schema:"script" json:"script"`
-		Signature    *string         `schema:"signature" json:"signature"`
-		Monetization *string         `schema:"monetization_pointer" json:"monetization_pointer"`
-		Verification *string         `schema:"verification_link" json:"verification_link"`
-		LetterReply  *string         `schema:"letter_reply" json:"letter_reply"`
-		Visibility   *int            `schema:"visibility" json:"public"`
-		Format       *sql.NullString `schema:"format" json:"format"`
+		Alias         *string         `schema:"alias" json:"alias"`
+		Title         *string         `schema:"title" json:"title"`
+		Description   *string         `schema:"description" json:"description"`
+		StyleSheet    *string         `schema:"style_sheet" json:"style_sheet"`
+		Script        *string         `schema:"script" json:"script"`
+		Signature     *string         `schema:"signature" json:"signature"`
+		Monetization  *string         `schema:"monetization_pointer" json:"monetization_pointer"`
+		Verification  *string         `schema:"verification_link" json:"verification_link"`
+		LetterReply   *string         `schema:"letter_reply" json:"letter_reply"`
+		ReplyDelegate *string         `schema:"reply_delegate" json:"reply_delegate"`
+		Visibility    *int            `schema:"visibility" json:"public"`
+		Format        *sql.NullString `schema:"format" json:"format"`
 
 		ShowSubscribeIndex *bool `schema:"show_subscribe_index" json:"show_subscribe_index"`
 		ShowSubscribePosts *bool `schema:"show_subscribe_posts" json:"show_subscribe_posts"`
@@ -365,6 +373,16 @@ func (c *Collection) PersonObject(ids ...int64) *activitystreams.Person {
 				URL:       av,
 			}
 		}
+	}
+
+	// The instance-wide actor is the server itself, not a person. Peers key
+	// real behaviour off this: Mastodon, GoToSocial and relay software expect
+	// a server actor to be an Application, and some treat a Person actor with
+	// no human behind it as a signal worth filtering on. The id, the keypair
+	// and every endpoint stay exactly as they were, so nothing already
+	// federated is invalidated by the change.
+	if c.IsInstanceColl() {
+		p.Type = "Application"
 	}
 
 	collID := c.ID

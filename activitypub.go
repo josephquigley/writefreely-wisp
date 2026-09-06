@@ -39,6 +39,8 @@ import (
 	"github.com/writeas/web-core/id"
 	"github.com/writeas/web-core/log"
 	"github.com/writeas/web-core/silobridge"
+
+	"github.com/writefreely/writefreely/config"
 )
 
 const (
@@ -56,14 +58,78 @@ var (
 var instanceColl *Collection
 
 func initActivityPub(app *App) {
+	instanceColl = newInstanceColl(app)
+
+	// Say so at startup rather than leaving an operator to wonder why the
+	// actor they enabled announces nothing. Same shape as the allowlist's
+	// inert warning: configuration that cannot take effect is reported, not
+	// treated as an error.
+	if app.cfg.App.InstanceAnnounce && !app.cfg.App.Federation {
+		log.Info(instanceAnnounceInertWarning)
+	}
+}
+
+const instanceAnnounceInertWarning = "WARNING: instance_announce is enabled but federation = false: the instance actor will announce nothing until federation is enabled."
+
+// newInstanceColl builds the pseudo-collection standing behind the
+// instance-wide actor: the server's own ActivityPub identity, at
+// <host>/api/collections/<host>.
+//
+// It is collection id 0, which is not a value the collections table ever
+// issues, so it collides with no blog. That id is what lets the actor reuse
+// the per-collection machinery unchanged: its keypair lives in collectionkeys
+// under collection_id 0 (GetAPActorKeys generates it on first use), and its
+// followers live in remotefollows under the same id, which works because that
+// table carries no foreign key on collection_id.
+//
+// It is deliberately not persisted. The row would carry an owner id no user
+// has, and every caller that loads a collection would then have to know to
+// skip it. Building it from config instead keeps it absent from every query
+// that enumerates blogs.
+func newInstanceColl(app *App) *Collection {
 	ur, _ := url.Parse(app.cfg.App.Host)
-	instanceColl = &Collection{
+	return &Collection{
 		ID:       0,
 		Alias:    ur.Host,
 		Title:    ur.Host,
 		db:       app.db,
 		hostName: app.cfg.App.Host,
 	}
+}
+
+// instanceActorAlias is the alias that addresses the instance-wide actor: the
+// host part of the configured App.Host.
+//
+// It comes from configuration rather than from the request's Host header.
+// The actor id published in every signature and every activity is built from
+// App.Host, so config is the only thing that decides which alias is really
+// the instance actor; trusting the header would let a request served under
+// some other name reach it.
+func instanceActorAlias(cfg *config.Config) string {
+	ur, err := url.Parse(cfg.App.Host)
+	if err != nil {
+		return ""
+	}
+	return ur.Host
+}
+
+// collectionForAPRequest resolves the collection an ActivityPub request
+// addresses, mapping the instance actor's alias onto the pseudo-collection
+// above and everything else onto a real blog.
+//
+// Every ActivityPub handler resolves its collection through here, so the
+// instance actor cannot be reachable at one endpoint and missing at another
+// — which is exactly the state the actor was in before: served as a document,
+// but with an inbox, outbox, followers and following that all 404'd because
+// no blog is named after the host.
+func collectionForAPRequest(app *App, alias string) (*Collection, error) {
+	if alias != "" && alias == instanceActorAlias(app.cfg) {
+		return newInstanceColl(app), nil
+	}
+	if app.cfg.App.SingleUser {
+		return app.db.GetCollectionByID(1)
+	}
+	return app.db.GetCollection(alias)
 }
 
 type RemoteUser struct {
@@ -121,15 +187,7 @@ func handleFetchCollectionActivities(app *App, w http.ResponseWriter, r *http.Re
 	}
 
 	// Get base Collection data
-	var c *Collection
-	var err error
-	if alias == r.Host {
-		c = instanceColl
-	} else if app.cfg.App.SingleUser {
-		c, err = app.db.GetCollectionByID(1)
-	} else {
-		c, err = app.db.GetCollection(alias)
-	}
+	c, err := collectionForAPRequest(app, alias)
 	if err != nil {
 		return err
 	}
@@ -162,16 +220,16 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 	alias := vars["alias"]
 
 	// Get base Collection data
-	var c *Collection
-	var err error
-	if app.cfg.App.SingleUser {
-		c, err = app.db.GetCollectionByID(1)
-	} else {
-		c, err = app.db.GetCollection(alias)
-	}
+	c, err := collectionForAPRequest(app, alias)
 	if err != nil {
 		return err
 	}
+	c.hostName = app.cfg.App.Host
+
+	if c.IsInstanceColl() {
+		return handleFetchInstanceOutbox(app, w, r, c)
+	}
+
 	if c.IsPrivate() || c.IsProtected() {
 		return ErrCollectionNotFound
 	}
@@ -183,7 +241,6 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 	if silenced {
 		return ErrCollectionNotFound
 	}
-	c.hostName = app.cfg.App.Host
 
 	if app.cfg.App.SingleUser {
 		if alias != c.Alias {
@@ -231,28 +288,27 @@ func handleFetchCollectionFollowers(app *App, w http.ResponseWriter, r *http.Req
 	alias := vars["alias"]
 
 	// Get base Collection data
-	var c *Collection
-	var err error
-	if app.cfg.App.SingleUser {
-		c, err = app.db.GetCollectionByID(1)
-	} else {
-		c, err = app.db.GetCollection(alias)
-	}
+	c, err := collectionForAPRequest(app, alias)
 	if err != nil {
 		return err
 	}
-	if c.IsPrivate() || c.IsProtected() {
-		return ErrCollectionNotFound
-	}
-	silenced, err := app.db.IsUserSilenced(c.OwnerID)
-	if err != nil {
-		log.Error("fetch collection followers: %v", err)
-		return ErrInternalGeneral
-	}
-	if silenced {
-		return ErrCollectionNotFound
-	}
 	c.hostName = app.cfg.App.Host
+
+	// The instance actor has no owner to silence and no visibility of its
+	// own: it is the server, and it is reachable exactly when federation is.
+	if !c.IsInstanceColl() {
+		if c.IsPrivate() || c.IsProtected() {
+			return ErrCollectionNotFound
+		}
+		silenced, err := app.db.IsUserSilenced(c.OwnerID)
+		if err != nil {
+			log.Error("fetch collection followers: %v", err)
+			return ErrInternalGeneral
+		}
+		if silenced {
+			return ErrCollectionNotFound
+		}
+	}
 
 	accountRoot := c.FederatedAccount()
 
@@ -288,28 +344,27 @@ func handleFetchCollectionFollowing(app *App, w http.ResponseWriter, r *http.Req
 	alias := vars["alias"]
 
 	// Get base Collection data
-	var c *Collection
-	var err error
-	if app.cfg.App.SingleUser {
-		c, err = app.db.GetCollectionByID(1)
-	} else {
-		c, err = app.db.GetCollection(alias)
-	}
+	c, err := collectionForAPRequest(app, alias)
 	if err != nil {
 		return err
 	}
-	if c.IsPrivate() || c.IsProtected() {
-		return ErrCollectionNotFound
-	}
-	silenced, err := app.db.IsUserSilenced(c.OwnerID)
-	if err != nil {
-		log.Error("fetch collection following: %v", err)
-		return ErrInternalGeneral
-	}
-	if silenced {
-		return ErrCollectionNotFound
-	}
 	c.hostName = app.cfg.App.Host
+
+	// The instance actor has no owner to silence and no visibility of its
+	// own: it is the server, and it is reachable exactly when federation is.
+	if !c.IsInstanceColl() {
+		if c.IsPrivate() || c.IsProtected() {
+			return ErrCollectionNotFound
+		}
+		silenced, err := app.db.IsUserSilenced(c.OwnerID)
+		if err != nil {
+			log.Error("fetch collection following: %v", err)
+			return ErrInternalGeneral
+		}
+		if silenced {
+			return ErrCollectionNotFound
+		}
+	}
 
 	accountRoot := c.FederatedAccount()
 
@@ -339,26 +394,25 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 
 	vars := mux.Vars(r)
 	alias := vars["alias"]
-	var c *Collection
-	var err error
-	if app.cfg.App.SingleUser {
-		c, err = app.db.GetCollectionByID(1)
-	} else {
-		c, err = app.db.GetCollection(alias)
-	}
+	c, err := collectionForAPRequest(app, alias)
 	if err != nil {
 		// TODO: return Reject?
 		return err
 	}
-	silenced, err := app.db.IsUserSilenced(c.OwnerID)
-	if err != nil {
-		log.Error("fetch collection inbox: %v", err)
-		return ErrInternalGeneral
-	}
-	if silenced {
-		return ErrCollectionNotFound
-	}
 	c.hostName = app.cfg.App.Host
+
+	// The instance actor has no owner, so there is no user to silence. Every
+	// other check below applies to it unchanged.
+	if !c.IsInstanceColl() {
+		silenced, err := app.db.IsUserSilenced(c.OwnerID)
+		if err != nil {
+			log.Error("fetch collection inbox: %v", err)
+			return ErrInternalGeneral
+		}
+		if silenced {
+			return ErrCollectionNotFound
+		}
+	}
 
 	if debugging {
 		dump, err := httputil.DumpRequest(r, true)
@@ -657,94 +711,11 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 	}
 
 	go func() {
-		if to == nil {
-			if debugging {
-				log.Info("No `to` value: likely not needed for this activity type.")
-			}
-			return
-		}
-
+		// The 2s pause is the historical behaviour, and it is why this runs
+		// in a goroutine at all: some peers are not ready to receive the
+		// Accept the instant they sent the Follow.
 		time.Sleep(2 * time.Second)
-		am, err := a.Serialize()
-		if err != nil {
-			log.Error("Unable to serialize Accept: %v", err)
-			return
-		}
-		am["@context"] = []string{activitystreams.Namespace}
-		if debugging {
-			logOutgoingActivity("Accept", am)
-		}
-
-		err = makeActivityPost(app, p, fullActor.Inbox, am)
-		if err != nil {
-			log.Error("Unable to make activity POST: %v", err)
-			return
-		}
-
-		if isFollow {
-			t, err := app.db.Begin()
-			if err != nil {
-				log.Error("Unable to start transaction: %v", err)
-				return
-			}
-
-			var followerID int64
-
-			if remoteUser != nil {
-				followerID = remoteUser.ID
-			} else {
-				// TODO: use apAddRemoteUser() here, instead!
-				// Add follower locally, since it wasn't found before
-				res, err := t.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
-				if err != nil {
-					// if duplicate key, res will be nil and panic on
-					// res.LastInsertId below
-					t.Rollback()
-					log.Error("Couldn't add new remoteuser in DB: %v\n", err)
-					return
-				}
-
-				followerID, err = res.LastInsertId()
-				if err != nil {
-					t.Rollback()
-					log.Error("no lastinsertid for followers, rolling back: %v", err)
-					return
-				}
-
-				// Add in key
-				_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
-				if err != nil {
-					if !app.db.isDuplicateKeyErr(err) {
-						t.Rollback()
-						log.Error("Couldn't add follower keys in DB: %v\n", err)
-						return
-					}
-				}
-			}
-
-			// Add follow
-			_, err = t.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", c.ID, followerID)
-			if err != nil {
-				if !app.db.isDuplicateKeyErr(err) {
-					t.Rollback()
-					log.Error("Couldn't add follower in DB: %v\n", err)
-					return
-				}
-			}
-
-			err = t.Commit()
-			if err != nil {
-				t.Rollback()
-				log.Error("Rolling back after Commit(): %v\n", err)
-				return
-			}
-		} else if isUnfollow {
-			// Remove follower locally
-			_, err = app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
-			if err != nil {
-				log.Error("Couldn't remove follower from DB: %v\n", err)
-			}
-		}
+		acceptAndPersistFollow(app, c, p, a, to, fullActor, remoteUser, isFollow, isUnfollow)
 	}()
 
 	if !responseWritten {
@@ -932,9 +903,20 @@ func deleteFederatedPost(app *App, p *PublicPost, collID int64) error {
 	if debugging {
 		log.Info("Deleting federated post!")
 	}
+
+	// Retract the instance-wide Announce. The Delete below reaches the blog's
+	// followers; anyone who followed only the instance actor never sees it,
+	// and would keep a boost of a post that no longer exists.
+	go undoAnnounceToInstanceFollowers(app, announceablePost{ID: p.ID, Created: p.Created}, collID)
+
 	p.Collection.hostName = app.cfg.App.Host
 	actor := p.Collection.PersonObject(collID)
 	na := p.ActivityObject(app)
+
+	// Send the Delete to instance followers too, before the loop below
+	// rewrites na.CC. The Undo above retracts the boost; this removes the
+	// cached object, which is the thing a receiver actually rendered.
+	fanOutDeleteToInstanceFollowers(app, na, actor, collID)
 
 	// Add followers
 	p.Collection.ID = collID
@@ -999,6 +981,21 @@ func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 	actor := p.Collection.PersonObject(collID)
 	na := p.ActivityObject(app)
 
+	// An edit gets one activity id, shared by every recipient. Computing it
+	// per shared inbox would hand each of them a different id whenever
+	// p.Updated is zero, and a receiver that dedupes by id would then render
+	// one edit once per instance it reached.
+	updateTime := time.Now()
+	if !p.Updated.IsZero() {
+		updateTime = p.Updated
+	}
+
+	// Fan out to the instance actor's followers as well. This happens here,
+	// before the loop below starts rewriting na.CC with one blog's follower
+	// list, so what instance followers receive carries the post's own
+	// addressing. It re-checks eligibility itself.
+	fanOutPostToInstanceFollowers(app, p, na, actor, collID, isUpdate, updateTime)
+
 	// Add followers
 	p.Collection.ID = collID
 	followers, err := app.db.GetAPFollowers(&p.Collection.Collection)
@@ -1045,11 +1042,8 @@ func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 			// same id as the first one. Receivers dedupe activities by id,
 			// so that would silently drop every edit after the first
 			// instead of fixing anything. Use the post's updated timestamp
-			// so each edit gets a distinct id.
-			updateTime := time.Now()
-			if na.Updated != nil && !na.Updated.IsZero() {
-				updateTime = *na.Updated
-			}
+			// so each edit gets a distinct id. It is computed once, above, so
+			// that every recipient of one edit sees the same id.
 			activity.ID += fmt.Sprintf("#Update/%d", updateTime.Unix())
 		} else {
 			activity = activitystreams.NewCreateActivity(na)
@@ -1348,4 +1342,116 @@ func logOutgoingActivity(label string, activity any) {
 		return
 	}
 	log.Info("%s outgoing ActivityPub payload:\n%s", label, string(b))
+}
+
+// acceptAndPersistFollow delivers the Accept for a Follow or an Undo Follow
+// and records the resulting change to the follower list.
+//
+// It is a named function rather than the closure it used to be so that a test
+// can run it directly. As a closure inside an anonymous goroutine it was
+// unreachable except by sending a real Follow to a real inbox and then
+// sleeping longer than the handler does, which is why the follow path had no
+// test. The sleep stays at the call site: the delay is delivery politeness,
+// not part of what this does.
+//
+// c may be the instance-wide collection, in which case the follow is recorded
+// against collection id 0 and the follower becomes a follower of the whole
+// instance. Nothing here needs to know the difference.
+func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, a *streams.Accept, to *url.URL, fullActor *activitystreams.Person, remoteUser *RemoteUser, isFollow, isUnfollow bool) {
+	if to == nil {
+		if debugging {
+			log.Info("No `to` value: likely not needed for this activity type.")
+		}
+		return
+	}
+
+	// Persist the follow before attempting delivery of the Accept.
+	// The remote already believes it is following once it gets a 200
+	// on the inbox POST, so it must be recorded here regardless of
+	// whether the Accept below is delivered successfully. Nothing in
+	// this block depends on the Accept's serialization or delivery:
+	// fullActor, remoteUser and c.ID were all populated synchronously
+	// in the Follow callback, before this goroutine was even started.
+	if isFollow {
+		t, err := app.db.Begin()
+		if err != nil {
+			log.Error("Unable to start transaction: %v", err)
+			return
+		}
+
+		var followerID int64
+
+		if remoteUser != nil {
+			followerID = remoteUser.ID
+		} else {
+			// TODO: use apAddRemoteUser() here, instead!
+			// Add follower locally, since it wasn't found before
+			res, err := t.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
+			if err != nil {
+				// if duplicate key, res will be nil and panic on
+				// res.LastInsertId below
+				t.Rollback()
+				log.Error("Couldn't add new remoteuser in DB: %v\n", err)
+				return
+			}
+
+			followerID, err = res.LastInsertId()
+			if err != nil {
+				t.Rollback()
+				log.Error("no lastinsertid for followers, rolling back: %v", err)
+				return
+			}
+
+			// Add in key
+			_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
+			if err != nil {
+				if !app.db.isDuplicateKeyErr(err) {
+					t.Rollback()
+					log.Error("Couldn't add follower keys in DB: %v\n", err)
+					return
+				}
+			}
+		}
+
+		// Add follow
+		_, err = t.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", c.ID, followerID)
+		if err != nil {
+			if !app.db.isDuplicateKeyErr(err) {
+				t.Rollback()
+				log.Error("Couldn't add follower in DB: %v\n", err)
+				return
+			}
+		}
+
+		err = t.Commit()
+		if err != nil {
+			t.Rollback()
+			log.Error("Rolling back after Commit(): %v\n", err)
+			return
+		}
+	}
+
+	am, err := a.Serialize()
+	if err != nil {
+		log.Error("Unable to serialize Accept: %v", err)
+		return
+	}
+	am["@context"] = []string{activitystreams.Namespace}
+	if debugging {
+		logOutgoingActivity("Accept", am)
+	}
+
+	err = makeActivityPost(app, p, fullActor.Inbox, am)
+	if err != nil {
+		log.Error("Unable to make activity POST: %v", err)
+		return
+	}
+
+	if isUnfollow {
+		// Remove follower locally
+		_, err = app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
+		if err != nil {
+			log.Error("Couldn't remove follower from DB: %v\n", err)
+		}
+	}
 }

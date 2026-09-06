@@ -33,6 +33,8 @@ This edition keeps that intact and adds a small set of blog management features,
 * **Subscribe button options.** Control over whether and how the subscribe button appears.
 * **Reorderable pinned posts.** Drag pinned posts into the order you want, instead of taking the default.
 * **Image uploads.** Upload images from the editor rather than hosting them elsewhere.
+* **Instance-wide announce actor.** One actor for the whole instance that anyone can follow to receive every new post from every public blog, instead of following each blog separately. Off unless `instance_announce` is set. Public blogs only, and delivery still obeys `federation_allowlist`.
+* **Reply delegate.** Route replies to a blog's posts to a configured account on another fediverse instance, so a reply lands somewhere a reader can actually see it.
 
 Plus assorted fixes carried on top of upstream. Each feature is developed on its own branch so it can be offered upstream independently.
 
