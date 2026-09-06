@@ -284,6 +284,25 @@ func Load(fname string) (*Config, error) {
 		return nil, err
 	}
 
+	// The file is mapped onto a zero-valued Config, so a key absent from it
+	// takes Go's zero value rather than the documented default. For a bool
+	// that cannot be corrected by testing the parsed value, because after
+	// MapTo an absent key and a deliberate `false` are identical, so ask the
+	// file itself whether the key is present.
+	//
+	// local_timeline gates the reader at /read and, less obviously, the
+	// Public option in a blog's own settings. Its default is documented as
+	// true, and the interactive generator writes it that way, so only a
+	// hand-written config.ini is affected: it silently resolves to false and
+	// the owner is told "The public reader is currently turned off for this
+	// community" with nothing in their configuration to explain it.
+	//
+	// A file that sets the key either way is left alone, including a
+	// deliberate `local_timeline = false`.
+	if s, err := cfg.GetSection("app"); err == nil && !s.HasKey("local_timeline") {
+		uc.App.LocalTimeline = true
+	}
+
 	// Do any transformations
 	u, err := url.Parse(uc.App.Host)
 	if err != nil {
