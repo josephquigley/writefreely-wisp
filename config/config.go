@@ -173,6 +173,25 @@ type (
 		// the zone, so use one only on a zone you control.
 		FederationAllowlist string `ini:"federation_allowlist"`
 
+		// InstanceAnnounce turns on the instance-wide announce actor: the
+		// server actor at /api/collections/<host> accepts follows of its own
+		// and Announces every new post from every PUBLIC blog to whoever
+		// follows it, so one follow reaches the whole instance instead of one
+		// follow per blog.
+		//
+		// It ships off. Turning it on is a federation-policy decision, not a
+		// tuning knob: it publishes a firehose of the instance's public
+		// writing under a single actor, and an operator who never asked for
+		// that must not acquire it by upgrading. Off, the actor behaves
+		// exactly as it did before this option existed — discoverable, and
+		// used to sign the instance's own outbound fetches, nothing more.
+		//
+		// It never widens who may receive a post. Unlisted, private and
+		// protected blogs are excluded, silenced authors are excluded, and
+		// delivery goes through makeActivityPost, so FederationAllowlist
+		// still governs every destination.
+		InstanceAnnounce bool `ini:"instance_announce"`
+
 		// Additional functions
 		LocalTimeline bool   `ini:"local_timeline"`
 		UserInvites   string `ini:"user_invites"`
