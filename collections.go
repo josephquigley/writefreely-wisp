@@ -41,6 +41,7 @@ import (
 
 const (
 	collAttrLetterReplyTo = "letter_reply_to"
+	collAttrReplyDelegate = "reply_delegate"
 
 	collMaxLengthTitle       = 255
 	collMaxLengthDescription = 160
@@ -69,6 +70,12 @@ type (
 
 		Monetization string `json:"monetization_pointer,omitempty"`
 		Verification string `json:"verification_link"`
+
+		// ReplyDelegate is a fediverse handle, on another instance, that every
+		// federated post from this blog addresses as a mention, so that replies
+		// reach somewhere a conversation can actually happen. Empty means the
+		// blog federates unaddressed, as it always did. See reply_delegate.go.
+		ReplyDelegate string `json:"reply_delegate,omitempty"`
 
 		db       *datastore
 		hostName string
@@ -111,17 +118,18 @@ type (
 		Handle    string `schema:"handle" json:"handle"`
 
 		// Actual collection values updated in the DB
-		Alias        *string         `schema:"alias" json:"alias"`
-		Title        *string         `schema:"title" json:"title"`
-		Description  *string         `schema:"description" json:"description"`
-		StyleSheet   *string         `schema:"style_sheet" json:"style_sheet"`
-		Script       *string         `schema:"script" json:"script"`
-		Signature    *string         `schema:"signature" json:"signature"`
-		Monetization *string         `schema:"monetization_pointer" json:"monetization_pointer"`
-		Verification *string         `schema:"verification_link" json:"verification_link"`
-		LetterReply  *string         `schema:"letter_reply" json:"letter_reply"`
-		Visibility   *int            `schema:"visibility" json:"public"`
-		Format       *sql.NullString `schema:"format" json:"format"`
+		Alias         *string         `schema:"alias" json:"alias"`
+		Title         *string         `schema:"title" json:"title"`
+		Description   *string         `schema:"description" json:"description"`
+		StyleSheet    *string         `schema:"style_sheet" json:"style_sheet"`
+		Script        *string         `schema:"script" json:"script"`
+		Signature     *string         `schema:"signature" json:"signature"`
+		Monetization  *string         `schema:"monetization_pointer" json:"monetization_pointer"`
+		Verification  *string         `schema:"verification_link" json:"verification_link"`
+		LetterReply   *string         `schema:"letter_reply" json:"letter_reply"`
+		ReplyDelegate *string         `schema:"reply_delegate" json:"reply_delegate"`
+		Visibility    *int            `schema:"visibility" json:"public"`
+		Format        *sql.NullString `schema:"format" json:"format"`
 	}
 	CollectionFormat struct {
 		Format string

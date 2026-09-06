@@ -878,6 +878,7 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	c.Public = c.IsPublic()
 	c.Monetization = db.GetCollectionAttribute(c.ID, "monetization_pointer")
 	c.Verification = db.GetCollectionAttribute(c.ID, "verification_link")
+	c.ReplyDelegate = db.GetCollectionAttribute(c.ID, collAttrReplyDelegate)
 
 	c.db = db
 
@@ -948,7 +949,7 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 	// WHERE values
 	q.Where("alias = ? AND owner_id = ?", alias, c.OwnerID)
 
-	if q.Updates == "" && c.Monetization == nil {
+	if q.Updates == "" && c.Monetization == nil && c.ReplyDelegate == nil {
 		return ErrPostNoUpdatableVals
 	}
 
@@ -1038,6 +1039,27 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 			if err != nil {
 				log.Error("Unable to insert monetization_pointer value: %v", err)
 				return err
+			}
+		}
+	}
+
+	// Update reply delegate value. An empty submission clears it; a
+	// malformed one is left alone rather than stored, matching how a bad
+	// monetization pointer is handled above.
+	if c.ReplyDelegate != nil {
+		if delegate, ok := normalizeReplyDelegate(*c.ReplyDelegate); ok {
+			if delegate == "" {
+				_, err = db.Exec("DELETE FROM collectionattributes WHERE collection_id = ? AND attribute = ?", collID, collAttrReplyDelegate)
+				if err != nil {
+					log.Error("Unable to delete %s value: %v", collAttrReplyDelegate, err)
+					return err
+				}
+			} else {
+				err = db.SetCollectionAttribute(collID, collAttrReplyDelegate, delegate)
+				if err != nil {
+					log.Error("Unable to insert %s value: %v", collAttrReplyDelegate, err)
+					return err
+				}
 			}
 		}
 	}
