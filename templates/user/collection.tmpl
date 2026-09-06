@@ -245,6 +245,17 @@ textarea.section.norm {
 		</div>
 	</div>
 
+	{{if .UserPage.StaticPage.AppCfg.Federation}}
+	<div class="option">
+		<h2>Reply Delegate</h2>
+		<div class="section">
+			<p class="explain">This blog can publish to the fediverse, but it cannot receive replies &mdash; there is nowhere here for a conversation to happen. Name a fediverse account you read, and every post from this blog will mention it, so replies arrive there instead of vanishing.</p>
+			<input type="text" name="reply_delegate" style="width:100%" value="{{.Collection.ReplyDelegate}}" placeholder="@you@social.example" />
+			<p class="explain">A full handle, including the instance &mdash; <code>@you@social.example</code>. Leave empty for none. The mention is not shown in your posts.</p>
+		</div>
+	</div>
+	{{end}}
+
 	{{if .UserPage.StaticPage.AppCfg.Monetization}}
 	<div class="option">
 		<h2>Web Monetization</h2>

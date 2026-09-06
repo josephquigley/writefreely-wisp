@@ -1373,6 +1373,11 @@ func (p *PublicPost) ActivityObject(app *App) *activitystreams.Object {
 		o.Tag = append(o.Tag, activitystreams.Tag{Type: "Mention", HRef: iri, Name: handle})
 	}
 
+	// Address the blog's reply delegate, if it has one. This runs after the
+	// content mentions so that an author who names the delegate in the post
+	// gets one mention rather than two.
+	applyReplyDelegate(app, &p.Collection.Collection, o)
+
 	// Add shortened Note as the `preview` property if this is an Article
 	if o.Type == "Article" {
 		o.Preview = p.PreviewObject(app, o)
