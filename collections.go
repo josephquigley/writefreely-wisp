@@ -375,6 +375,16 @@ func (c *Collection) PersonObject(ids ...int64) *activitystreams.Person {
 		}
 	}
 
+	// The instance-wide actor is the server itself, not a person. Peers key
+	// real behaviour off this: Mastodon, GoToSocial and relay software expect
+	// a server actor to be an Application, and some treat a Person actor with
+	// no human behind it as a signal worth filtering on. The id, the keypair
+	// and every endpoint stay exactly as they were, so nothing already
+	// federated is invalidated by the change.
+	if c.IsInstanceColl() {
+		p.Type = "Application"
+	}
+
 	collID := c.ID
 	if len(ids) > 0 {
 		collID = ids[0]
