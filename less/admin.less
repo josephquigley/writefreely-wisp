@@ -45,6 +45,34 @@ nav#admin {
 		}
 	}
 
+	// The button bars — nav#admin, and the per-blog collection nav — wrap a
+	// whole button at a time. As inline boxes they split across the line
+	// break instead, leaving half a button with its border opened on each
+	// row. Flex items are never split, and gap spaces both axes, so the
+	// sibling margin above is no longer needed here.
+	//
+	// .sub stays a block: its a.toggle is floated, and a flex container
+	// ignores float.
+	&:not(.pages):not(.sub) {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5em;
+		justify-content: flex-start;
+
+		a {
+			// As inline boxes these took their height from the font, not
+			// from the inherited line-height, which is set for body text
+			// and is nearly three times the font size. A flex item is
+			// block-level and does count it, so without this the buttons
+			// grow by the difference.
+			line-height: 1.4;
+
+			&+a {
+				margin-left: 0;
+			}
+		}
+	}
+
 	a {
 		color: #333;
 		font-family: @sansFont;
