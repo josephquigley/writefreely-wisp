@@ -377,6 +377,21 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 	}
 
 	a := streams.NewAccept()
+	// Give the Accept an id before any callback runs. ActivityStreams 2.0
+	// requires every activity to have one, and a receiver that enforces it
+	// refuses the delivery rather than ignoring the missing field: Mbin
+	// answers 401 with `Missing required "id" field in the payload`. Setting
+	// it here rather than inside a callback is what keeps every path
+	// covered — the id belonged to the Follow callback, so the Accept sent
+	// for an Undo Follow went out without one and was refused, and the
+	// unfollow was never acknowledged.
+	aID := c.FederatedAccount() + "#accept-" + id.GenerateFriendlyRandomString(20)
+	acceptID, err := url.Parse(aID)
+	if err != nil {
+		log.Error("Couldn't parse generated Accept URL '%s': %v", aID, err)
+	}
+	a.SetId(acceptID)
+
 	p := c.PersonObject()
 	var to *url.URL
 	var isFollow, isUnfollow, isLike, isUnlike bool
@@ -448,13 +463,6 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			_, followID := f.GetId()
 			if followID == nil {
 				log.Error("Didn't resolve follow ID")
-			} else {
-				aID := c.FederatedAccount() + "#accept-" + id.GenerateFriendlyRandomString(20)
-				acceptID, err := url.Parse(aID)
-				if err != nil {
-					log.Error("Couldn't parse generated Accept URL '%s': %v", aID, err)
-				}
-				a.SetId(acceptID)
 			}
 			a.AppendObject(f.Raw())
 			_, to = f.GetActor(0)
