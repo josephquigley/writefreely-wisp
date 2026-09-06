@@ -352,6 +352,26 @@ func Load(fname string) (*Config, error) {
 		uc.App.Theme = DefaultTheme
 	}
 
+	// The same problem, for a boolean, where it cannot be fixed by testing
+	// the parsed value: after MapTo an absent key and a deliberate `false`
+	// are both `false`, so the file has to be asked directly.
+	//
+	// local_timeline gates two things, and the second is the one that bites:
+	// the reader at /read, and the Public option in a blog's own settings
+	// (see the option list built in collections.go). Upstream documents the
+	// default as true, but that default is written by the interactive
+	// generator, so a hand-written config.ini that never mentions the key
+	// silently resolves it to false. The symptom is a blog owner who cannot
+	// make a blog public at all, told only "The public reader is currently
+	// turned off for this community", with nothing in the configuration to
+	// explain it.
+	//
+	// A file that sets the key either way is left alone, including a
+	// deliberate `local_timeline = false`.
+	if s, err := cfg.GetSection("app"); err == nil && !s.HasKey("local_timeline") {
+		uc.App.LocalTimeline = true
+	}
+
 	// The asset directories are empty in every configuration written for
 	// upstream's container image, which keeps templates, static and pages
 	// beside the binary in the working directory. This image keeps them at
