@@ -904,14 +904,19 @@ func deleteFederatedPost(app *App, p *PublicPost, collID int64) error {
 		log.Info("Deleting federated post!")
 	}
 
-	// Retract the instance-wide Announce too. The Delete below reaches the
-	// blog's followers; anyone who followed only the instance actor never
-	// sees it, and would keep a boost of a post that no longer exists.
+	// Retract the instance-wide Announce. The Delete below reaches the blog's
+	// followers; anyone who followed only the instance actor never sees it,
+	// and would keep a boost of a post that no longer exists.
 	go undoAnnounceToInstanceFollowers(app, announceablePost{ID: p.ID, Created: p.Created}, collID)
 
 	p.Collection.hostName = app.cfg.App.Host
 	actor := p.Collection.PersonObject(collID)
 	na := p.ActivityObject(app)
+
+	// Send the Delete to instance followers too, before the loop below
+	// rewrites na.CC. The Undo above retracts the boost; this removes the
+	// cached object, which is the thing a receiver actually rendered.
+	fanOutDeleteToInstanceFollowers(app, na, actor, collID)
 
 	// Add followers
 	p.Collection.ID = collID
@@ -953,20 +958,6 @@ func deleteFederatedPost(app *App, p *PublicPost, collID int64) error {
 }
 
 func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
-	if !isUpdate {
-		// The instance-wide announce runs beside per-blog delivery, not
-		// inside it: a relay failure must not interfere with delivery to the
-		// blog's own followers, and a slow fan-out here must not delay that
-		// one. It re-checks eligibility itself, so it is deliberately started
-		// before the early returns below, which answer a different question.
-		//
-		// Updates are not announced. An Announce references the post by IRI,
-		// so an edit changes what that IRI resolves to without any second
-		// activity; re-announcing would put the post back at the top of a
-		// follower's timeline on every typo fix.
-		go announceToInstanceFollowers(app, announceablePost{ID: p.ID, Created: p.Created}, collID)
-	}
-
 	// A private instance does not federate. With a federation allowlist
 	// configured it does, but only to the hosts on that list, which
 	// makeActivityPost enforces.
@@ -989,6 +980,21 @@ func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 
 	actor := p.Collection.PersonObject(collID)
 	na := p.ActivityObject(app)
+
+	// An edit gets one activity id, shared by every recipient. Computing it
+	// per shared inbox would hand each of them a different id whenever
+	// p.Updated is zero, and a receiver that dedupes by id would then render
+	// one edit once per instance it reached.
+	updateTime := time.Now()
+	if !p.Updated.IsZero() {
+		updateTime = p.Updated
+	}
+
+	// Fan out to the instance actor's followers as well. This happens here,
+	// before the loop below starts rewriting na.CC with one blog's follower
+	// list, so what instance followers receive carries the post's own
+	// addressing. It re-checks eligibility itself.
+	fanOutPostToInstanceFollowers(app, p, na, actor, collID, isUpdate, updateTime)
 
 	// Add followers
 	p.Collection.ID = collID
@@ -1036,11 +1042,8 @@ func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 			// same id as the first one. Receivers dedupe activities by id,
 			// so that would silently drop every edit after the first
 			// instead of fixing anything. Use the post's updated timestamp
-			// so each edit gets a distinct id.
-			updateTime := time.Now()
-			if na.Updated != nil && !na.Updated.IsZero() {
-				updateTime = *na.Updated
-			}
+			// so each edit gets a distinct id. It is computed once, above, so
+			// that every recipient of one edit sees the same id.
 			activity.ID += fmt.Sprintf("#Update/%d", updateTime.Unix())
 		} else {
 			activity = activitystreams.NewCreateActivity(na)

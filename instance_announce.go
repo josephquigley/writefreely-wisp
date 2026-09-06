@@ -12,6 +12,7 @@ package writefreely
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -159,6 +160,120 @@ func instanceAnnounceEligible(app *App, collID int64) bool {
 		return false
 	}
 	return !silenced
+}
+
+// fanOutPostToInstanceFollowers gives the instance actor's followers whichever
+// activity a publish or an edit calls for.
+//
+// A new post is Announced by the instance actor: a boost, referencing the
+// post's IRI, which is how a relay introduces writing it did not author.
+//
+// An edit is different, and the difference is the whole reason this function
+// exists rather than an `if !isUpdate` at the call site. A receiver caches the
+// object it fetched after the Announce and does not re-fetch it; without an
+// Update it renders the original text for good. So the edit is delivered as
+// the blog's own Update activity, signed by the BLOG actor rather than by the
+// instance actor, because a receiver accepts an Update only from the object's
+// owner. That is the same forwarding a fediverse relay does, and it is why the
+// blog actor is threaded down here.
+//
+// An edit is not re-Announced. The Update refreshes what a follower already
+// holds; a second Announce would push the post back to the top of their
+// timeline on every typo fix.
+//
+// It runs synchronously up to the point where the activity is serialised, and
+// only then hands delivery to a goroutine. That ordering is load-bearing: the
+// caller rewrites na.CC per shared inbox immediately afterwards, so the
+// snapshot has to be taken before this function returns.
+func fanOutPostToInstanceFollowers(app *App, p *PublicPost, na *activitystreams.Object, blogActor *activitystreams.Person, collID int64, isUpdate bool, updateTime time.Time) {
+	if !instanceAnnounceEligible(app, collID) {
+		return
+	}
+
+	if !isUpdate {
+		go announceToInstanceFollowers(app, announceablePost{ID: p.ID, Created: p.Created}, collID)
+		return
+	}
+
+	obj := instanceCopyOfObject(na)
+	obj.Updated = &p.Updated
+	activity := activitystreams.NewUpdateActivity(obj)
+	// The same id the blog's own followers get for this edit, so anyone
+	// following both the blog and the instance actor sees one edit rather
+	// than two. Receivers dedupe activities by id.
+	activity.ID += fmt.Sprintf("#Update/%d", updateTime.Unix())
+
+	raw, err := snapshotActivity(activity)
+	if err != nil {
+		log.Error("instance announce: couldn't serialise Update: %v", err)
+		return
+	}
+	if debugging {
+		logOutgoingActivity("Update", activity)
+	}
+	go deliverToInstanceFollowers(app, blogActor, raw)
+}
+
+// fanOutDeleteToInstanceFollowers delivers a post's Delete to the instance
+// actor's followers, signed by the blog that owns the post.
+//
+// It goes alongside the Undo of the Announce, and the two do different jobs:
+// the Undo retracts the boost, this removes the cached object the receiver
+// actually rendered. A receiver honours a Delete only from the object's owner,
+// which is why this is signed by the blog and the Undo by the instance.
+//
+// Unlike the Update path it does not ask whether the post is still eligible to
+// be announced. A post whose blog turned private after it was announced is
+// exactly the post most in need of deleting.
+func fanOutDeleteToInstanceFollowers(app *App, na *activitystreams.Object, blogActor *activitystreams.Person, collID int64) {
+	if !instanceAnnounceEnabled(app) {
+		return
+	}
+
+	da := activitystreams.NewDeleteActivity(instanceCopyOfObject(na))
+	// ActivityStreams 2.0 requires an id to identify exactly one object, and
+	// an activity is a distinct object from the one it wraps. Same suffix the
+	// blog's own Delete uses, so a dual follower dedupes the two.
+	da.ID += "#Delete"
+
+	raw, err := snapshotActivity(da)
+	if err != nil {
+		log.Error("instance announce: couldn't serialise Delete: %v", err)
+		return
+	}
+	if debugging {
+		logOutgoingActivity("Delete", da)
+	}
+	go deliverToInstanceFollowers(app, blogActor, raw)
+}
+
+// instanceCopyOfObject copies a post's activity object for instance-wide
+// delivery, replacing the addressing that the per-blog fan-out is about to
+// overwrite.
+//
+// The caller's loop assigns na.CC a fresh slice holding one instance's
+// follower actor ids, which is addressing meant for that instance and nobody
+// else. Instance followers get the blog's followers collection instead: the
+// same value ActivityObject puts there before delivery narrows it.
+func instanceCopyOfObject(na *activitystreams.Object) *activitystreams.Object {
+	obj := *na
+	obj.CC = []string{na.AttributedTo + "/followers"}
+	return &obj
+}
+
+// snapshotActivity serialises an activity immediately, so that later mutation
+// of the object it was built from cannot change what gets delivered.
+//
+// Delivery happens in a goroutine while the caller keeps working on the same
+// object, so handing that object to the goroutine would be a data race with a
+// wrong-content failure mode rather than a crash: the activity would go out
+// carrying whatever the caller had rewritten by the time it was marshalled.
+func snapshotActivity(a interface{}) (json.RawMessage, error) {
+	b, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
 }
 
 // announceToInstanceFollowers delivers an Announce for a newly published post

@@ -20,6 +20,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,8 +59,11 @@ type dummyPeer struct {
 	server  *httptest.Server
 	actorID string
 
-	// instanceKey is the public key deliveries are verified against.
-	instanceKey *rsa.PublicKey
+	// app is the instance under test, so the peer can look up the published
+	// key for whichever actor signed a delivery. A real peer resolves the
+	// keyId to an actor and fetches its key; this does the same lookup
+	// locally, because the actors are not fetchable over loopback.
+	app *App
 
 	mu       sync.Mutex
 	received []deliveredActivity
@@ -117,7 +122,7 @@ func (p *dummyPeer) assertNothingDelivered(t *testing.T, why string) {
 func newDummyPeer(t *testing.T, app *App) *dummyPeer {
 	t.Helper()
 
-	p := &dummyPeer{instanceKey: instancePublicKey(t, app)}
+	p := &dummyPeer{app: app}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/inbox", func(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +172,10 @@ func (p *dummyPeer) record(r *http.Request) {
 		d.SigError = fmt.Errorf("no usable signature: %v", err)
 	} else {
 		d.KeyID = v.KeyId()
-		if err := v.Verify(p.instanceKey, fedsig.RSA_SHA256); err != nil {
+		key, err := p.keyFor(d.KeyID)
+		if err != nil {
+			d.SigError = err
+		} else if err := v.Verify(key, fedsig.RSA_SHA256); err != nil {
 			d.SigError = fmt.Errorf("bad signature: %v", err)
 		}
 	}
@@ -177,23 +185,45 @@ func (p *dummyPeer) record(r *http.Request) {
 	p.received = append(p.received, d)
 }
 
-// instancePublicKey returns the instance actor's published public key, parsed.
-func instancePublicKey(t *testing.T, app *App) *rsa.PublicKey {
-	t.Helper()
-	actor := newInstanceColl(app).PersonObject()
-	block, _ := pem.Decode([]byte(actor.PublicKey.PublicKeyPEM))
+// keyFor resolves a keyId to the public key its actor publishes, the way a
+// real peer would: the instance actor for the server's own activities, the
+// blog actor for a post's Create, Update or Delete.
+//
+// A mismatch is an error rather than a fallback. An activity signed by the
+// wrong actor is precisely the bug worth catching here: a receiver honours an
+// Update or a Delete only from the object's owner, so one signed by the
+// instance actor would be dropped in the field and pass in a test that shrugged
+// and tried the other key.
+func (p *dummyPeer) keyFor(keyID string) (*rsa.PublicKey, error) {
+	actorID := strings.TrimSuffix(keyID, "#main-key")
+
+	var c *Collection
+	if actorID == newInstanceColl(p.app).FederatedAccount() {
+		c = newInstanceColl(p.app)
+	} else {
+		alias := path.Base(actorID)
+		var err error
+		c, err = p.app.db.GetCollection(alias)
+		if err != nil {
+			return nil, fmt.Errorf("unknown signing actor %q: %v", actorID, err)
+		}
+		c.hostName = p.app.cfg.App.Host
+	}
+
+	pemBytes := c.PersonObject().PublicKey.PublicKeyPEM
+	block, _ := pem.Decode([]byte(pemBytes))
 	if block == nil {
-		t.Fatal("instance actor published no parsable public key")
+		return nil, fmt.Errorf("actor %q publishes no parsable key", actorID)
 	}
 	k, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		t.Fatalf("parse instance public key: %v", err)
+		return nil, fmt.Errorf("parse key for %q: %v", actorID, err)
 	}
 	rsaKey, ok := k.(*rsa.PublicKey)
 	if !ok {
-		t.Fatalf("instance actor key is %T, not RSA", k)
+		return nil, fmt.Errorf("key for %q is %T, not RSA", actorID, k)
 	}
-	return rsaKey
+	return rsaKey, nil
 }
 
 // registerPeerLocally inserts the peer into remoteusers, which is what lets
@@ -362,19 +392,65 @@ func TestFederatingANewPostAnnouncesItInstanceWide(t *testing.T) {
 	assert.Equal(t, announceTestHost+"/api/posts/public0001", a.Object)
 }
 
-// An edit is not re-announced. The Announce points at the post's IRI, so what
-// it resolves to changes on its own; re-announcing would push the post back to
-// the top of a follower's timeline on every typo fix.
-func TestEditingAPostDoesNotReAnnounceIt(t *testing.T) {
+// An edit reaches instance followers as the blog's own Update, signed by the
+// blog.
+//
+// This is the case a boost alone gets wrong. A receiver caches the object it
+// fetched after the Announce and does not re-fetch it, so without an Update a
+// follower of the instance actor renders the original text for good. The
+// signature has to be the blog's, because a receiver accepts an Update only
+// from the object's owner.
+func TestEditingAPostSendsAnUpdateToInstanceFollowers(t *testing.T) {
 	app := newAnnounceTestApp(t)
 	peer := newDummyPeer(t, app)
 	followInstance(t, app, peer)
 
 	pp, collID := newFederatablePost(t, app, "public0001")
+	pp.Content = "Edited body"
 
 	federatePost(app, pp, collID, true)
 
-	peer.assertNothingDelivered(t, "an update must not produce a second Announce")
+	u := peer.awaitActivity(t, "Update")
+	assert.Equal(t, blogActorID(app, "quigs")+"#main-key", u.KeyID,
+		"an Update must be signed by the blog that owns the post, not by the instance actor")
+	assert.NoError(t, u.SigError)
+
+	obj, ok := u.Object.(map[string]interface{})
+	assert.True(t, ok, "the Update must carry the post object, got %T", u.Object)
+	assert.Contains(t, obj["content"], "Edited body", "the edited text is the point of sending it")
+	assert.Equal(t, announceTestHost+"/api/posts/public0001", obj["id"])
+
+	// Not re-announced: the Update refreshes what the follower already holds,
+	// and a second Announce would push the post back to the top of their
+	// timeline on every typo fix.
+	for _, a := range peer.activities() {
+		assert.NotEqual(t, "Announce", a.Type, "an edit must not be announced again")
+	}
+}
+
+// An edit carries the same activity id every recipient of that edit gets, so
+// someone following both the blog and the instance actor sees one edit rather
+// than two. Receivers dedupe by id.
+func TestUpdateIdMatchesThePerBlogUpdateId(t *testing.T) {
+	app := newAnnounceTestApp(t)
+	peer := newDummyPeer(t, app)
+	followInstance(t, app, peer)
+
+	pp, collID := newFederatablePost(t, app, "public0001")
+	pp.Updated = time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+
+	federatePost(app, pp, collID, true)
+
+	u := peer.awaitActivity(t, "Update")
+	assert.Equal(t,
+		fmt.Sprintf("%s/api/posts/public0001#Update/%d", announceTestHost, pp.Updated.Unix()),
+		u.Raw["id"],
+		"the id must be derived from the post's updated time, which is what the per-blog Update uses too")
+}
+
+// blogActorID is the ActivityPub id of a blog on this instance.
+func blogActorID(app *App, alias string) string {
+	return app.cfg.App.Host + "/api/collections/" + alias
 }
 
 // newFederatablePost creates a public blog with one post and returns the post
@@ -422,6 +498,67 @@ func TestUndoIsSentEvenWhenThePostIsNoLongerEligible(t *testing.T) {
 
 	u := peer.awaitActivity(t, "Undo")
 	assert.NoError(t, u.SigError)
+}
+
+// An edit on a blog that may not be relayed is not forwarded either. The
+// Update path carries the post's full content, so it is a second way to leak
+// an unlisted blog and needs its own guard, not just the announce path's.
+func TestEditingAnUnlistedPostSendsNothingInstanceWide(t *testing.T) {
+	app := newAnnounceTestApp(t)
+	peer := newDummyPeer(t, app)
+	followInstance(t, app, peer)
+
+	collID := newTestCollection(t, app, "quiet", CollUnlisted)
+	created := time.Now().UTC().Add(-time.Minute)
+	newTestPost(t, app, collID, "unlisted001", created)
+	coll, err := app.db.GetCollectionByID(collID)
+	if err != nil {
+		t.Fatalf("load collection: %v", err)
+	}
+	coll.hostName = app.cfg.App.Host
+	pp := &PublicPost{
+		Post: &Post{
+			ID:      "unlisted001",
+			Slug:    null.NewString("unlisted001", true),
+			Title:   zero.NewString("Title", true),
+			Content: "Edited body",
+			Created: created,
+		},
+		Collection: &CollectionObj{Collection: *coll},
+	}
+
+	federatePost(app, pp, collID, true)
+
+	peer.assertNothingDelivered(t, "an unlisted blog's edit must not reach instance followers")
+}
+
+// Deleting a post sends instance followers the blog's own Delete as well as
+// the Undo of the boost.
+//
+// The two do different jobs and both are needed: the Undo retracts the boost,
+// the Delete removes the cached object the receiver actually rendered. A
+// receiver honours a Delete only from the object's owner, so that one is
+// signed by the blog.
+func TestDeletingAPostSendsDeleteAndUndoToInstanceFollowers(t *testing.T) {
+	app := newAnnounceTestApp(t)
+	peer := newDummyPeer(t, app)
+	followInstance(t, app, peer)
+
+	pp, collID := newFederatablePost(t, app, "public0001")
+
+	if err := deleteFederatedPost(app, pp, collID); err != nil {
+		t.Fatalf("deleteFederatedPost: %v", err)
+	}
+
+	del := peer.awaitActivity(t, "Delete")
+	assert.NoError(t, del.SigError)
+	assert.Equal(t, blogActorID(app, "quigs")+"#main-key", del.KeyID,
+		"a Delete must be signed by the blog that owns the post")
+
+	undo := peer.awaitActivity(t, "Undo")
+	assert.NoError(t, undo.SigError)
+	assert.Equal(t, instanceActorID(app)+"#main-key", undo.KeyID,
+		"the Undo retracts the instance actor's own boost, so it is signed by the instance actor")
 }
 
 // The privacy cases. Each of these delivering would be a leak, so they are
