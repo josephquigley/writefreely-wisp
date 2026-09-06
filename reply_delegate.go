@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"html"
 	"strings"
 
 	"github.com/writeas/web-core/activitystreams"
@@ -36,11 +37,20 @@ import (
 // through the replier's own instance, by ordinary means, with no cooperation
 // from us beyond having addressed the post correctly in the first place.
 //
-// The mention is carried in `tag` and `cc` only; nothing is added to the
-// rendered content. Receivers build their mention records from the `tag`
-// array on ingest rather than by scraping content, so notification and
-// reply pre-fill both work without a handle appearing at the foot of every
-// article.
+// The mention is carried three ways: in `cc`, in the `tag` array, and as a
+// link at the foot of the federated content. The third is not redundant, and
+// assuming it was is what made this feature do nothing against Mbin.
+//
+// Mbin does not build its mention records from `tag`. Its markdown converter
+// walks the converted body for [text](href) pairs and consults `tag` only to
+// resolve a link that is already in the content; PostManager and EntryManager
+// then set the object's mentions from that body alone. A Mention tag with
+// nothing in the content to match is discarded on ingest, so the delegate
+// never became a mention there and a reply composed on Mbin could not address
+// it. Mastodon and GoToSocial read `tag` directly and would have been fine.
+//
+// The link is added to the federated copy only — the post as stored, and as
+// served from this instance's own pages, is untouched.
 
 // normalizeReplyDelegate cleans up a submitted delegate handle and reports
 // whether it is usable. The empty string is valid and means "no delegate".
@@ -117,5 +127,29 @@ func applyReplyDelegate(app *App, c *Collection, o *activitystreams.Object) {
 		log.Info("Couldn't resolve reply delegate '%s' for blog '%s'", c.ReplyDelegate, c.Alias)
 		return
 	}
-	addReplyDelegateMention(o, c.ReplyDelegate, actorIRI)
+	if !addReplyDelegateMention(o, c.ReplyDelegate, actorIRI) {
+		// Already mentioned, which means the author wrote the handle into the
+		// post and the content already carries the link.
+		return
+	}
+	mention := replyDelegateMentionHTML(c.ReplyDelegate, actorIRI)
+	o.Content += mention
+	// ContentMap is what a receiver with a language preference reads, so it
+	// has to carry the mention too, or the link is lost exactly where the
+	// post is localised.
+	for lang, content := range o.ContentMap {
+		o.ContentMap[lang] = content + mention
+	}
+}
+
+// replyDelegateMentionHTML is the link appended to a federated post's content
+// so that a receiver scraping the body finds the delegate.
+//
+// The href is the delegate's actor IRI and the text is its full handle, which
+// between them satisfy every matcher Mbin tries: it compares the link's href
+// against `tag[].href`, the link's text against `tag[].name`, and failing both
+// resolves the href as an actor directly. The class names are the ones
+// Mastodon emits, so a client that styles mentions styles this one too.
+func replyDelegateMentionHTML(handle, actorIRI string) string {
+	return "\n<p><a href=\"" + html.EscapeString(actorIRI) + "\" class=\"u-url mention\">" + html.EscapeString(handle) + "</a></p>"
 }

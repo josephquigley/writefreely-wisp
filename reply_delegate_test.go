@@ -11,8 +11,11 @@
 package writefreely
 
 import (
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/guregu/null"
 	"github.com/writeas/web-core/activitystreams"
 )
 
@@ -181,5 +184,85 @@ func TestActivityObjectWithoutAReplyDelegateIsUnchanged(t *testing.T) {
 	}
 	if len(o.CC) != 1 {
 		t.Errorf("a public post's cc must hold only the followers collection, got cc=%v", o.CC)
+	}
+}
+
+// delegateTestPost builds a post on a blog with a delegate configured, on an
+// app with a real datastore, and pre-registers the delegate so resolution is a
+// local lookup rather than a webfinger request.
+func delegateTestPost(t *testing.T, body string) (*App, *PublicPost) {
+	t.Helper()
+	app := newAnnounceTestApp(t)
+	if _, err := app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url, handle) VALUES (?, ?, ?, ?, ?)",
+		delegateIRI, delegateIRI+"/inbox", "", delegateIRI, strings.TrimLeft(delegateHandle, "@")); err != nil {
+		t.Fatalf("register delegate: %v", err)
+	}
+
+	coll := Collection{Alias: "quigs", Title: "quigs", Visibility: CollPublic, ReplyDelegate: delegateHandle}
+	coll.hostName = app.cfg.App.Host
+
+	p := &PublicPost{
+		Post: &Post{
+			ID:      "abc123",
+			Slug:    null.NewString("delegate-test", true),
+			Content: body,
+			Created: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC),
+		},
+		Collection: &CollectionObj{Collection: coll},
+	}
+	return app, p
+}
+
+// The delegate has to appear in the federated content, not only in `tag`.
+//
+// Mbin builds its mention records by scraping the rendered content and uses
+// the `tag` array only to resolve a link that is already there: its markdown
+// converter matches [text](href) pairs in the converted body, and
+// PostManager/EntryManager then set the object's mentions from that body
+// alone. A Mention tag with nothing in the content to match is discarded, so
+// the delegate never becomes a mention on the receiving side and a reply
+// composed there cannot address it.
+//
+// This is the case the delegate exists for: a titleless post, which
+// federates as a Note and lands on Mbin's microblog.
+func TestFederatedNoteContentCarriesTheReplyDelegateMention(t *testing.T) {
+	app, p := delegateTestPost(t, apVisNoteBody)
+
+	o := p.ActivityObject(app)
+
+	if o.Type != "Note" {
+		t.Fatalf("expected a Note for a single-paragraph post, got %s", o.Type)
+	}
+	if !strings.Contains(o.Content, delegateIRI) {
+		t.Errorf("federated content must link the delegate's actor, got %q", o.Content)
+	}
+	if !strings.Contains(o.Content, delegateHandle) {
+		t.Errorf("federated content must name the delegate's handle, got %q", o.Content)
+	}
+}
+
+// The same must hold for an Article, which is what a titled post federates as.
+func TestFederatedArticleContentCarriesTheReplyDelegateMention(t *testing.T) {
+	app, p := delegateTestPost(t, apVisArticleBody)
+
+	o := p.ActivityObject(app)
+
+	if o.Type != "Article" {
+		t.Fatalf("expected an Article for a multi-paragraph post, got %s", o.Type)
+	}
+	if !strings.Contains(o.Content, delegateIRI) {
+		t.Errorf("federated content must link the delegate's actor, got %q", o.Content)
+	}
+}
+
+// The blog's own stored content is untouched: the mention is added to what is
+// federated, not to what the post is.
+func TestReplyDelegateMentionIsNotAddedToTheStoredPost(t *testing.T) {
+	app, p := delegateTestPost(t, apVisNoteBody)
+
+	p.ActivityObject(app)
+
+	if strings.Contains(p.Content, delegateIRI) || strings.Contains(p.Content, delegateHandle) {
+		t.Errorf("the stored post must not gain the delegate mention, got %q", p.Content)
 	}
 }
