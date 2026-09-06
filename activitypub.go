@@ -654,22 +654,14 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		}
 
 		time.Sleep(2 * time.Second)
-		am, err := a.Serialize()
-		if err != nil {
-			log.Error("Unable to serialize Accept: %v", err)
-			return
-		}
-		am["@context"] = []string{activitystreams.Namespace}
-		if debugging {
-			logOutgoingActivity("Accept", am)
-		}
 
-		err = makeActivityPost(app.cfg.App.Host, p, fullActor.Inbox, am)
-		if err != nil {
-			log.Error("Unable to make activity POST: %v", err)
-			return
-		}
-
+		// Persist the follow before attempting delivery of the Accept.
+		// The remote already believes it is following once it gets a 200
+		// on the inbox POST, so it must be recorded here regardless of
+		// whether the Accept below is delivered successfully. Nothing in
+		// this block depends on the Accept's serialization or delivery:
+		// fullActor, remoteUser and c.ID were all populated synchronously
+		// in the Follow callback, before this goroutine was even started.
 		if isFollow {
 			t, err := app.db.Begin()
 			if err != nil {
@@ -727,7 +719,25 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 				log.Error("Rolling back after Commit(): %v\n", err)
 				return
 			}
-		} else if isUnfollow {
+		}
+
+		am, err := a.Serialize()
+		if err != nil {
+			log.Error("Unable to serialize Accept: %v", err)
+			return
+		}
+		am["@context"] = []string{activitystreams.Namespace}
+		if debugging {
+			logOutgoingActivity("Accept", am)
+		}
+
+		err = makeActivityPost(app.cfg.App.Host, p, fullActor.Inbox, am)
+		if err != nil {
+			log.Error("Unable to make activity POST: %v", err)
+			return
+		}
+
+		if isUnfollow {
 			// Remove follower locally
 			_, err = app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
 			if err != nil {
