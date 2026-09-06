@@ -59,8 +59,17 @@ nav#admin {
 		gap: 0.5em;
 		justify-content: flex-start;
 
-		a+a {
-			margin-left: 0;
+		a {
+			// As inline boxes these took their height from the font, not
+			// from the inherited line-height, which is set for body text
+			// and is nearly three times the font size. A flex item is
+			// block-level and does count it, so without this the buttons
+			// grow by the difference.
+			line-height: 1.4;
+
+			&+a {
+				margin-left: 0;
+			}
 		}
 	}
 
