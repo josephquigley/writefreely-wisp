@@ -306,6 +306,7 @@ func TestPeerCanFollowTheInstanceActor(t *testing.T) {
 	assert.NoError(t, accept.SigError, "the Accept must be signed by a key the peer can verify")
 	assert.Equal(t, instanceActorID(app)+"#main-key", accept.KeyID,
 		"the Accept must be signed as the instance actor, not as some blog")
+	assert.NotEmpty(t, accept.Raw["id"], "the Accept must carry an id; the Undo path lost its own by leaving this to the Follow callback")
 
 	assert.Equal(t, 1, countInstanceFollows(t, app),
 		"the follow must be recorded against collection 0, the instance actor")
@@ -692,4 +693,36 @@ func TestSharedInboxReceivesOneDelivery(t *testing.T) {
 	peer.awaitActivity(t, "Announce")
 	time.Sleep(300 * time.Millisecond)
 	assert.Len(t, peer.activities(), 1, "one shared inbox is one delivery, however many followers sit behind it")
+}
+
+// The Accept sent for an Undo Follow carries an id of its own.
+//
+// ActivityStreams 2.0 requires every activity to have an id, and a receiver
+// that enforces it refuses the delivery outright rather than ignoring the
+// missing field: Mbin answers 401 with "Missing required "id" field in the
+// payload", so the unfollow is never acknowledged and this instance never
+// drops the follower. The Accept for a Follow had an id and the Accept for an
+// Undo did not, because the inbox handler builds one shared Accept and only
+// the Follow callback ever set an id on it.
+func TestAcceptOfAnUndoFollowCarriesAnID(t *testing.T) {
+	app := newAnnounceTestApp(t)
+	peer := newDummyPeer(t, app)
+	followInstance(t, app, peer)
+
+	postToInstanceInbox(t, app, map[string]interface{}{
+		"@context": activitystreams.Namespace,
+		"type":     "Undo",
+		"id":       peer.actorID + "/follows/1/undo",
+		"actor":    peer.actorID,
+		"object": map[string]interface{}{
+			"type":   "Follow",
+			"id":     peer.actorID + "/follows/1",
+			"actor":  peer.actorID,
+			"object": instanceActorID(app),
+		},
+	})
+
+	accept := peer.awaitActivity(t, "Accept")
+	assert.NoError(t, accept.SigError, "the Accept must be signed by a key the peer can verify")
+	assert.NotEmpty(t, accept.Raw["id"], "the Accept for an Undo Follow must carry an id; a peer that requires one refuses it with a 401")
 }
