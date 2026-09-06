@@ -166,6 +166,11 @@ type (
 		// to read this instance's ActivityPub surface by signing their
 		// requests. It requires Private. An empty value leaves the instance
 		// behaving exactly as it did before this option existed.
+		//
+		// An entry may be a wildcard: "*.example.org" admits subdomains at
+		// any depth, but not the apex "example.org", which must be listed
+		// separately if it is also wanted. A wildcard trusts whoever controls
+		// the zone, so use one only on a zone you control.
 		FederationAllowlist string `ini:"federation_allowlist"`
 
 		// Additional functions

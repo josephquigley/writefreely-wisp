@@ -90,6 +90,8 @@ type App struct {
 
 	// fedAllowlist holds the hostnames allowed to federate with this
 	// instance, parsed once from config. An empty map means no allowlist.
+	// An entry of the form "*.example.org" matches subdomains at any depth
+	// but not the apex; see federationAllowed.
 	fedAllowlist map[string]bool
 	// fedKeys caches remote public keys used to verify incoming signatures.
 	fedKeys *keyCache
