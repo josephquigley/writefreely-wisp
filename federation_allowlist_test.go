@@ -918,3 +918,80 @@ func TestCanDisablePrivateMode(t *testing.T) {
 	noList := allowlistApp(t, "")
 	assert.True(t, noList.canDisablePrivateMode())
 }
+
+func TestParseFederationAllowlistKeepsWildcards(t *testing.T) {
+	// A wildcard entry is kept verbatim, lowercased, so the matcher can look
+	// it up by the "*." + suffix key it constructs from a hostname.
+	assert.Equal(t, map[string]bool{"*.paisans.community": true},
+		parseFederationAllowlist(" *.Paisans.Community "))
+	assert.Equal(t, map[string]bool{"paisans.community": true, "*.paisans.community": true},
+		parseFederationAllowlist("paisans.community, *.paisans.community"))
+}
+
+func TestInitFederationAllowlistRejectsUnusableWildcards(t *testing.T) {
+	// A malformed wildcard must fail startup rather than sit in the list
+	// matching nothing, or — in the case of a bare "*" — matching more than
+	// an operator could have meant.
+	for _, list := range []string{"*", "*.", "*.*.paisans.community", "pais*ns.community", "example.org,*"} {
+		cfg := config.New()
+		cfg.App.Private = true
+		cfg.App.FederationAllowlist = list
+		app := &App{cfg: cfg}
+
+		err := app.initFederationAllowlist()
+
+		assert.Error(t, err, "list %q", list)
+	}
+}
+
+func TestFederationAllowedMatchesWildcardSubdomainsAtAnyDepth(t *testing.T) {
+	app := allowlistApp(t, "*.paisans.community")
+
+	assert.True(t, app.federationAllowed("blog.paisans.community"))
+	assert.True(t, app.federationAllowed("BLOG.Paisans.Community"))
+	assert.True(t, app.federationAllowed("bar.beta.paisans.community"))
+	assert.True(t, app.federationAllowed("a.b.c.paisans.community"))
+}
+
+func TestFederationWildcardDoesNotMatchTheApex(t *testing.T) {
+	// The apex is a separate instance with its own keys and its own
+	// operator. A wildcard granted to the children must not silently admit
+	// the parent: an operator who wants both lists both.
+	app := allowlistApp(t, "*.paisans.community")
+	assert.False(t, app.federationAllowed("paisans.community"))
+
+	both := allowlistApp(t, "paisans.community, *.paisans.community")
+	assert.True(t, both.federationAllowed("paisans.community"))
+	assert.True(t, both.federationAllowed("blog.paisans.community"))
+}
+
+func TestFederationWildcardIsAnchoredToItsSuffix(t *testing.T) {
+	app := allowlistApp(t, "*.beta.paisans.community")
+
+	assert.True(t, app.federationAllowed("bar.beta.paisans.community"))
+	assert.False(t, app.federationAllowed("foo.paisans.community"))
+	assert.False(t, app.federationAllowed("beta.paisans.community"))
+	// A suffix match must respect label boundaries, so a host that merely
+	// ends in the same characters is not a subdomain.
+	assert.False(t, app.federationAllowed("evilbeta.paisans.community"))
+	// And the suffix must be a suffix, not any substring.
+	assert.False(t, app.federationAllowed("bar.beta.paisans.community.evil.com"))
+	assert.False(t, app.federationAllowed(""))
+}
+
+func TestFederationAllowedRejectsAHostnameContainingAWildcard(t *testing.T) {
+	// Entries are stored verbatim, so a caller presenting the literal text
+	// of a wildcard entry as its hostname would otherwise hit the exact-match
+	// branch and be allowed.
+	app := allowlistApp(t, "*.paisans.community")
+	assert.False(t, app.federationAllowed("*.paisans.community"))
+}
+
+func TestInboxAllowedHonoursWildcards(t *testing.T) {
+	app := allowlistApp(t, "*.paisans.community")
+
+	assert.True(t, app.inboxAllowed("https://blog.paisans.community/inbox"))
+	assert.True(t, app.inboxAllowed("https://Talk.Paisans.Community:443/users/a/inbox"))
+	assert.False(t, app.inboxAllowed("https://paisans.community/inbox"))
+	assert.False(t, app.inboxAllowed("https://paisans.community.evil.com/inbox"))
+}

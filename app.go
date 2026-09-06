@@ -70,7 +70,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.18.4"
+	softwareVer = "0.18.5"
 
 	// DEPRECATED VARS
 	isSingleUser bool
@@ -90,6 +90,8 @@ type App struct {
 
 	// fedAllowlist holds the hostnames allowed to federate with this
 	// instance, parsed once from config. An empty map means no allowlist.
+	// An entry of the form "*.example.org" matches subdomains at any depth
+	// but not the apex; see federationAllowed.
 	fedAllowlist map[string]bool
 	// fedKeys caches remote public keys used to verify incoming signatures.
 	fedKeys *keyCache

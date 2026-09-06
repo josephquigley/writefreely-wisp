@@ -34,6 +34,12 @@ import (
 // parseFederationAllowlist turns a comma-separated list of hostnames into a
 // set. Entries are trimmed and lowercased, and empty entries are dropped, so
 // a value of only whitespace or commas yields an empty set.
+//
+// An entry may be a wildcard of the form "*.example.org", which is kept
+// verbatim: federationAllowed looks a wildcard up by the key it builds from
+// the hostname it is checking, so no separate list is needed. Wildcards are
+// only checked for shape here — validateFederationAllowlist rejects the
+// unusable ones, and does so at startup rather than silently at match time.
 func parseFederationAllowlist(s string) map[string]bool {
 	allowed := map[string]bool{}
 	for _, part := range strings.Split(s, ",") {
@@ -43,6 +49,39 @@ func parseFederationAllowlist(s string) map[string]bool {
 		}
 	}
 	return allowed
+}
+
+// wildcardPrefix marks an allowlist entry that matches subdomains rather
+// than one exact host.
+const wildcardPrefix = "*."
+
+// validateFederationAllowlist rejects entries whose "*" cannot be honoured as
+// written. Startup is the only place an operator finds out: a malformed
+// wildcard that survived to match time would simply match nothing, and an
+// allowlist that quietly matches nothing looks exactly like one that is
+// working until the day someone expects it to admit a peer.
+//
+// A bare "*" is refused for the opposite reason. It would parse as an exact
+// host named "*", which no hostname is, so it too matches nothing — but an
+// operator who wrote it plainly meant "everything", and the honest way to say
+// that is to leave the allowlist empty.
+func validateFederationAllowlist(allowed map[string]bool) error {
+	for entry := range allowed {
+		suffix, isWildcard := strings.CutPrefix(entry, wildcardPrefix)
+		if !isWildcard {
+			if strings.Contains(entry, "*") {
+				return fmt.Errorf("federation_allowlist entry %q: a wildcard is only meaningful as a leading %q", entry, wildcardPrefix)
+			}
+			continue
+		}
+		if suffix == "" {
+			return fmt.Errorf("federation_allowlist entry %q has no domain after the wildcard", entry)
+		}
+		if strings.Contains(suffix, "*") {
+			return fmt.Errorf("federation_allowlist entry %q: only one leading wildcard is supported", entry)
+		}
+	}
+	return nil
 }
 
 // federationAllowlistInertWarning is logged when a federation allowlist is
@@ -61,6 +100,9 @@ const federationAllowlistInertWarning = "WARNING: federation_allowlist is config
 // case above, where booting anyway would be dangerous rather than inert.
 func (app *App) initFederationAllowlist() error {
 	app.fedAllowlist = parseFederationAllowlist(app.cfg.App.FederationAllowlist)
+	if err := validateFederationAllowlist(app.fedAllowlist); err != nil {
+		return err
+	}
 	if len(app.fedAllowlist) > 0 && !app.cfg.App.Private {
 		return fmt.Errorf("federation_allowlist requires private = true: refusing to run an allowlist on a public instance")
 	}
@@ -175,13 +217,46 @@ func (app *App) federationOutboundEnabled() bool {
 // instance. With no allowlist configured every host is allowed, which
 // preserves the behaviour of an instance that has not opted in.
 //
-// Matching is exact and case-insensitive. An entry never admits its
-// subdomains: example.org does not allow evil.example.org.
+// Matching is case-insensitive. A plain entry matches exactly and never
+// admits its subdomains: example.org does not allow evil.example.org. A
+// wildcard entry "*.example.org" matches subdomains at any depth —
+// blog.example.org and bar.beta.example.org alike — but never the apex
+// example.org itself, which is a separate instance with its own keys and its
+// own operator. An operator who wants both lists both.
+//
+// A wildcard delegates trust to whoever controls the zone, so it belongs only
+// on a zone this operator controls.
 func (app *App) federationAllowed(host string) bool {
 	if !app.federationAllowlistActive() {
 		return true
 	}
-	return app.fedAllowlist[strings.ToLower(host)]
+	host = strings.ToLower(host)
+	if host == "" {
+		return false
+	}
+	// Entries are stored verbatim, so a caller presenting the literal text of
+	// a wildcard entry as its hostname would otherwise be admitted by the
+	// exact-match lookup below. No real hostname contains a "*".
+	if strings.Contains(host, "*") {
+		return false
+	}
+	if app.fedAllowlist[host] {
+		return true
+	}
+	// Walk off one label at a time and ask whether a wildcard was configured
+	// for what remains. Starting one label in is what excludes the apex, and
+	// cutting only at a "." is what keeps the match on label boundaries, so
+	// evilbeta.example.org is not a subdomain of beta.example.org.
+	for rest := host; ; {
+		_, after, found := strings.Cut(rest, ".")
+		if !found || after == "" {
+			return false
+		}
+		if app.fedAllowlist[wildcardPrefix+after] {
+			return true
+		}
+		rest = after
+	}
 }
 
 // inboxAllowed reports whether an activity may be delivered to the given
