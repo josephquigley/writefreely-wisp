@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/writeas/activityserve"
 	"github.com/writeas/go-webfinger"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/log"
@@ -179,6 +180,17 @@ func isPublicAddr(ip net.IP) bool {
 	}
 	return true
 }
+
+// remoteLookup and newRemoteActor are the two network calls that handle
+// resolution makes. They are indirected through variables so that a test can
+// drive the failure of either one: both failures used to be cached in
+// remoteusers as a row with an empty actor_id, which disabled that handle for
+// good, and a regression there is invisible without being able to fail them
+// on demand.
+var (
+	remoteLookup   = RemoteLookup
+	newRemoteActor = activityserve.NewRemoteActor
+)
 
 // RemoteLookup looks up a user by handle at a remote server
 // and returns the actor URL
