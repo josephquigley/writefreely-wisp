@@ -107,6 +107,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	me.HandleFunc("/c", handler.Redirect("/me/c/", UserLevelUser)).Methods("GET")
 	me.HandleFunc("/c/", handler.User(viewCollections)).Methods("GET")
 	me.HandleFunc("/c/{collection}", handler.User(viewEditCollection)).Methods("GET")
+	me.HandleFunc("/c/{collection}/reply-delegate", handler.User(handleCheckReplyDelegate)).Methods("GET")
 	me.HandleFunc("/c/{collection}/stats", handler.User(viewStats)).Methods("GET")
 	me.HandleFunc("/c/{collection}/posts", handler.User(viewCollectionPosts)).Methods("GET")
 	me.HandleFunc("/c/{collection}/subscribers", handler.User(handleViewSubscribers)).Methods("GET")
