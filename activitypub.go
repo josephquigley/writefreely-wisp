@@ -30,7 +30,6 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/writeas/activity/streams"
-	"github.com/writeas/activityserve"
 	"github.com/writeas/httpsig"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/activitypub"
@@ -1156,7 +1155,13 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = RemoteLookup(handle)
+		actorIRI = remoteLookup(handle)
+		// See GetProfilePageFromHandle: an empty webfinger result must not
+		// reach the INSERT below, or the handle is cached against an empty
+		// actor_id and never resolves again.
+		if actorIRI == "" {
+			return "", fmt.Errorf("couldn't resolve handle %s: webfinger lookup failed", handle)
+		}
 		_, errRemoteUser := getRemoteUser(app, actorIRI)
 		// if it exists then we need to update the handle
 		if errRemoteUser == nil {
@@ -1167,9 +1172,10 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := activityserve.NewRemoteActor(actorIRI)
+			remoteActor, err := newRemoteActor(actorIRI)
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
+				return "", err
 			}
 			if debugging {
 				log.Info("Got remote actor: %s %s %s %s %s", actorIRI, remoteActor.GetInbox(), remoteActor.GetSharedInbox(), remoteActor.URL(), handle)
@@ -1183,15 +1189,15 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		}
 	} else if remoteUser.URL == "" {
 		log.Info("Remote user %s URL empty, fetching", remoteUser.ActorID)
-		newRemoteActor, err := activityserve.NewRemoteActor(remoteUser.ActorID)
+		fetchedActor, err := newRemoteActor(remoteUser.ActorID)
 		if err != nil {
 			log.Error("Couldn't fetch remote actor: %v", err)
 		} else {
-			_, err := app.db.Exec("UPDATE remoteusers SET url = ? WHERE actor_id = ?", newRemoteActor.URL(), remoteUser.ActorID)
+			_, err := app.db.Exec("UPDATE remoteusers SET url = ? WHERE actor_id = ?", fetchedActor.URL(), remoteUser.ActorID)
 			if err != nil {
 				log.Error("Couldn't update handle '%s' for user %s", handle, actorIRI)
 			} else {
-				actorIRI = newRemoteActor.URL()
+				actorIRI = fetchedActor.URL()
 			}
 		}
 	} else {
