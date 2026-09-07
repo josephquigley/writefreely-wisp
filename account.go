@@ -891,6 +891,11 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 		return fmt.Errorf("view edit collection: %v", err)
 	}
 	flashes, _ := getSessionFlashes(app, w, r, nil)
+	// The delegate's status is read from what this instance already knows.
+	// Resolving the handle over the network is left to the page's Check
+	// button: a settings page must not block on somebody else's server.
+	delegateStatus, _ := replyDelegateState(app, c, false)
+
 	obj := struct {
 		*UserPage
 		*Collection
@@ -898,11 +903,19 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 
 		config.EmailCfg
 		LetterReplyTo string
+
+		ReplyDelegateStatus  string
+		ReplyDelegateMessage string
+		BlogFediverseHandle  string
 	}{
 		UserPage:   NewUserPage(app, r, u, "Edit "+c.DisplayTitle(), flashes),
 		Collection: c,
 		Silenced:   silenced,
 		EmailCfg:   app.cfg.Email,
+
+		ReplyDelegateStatus:  string(delegateStatus),
+		ReplyDelegateMessage: replyDelegateStatusMessage(delegateStatus, c.ReplyDelegate, collectionFediverseHandle(c)),
+		BlogFediverseHandle:  collectionFediverseHandle(c),
 	}
 	obj.UserPage.CollAlias = c.Alias
 	if obj.EmailCfg.Enabled() {
