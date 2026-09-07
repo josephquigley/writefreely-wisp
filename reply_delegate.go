@@ -226,7 +226,7 @@ func replyDelegateStatusMessage(status replyDelegateStatus, handle, blogHandle s
 	case replyDelegateFollowing:
 		return handle + " follows this blog. New posts will mention it."
 	case replyDelegateNotFollowing:
-		return handle + " does not follow this blog yet, so posts are not mentioning it. Sign in to that account, follow " + blogHandle + ", then check again."
+		return handle + " does not follow this blog yet, so posts will not mention it. Sign in to that account, follow " + blogHandle + ", then check again."
 	case replyDelegateUnreachable:
 		return "Couldn't look up " + handle + ". Check the spelling, and that its instance is reachable from here."
 	case replyDelegateInvalid:

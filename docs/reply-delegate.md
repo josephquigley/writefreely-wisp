@@ -54,7 +54,7 @@ re-tests it on demand:
 | What it says | What it means |
 |--------------|---------------|
 | *follows this blog* | Following. New posts carry the mention. |
-| *does not follow this blog yet* | No follow on record. Posts go out without the mention. |
+| *does not follow this blog yet* | No follow on record. Posts will go out without the mention. |
 | *couldn't look up* | The handle did not resolve: wrong handle, or its instance is unreachable from here. |
 | *not a full fediverse handle* | What is in the box is missing the instance. |
 
