@@ -1242,7 +1242,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = remoteLookup(app, handle)
 		// See GetProfilePageFromHandle: an empty webfinger result must not
 		// reach the INSERT below, or the handle is cached against an empty
 		// actor_id and never resolves again.

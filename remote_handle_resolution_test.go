@@ -75,7 +75,7 @@ func countRemoteUsers(t *testing.T, app *App) int {
 }
 
 // stubRemoteLookup replaces the webfinger call for one test.
-func stubRemoteLookup(t *testing.T, fn func(string) string) {
+func stubRemoteLookup(t *testing.T, fn func(*App, string) string) {
 	t.Helper()
 	orig := remoteLookup
 	remoteLookup = fn
@@ -100,7 +100,7 @@ func failingActorFetch(called *bool) func(string) (activityserve.RemoteActor, er
 
 func TestGetProfilePageFromHandleFailedLookupIsNotCached(t *testing.T) {
 	app := newHandleTestApp(t)
-	stubRemoteLookup(t, func(string) string { return "" })
+	stubRemoteLookup(t, func(*App, string) string { return "" })
 	fetched := false
 	stubNewRemoteActor(t, failingActorFetch(&fetched))
 
@@ -114,7 +114,7 @@ func TestGetProfilePageFromHandleFailedLookupIsNotCached(t *testing.T) {
 
 func TestGetProfileURLFromHandleFailedLookupIsNotCached(t *testing.T) {
 	app := newHandleTestApp(t)
-	stubRemoteLookup(t, func(string) string { return "" })
+	stubRemoteLookup(t, func(*App, string) string { return "" })
 	fetched := false
 	stubNewRemoteActor(t, failingActorFetch(&fetched))
 
@@ -128,7 +128,7 @@ func TestGetProfileURLFromHandleFailedLookupIsNotCached(t *testing.T) {
 
 func TestGetProfilePageFromHandleFailedActorFetchIsNotCached(t *testing.T) {
 	app := newHandleTestApp(t)
-	stubRemoteLookup(t, func(string) string { return "https://peer.example/u/delegate" })
+	stubRemoteLookup(t, func(*App, string) string { return "https://peer.example/u/delegate" })
 	fetched := false
 	stubNewRemoteActor(t, failingActorFetch(&fetched))
 
@@ -142,7 +142,7 @@ func TestGetProfilePageFromHandleFailedActorFetchIsNotCached(t *testing.T) {
 
 func TestGetProfileURLFromHandleFailedActorFetchIsNotCached(t *testing.T) {
 	app := newHandleTestApp(t)
-	stubRemoteLookup(t, func(string) string { return "https://peer.example/u/delegate" })
+	stubRemoteLookup(t, func(*App, string) string { return "https://peer.example/u/delegate" })
 	fetched := false
 	stubNewRemoteActor(t, failingActorFetch(&fetched))
 
@@ -165,7 +165,7 @@ func TestGetProfilePageFromHandleBackfillsHandleOnExistingActor(t *testing.T) {
 		actorIRI, actorIRI+"/inbox", "https://peer.example/f/inbox")
 	assert.NoError(t, err)
 
-	stubRemoteLookup(t, func(string) string { return actorIRI })
+	stubRemoteLookup(t, func(*App, string) string { return actorIRI })
 	fetched := false
 	stubNewRemoteActor(t, failingActorFetch(&fetched))
 
