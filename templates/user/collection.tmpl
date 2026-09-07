@@ -14,44 +14,6 @@ textarea.section.norm {
 		height: 17em !important;
 	}
 }
-/* The delegate's status is a claim about somebody else's account, so it is
-   worth reading before the hint text below it rather than after. */
-.delegate-status {
-	display: flex;
-	align-items: baseline;
-	gap: 0.75em;
-	margin: 0.5em 0 0;
-	font-size: 0.86em;
-}
-.delegate-status #reply-delegate-message {
-	flex: 1;
-}
-.delegate-status.following #reply-delegate-message {
-	color: #2b8a3e;
-}
-.delegate-status.not_following #reply-delegate-message,
-.delegate-status.error #reply-delegate-message {
-	color: #c92a2a;
-}
-.delegate-status.unresolved #reply-delegate-message {
-	opacity: 0.75;
-}
-.delegate-status button {
-	font-size: 0.95em;
-	padding: 0.2em 0.9em;
-}
-/* The green and red above are chosen against a white page and go muddy on a
-   dark one, so lighten both rather than let the status be the hardest thing
-   on the page to read. */
-@media (prefers-color-scheme: dark) {
-	.delegate-status.following #reply-delegate-message {
-		color: #8ce99a;
-	}
-	.delegate-status.not_following #reply-delegate-message,
-	.delegate-status.error #reply-delegate-message {
-		color: #ffa8a8;
-	}
-}
 </style>
 
 <div class="content-container snug">
@@ -287,13 +249,13 @@ textarea.section.norm {
 	<div class="option">
 		<h2>Reply Delegate</h2>
 		<div class="section">
-			<p class="explain">This blog can publish to the fediverse, but it does not receive replies. If you would like to be notified about conversations on this blog and its posts, and to take part in them, give another account that you own: every post from this blog will then mention that account, so that you can see the replies and other people can hear back from you.</p>
+			<p class="explain">This blog publishes to the fediverse but does not receive replies. Name another account you own and every post will mention it, so you can follow the conversation and reply from there.</p>
 			<input type="text" name="reply_delegate" style="width:100%" value="{{.Collection.ReplyDelegate}}" placeholder="@you@social.example" />
-			<div id="reply-delegate-status" class="delegate-status {{.ReplyDelegateStatus}}"{{if eq .ReplyDelegateStatus "unset"}} style="display:none"{{end}}>
+			<div id="reply-delegate-status" class="delegate-status {{.ReplyDelegateStatus}}">
 				<span id="reply-delegate-message">{{.ReplyDelegateMessage}}</span>
 				<button type="button" id="check-reply-delegate">Check</button>
 			</div>
-			<p class="explain">A full handle, including the instance, like <code>@you@social.example</code>. Leave empty for none. The mention is not shown in your posts. The account has to follow this blog at <code>{{.BlogFediverseHandle}}</code> before it will be mentioned: until it does, posts go out without the mention. Save your changes first, then use Check to see where things stand.</p>
+			<p class="explain">A full handle, including the instance, like <code>@you@social.example</code>. Leave empty for none.</p>
 		</div>
 	</div>
 	{{end}}
@@ -404,7 +366,8 @@ if ($delegateCheck) {
 		var wasLabel = $delegateCheck.innerHTML;
 		$delegateCheck.innerHTML = 'Checking...';
 		var http = new XMLHttpRequest();
-		http.open("GET", "/me/c/{{.Alias}}/reply-delegate", true);
+		var typed = document.getElementsByName('reply_delegate')[0].value;
+		http.open("GET", "/me/c/{{.Alias}}/reply-delegate?handle=" + encodeURIComponent(typed), true);
 		http.setRequestHeader("Accept", "application/json");
 		http.onreadystatechange = function() {
 			if (http.readyState != 4) {
@@ -424,7 +387,6 @@ if ($delegateCheck) {
 				}
 			}
 			$delegateStatus.className = 'delegate-status ' + status;
-			$delegateStatus.style.display = status == 'unset' ? 'none' : '';
 			$delegateMessage.innerText = message;
 		};
 		http.send(null);

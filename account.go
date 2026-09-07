@@ -906,7 +906,6 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 
 		ReplyDelegateStatus  string
 		ReplyDelegateMessage string
-		BlogFediverseHandle  string
 	}{
 		UserPage:   NewUserPage(app, r, u, "Edit "+c.DisplayTitle(), flashes),
 		Collection: c,
@@ -915,7 +914,6 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 
 		ReplyDelegateStatus:  string(delegateStatus),
 		ReplyDelegateMessage: replyDelegateStatusMessage(delegateStatus, c.ReplyDelegate, collectionFediverseHandle(c)),
-		BlogFediverseHandle:  collectionFediverseHandle(c),
 	}
 	obj.UserPage.CollAlias = c.Alias
 	if obj.EmailCfg.Enabled() {

@@ -227,8 +227,22 @@
 			.option label.option-text.disabled + p {
 				color: @darkMutedTextColor;
 			}
-			#add-verification, .remove-verification {
+			#add-verification, .remove-verification, #check-reply-delegate {
 				color: lighten(@primary, 15%);
+			}
+
+			// Same reasoning as the light rule in core.less: derived from the
+			// page's text colour, not given a hue of its own.
+			.delegate-status {
+				#reply-delegate-message {
+					color: darken(@darkTextColor, 40%);
+				}
+				&.not_following #reply-delegate-message,
+				&.unreachable #reply-delegate-message,
+				&.invalid #reply-delegate-message,
+				&.error #reply-delegate-message {
+					color: desaturate(#d9a3a3, 20%);
+				}
 			}
 		}
 

@@ -199,7 +199,8 @@ func TestReplyDelegateStatusOf(t *testing.T) {
 	}{
 		{"no delegate configured", "", "", false, replyDelegateUnset},
 		{"no delegate configured, stray follow", "", delegateIRI, true, replyDelegateUnset},
-		{"configured but never resolved", delegateHandle, "", false, replyDelegateUnresolved},
+		{"configured but never resolved", delegateHandle, "", false, replyDelegateNotFollowing},
+		{"unresolved outranks a stale follow flag", delegateHandle, "", true, replyDelegateNotFollowing},
 		{"resolved but not following", delegateHandle, delegateIRI, false, replyDelegateNotFollowing},
 		{"resolved and following", delegateHandle, delegateIRI, true, replyDelegateFollowing},
 	} {
@@ -228,7 +229,7 @@ func TestReplyDelegateStatusMessageNamesBothAccounts(t *testing.T) {
 	if got := replyDelegateStatusMessage(replyDelegateUnset, "", blogHandle); got != "" {
 		t.Errorf("an unset delegate has nothing to report, got %q", got)
 	}
-	for _, status := range []replyDelegateStatus{replyDelegateFollowing, replyDelegateUnresolved} {
+	for _, status := range []replyDelegateStatus{replyDelegateFollowing, replyDelegateUnreachable} {
 		if got := replyDelegateStatusMessage(status, delegateHandle, blogHandle); !strings.Contains(got, delegateHandle) {
 			t.Errorf("the %q message must name the delegate, got %q", status, got)
 		}
@@ -256,8 +257,8 @@ func TestReplyDelegateStateWithoutADatastore(t *testing.T) {
 	if status, _ := replyDelegateState(app, &Collection{Alias: "quigs"}, false); status != replyDelegateUnset {
 		t.Errorf("a blog with no delegate should report %q, got %q", replyDelegateUnset, status)
 	}
-	if status, _ := replyDelegateState(app, &Collection{Alias: "quigs", ReplyDelegate: delegateHandle}, false); status != replyDelegateUnresolved {
-		t.Errorf("a delegate that cannot be looked up should report %q, got %q", replyDelegateUnresolved, status)
+	if status, _ := replyDelegateState(app, &Collection{Alias: "quigs", ReplyDelegate: delegateHandle}, false); status != replyDelegateNotFollowing {
+		t.Errorf("a delegate with nothing cached should report %q, got %q", replyDelegateNotFollowing, status)
 	}
 	if status, _ := replyDelegateState(nil, nil, true); status != replyDelegateUnset {
 		t.Errorf("no app and no collection should report %q, got %q", replyDelegateUnset, status)
@@ -275,5 +276,43 @@ func TestReplyDelegateFollowsCollectionIsFalseWithoutADatastore(t *testing.T) {
 	}
 	if follows {
 		t.Error("a follow that cannot be read must not be reported as a follow")
+	}
+}
+
+// A delegate that cannot be resolved when the owner asks for a lookup is a
+// different report to one that simply has nothing cached: the first names a
+// wrong handle or an unreachable instance, the second is the ordinary state
+// of a page render. Only the resolving path may say "unreachable".
+func TestReplyDelegateStateSeparatesUnreachableFromUncached(t *testing.T) {
+	c := &Collection{Alias: "quigs", ReplyDelegate: delegateHandle}
+
+	if status, _ := replyDelegateState(&App{}, c, true); status != replyDelegateUnreachable {
+		t.Errorf("a lookup that came back empty should report %q, got %q", replyDelegateUnreachable, status)
+	}
+	if status, _ := replyDelegateState(&App{}, c, false); status != replyDelegateNotFollowing {
+		t.Errorf("a page render with nothing cached should report %q, got %q", replyDelegateNotFollowing, status)
+	}
+}
+
+// warmReplyDelegate runs on every save of every blog, including saves that
+// touch nothing to do with the delegate, so each way of carrying "no delegate
+// here" has to be a no-op rather than a panic or a stray lookup.
+func TestWarmReplyDelegateIgnoresNothingToDo(t *testing.T) {
+	empty := ""
+	junk := "not a handle"
+	valid := delegateHandle
+	for _, tc := range []struct {
+		name      string
+		submitted *string
+	}{
+		{"field absent from the form", nil},
+		{"delegate cleared", &empty},
+		{"not a full handle", &junk},
+		{"valid handle but no datastore", &valid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warmReplyDelegate(&App{}, tc.submitted)
+			warmReplyDelegate(nil, tc.submitted)
+		})
 	}
 }

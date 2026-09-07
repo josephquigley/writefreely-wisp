@@ -53,16 +53,23 @@ re-tests it on demand:
 
 | What it says | What it means |
 |--------------|---------------|
-| *follows this blog* | Resolved and following. New posts carry the mention. |
-| *does not follow this blog yet* | Resolved, but no follow. Posts go out without the mention. |
-| *has not been looked up yet* | The handle has never been resolved on this instance. Choose **Check**. |
+| *follows this blog* | Following. New posts carry the mention. |
+| *does not follow this blog yet* | No follow on record. Posts go out without the mention. |
+| *couldn't look up* | The handle did not resolve: wrong handle, or its instance is unreachable from here. |
+| *not a full fediverse handle* | What is in the box is missing the instance. |
+
+There is deliberately no "not looked up yet" state. A handle this instance has
+never resolved cannot be shown to follow anything, and to the owner that is the
+same news as a missing follow: the mention is not being sent. Saving the
+settings resolves the handle, so a delegate normally arrives on the page
+already resolved.
 
 The page itself only reports what the instance already knows, because a
 settings page must not block on another server. **Check** is what permits the
-webfinger lookup, and it tests the **saved** delegate, so save any change to
-the box before using it. The follow itself is always read locally: whether an
-actor follows this blog is a fact this instance already holds, in
-`remotefollows`.
+webfinger lookup, and it tests **what is in the box**, not what is saved, so a
+handle can be checked before it is committed — checking never writes anything.
+The follow itself is always read locally: whether an actor follows this blog is
+a fact this instance already holds, in `remotefollows`.
 
 ## What it does on the wire
 
@@ -107,8 +114,8 @@ delegate directly and never involve the blog again.
   is federated, so it takes effect on new posts and on edits of old ones. The
   same is true of the follow: posts published before the delegate followed the
   blog stay unaddressed until they are edited.
-* **The delegate is resolved by webfinger** the first time it is used, and from
-  the database after that. If it cannot be resolved — the handle is wrong, or
+* **The delegate is resolved by webfinger** when it is saved, and from the
+  database after that. If it cannot be resolved — the handle is wrong, or
   the remote instance is down at that moment — the post federates without the
   mention rather than failing.
 * **A blocked or allowlist-excluded delegate gets nothing.** Delivery still

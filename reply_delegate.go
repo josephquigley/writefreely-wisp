@@ -168,16 +168,27 @@ type replyDelegateStatus string
 const (
 	// replyDelegateUnset: no delegate configured. Nothing is added to posts.
 	replyDelegateUnset replyDelegateStatus = "unset"
-	// replyDelegateUnresolved: a delegate is configured but this instance has
-	// never resolved the handle to an actor, so it cannot say anything about
-	// it yet. Not an error — a handle is resolved lazily, and a blog that has
-	// not federated a post since the delegate was set sits here.
-	replyDelegateUnresolved replyDelegateStatus = "unresolved"
-	// replyDelegateNotFollowing: the handle resolves, but that account does
-	// not follow this blog, so posts are federating without the mention.
+	// replyDelegateNotFollowing: this blog has no evidence that the delegate
+	// follows it, so posts are federating without the mention.
+	//
+	// "No evidence" deliberately covers the unresolved case too — a handle
+	// this instance has never turned into an actor cannot be shown to follow
+	// anything, and reporting that separately would be a distinction without
+	// a difference to the owner: either way the mention is not being sent.
+	// Saving the settings resolves the handle (see warmReplyDelegate), so a
+	// delegate normally arrives here already resolved.
 	replyDelegateNotFollowing replyDelegateStatus = "not_following"
 	// replyDelegateFollowing: resolved and following. Posts carry the mention.
 	replyDelegateFollowing replyDelegateStatus = "following"
+	// replyDelegateUnreachable: a lookup was attempted and failed. Distinct
+	// from replyDelegateUnresolved, which only means nobody has tried yet:
+	// one is a wrong handle or an unreachable instance and needs the owner to
+	// act, the other is the ordinary state of a delegate set a minute ago.
+	replyDelegateUnreachable replyDelegateStatus = "unreachable"
+	// replyDelegateInvalid: what was typed is not a full fediverse handle.
+	// Only the Check button can produce this, since a saved delegate has
+	// already been through normalizeReplyDelegate.
+	replyDelegateInvalid replyDelegateStatus = "invalid"
 )
 
 // replyDelegateStatusOf derives the reported status from the three facts the
@@ -187,10 +198,7 @@ func replyDelegateStatusOf(handle, actorIRI string, follows bool) replyDelegateS
 	if handle == "" {
 		return replyDelegateUnset
 	}
-	if actorIRI == "" {
-		return replyDelegateUnresolved
-	}
-	if !follows {
+	if actorIRI == "" || !follows {
 		return replyDelegateNotFollowing
 	}
 	return replyDelegateFollowing
@@ -219,8 +227,10 @@ func replyDelegateStatusMessage(status replyDelegateStatus, handle, blogHandle s
 		return handle + " follows this blog. New posts will mention it."
 	case replyDelegateNotFollowing:
 		return handle + " does not follow this blog yet, so posts are not mentioning it. Sign in to that account, follow " + blogHandle + ", then check again."
-	case replyDelegateUnresolved:
-		return handle + " has not been looked up yet. Choose Check to look it up now."
+	case replyDelegateUnreachable:
+		return "Couldn't look up " + handle + ". Check the spelling, and that its instance is reachable from here."
+	case replyDelegateInvalid:
+		return "That is not a full fediverse handle. It needs the instance too, like @you@social.example."
 	default:
 		return ""
 	}
@@ -271,6 +281,11 @@ func replyDelegateState(app *App, c *Collection, resolve bool) (replyDelegateSta
 				actorIRI = iri
 			}
 		}
+		if actorIRI == "" {
+			// A lookup happened and came back empty, which is a different
+			// thing to say than "nobody has looked yet".
+			return replyDelegateUnreachable, ""
+		}
 	} else if app.db != nil {
 		// The cached-only path. remoteusers stores handles without the
 		// leading '@', the same trimming GetProfilePageFromHandle does.
@@ -279,7 +294,9 @@ func replyDelegateState(app *App, c *Collection, resolve bool) (replyDelegateSta
 		}
 	}
 	if actorIRI == "" {
-		return replyDelegateUnresolved, ""
+		// The cached-only path found nothing. Say "not following" rather than
+		// inventing a third answer: the mention is not being sent either way.
+		return replyDelegateNotFollowing, ""
 	}
 	follows, err := replyDelegateFollowsCollection(app, c, actorIRI)
 	if err != nil {
@@ -288,6 +305,32 @@ func replyDelegateState(app *App, c *Collection, resolve bool) (replyDelegateSta
 		return replyDelegateNotFollowing, actorIRI
 	}
 	return replyDelegateStatusOf(c.ReplyDelegate, actorIRI, follows), actorIRI
+}
+
+// warmReplyDelegate resolves a delegate handle as it is saved.
+//
+// Resolution is otherwise lazy: the handle becomes an actor the first time a
+// post federates, and until then the settings page has nothing cached to
+// report on. That left a blog whose delegate genuinely follows it reading as
+// though it did not, which is the one thing this page must not get wrong.
+// Saving is the natural moment to pay for the lookup — the owner has just
+// asked for this handle, and a webfinger call is what the next page render
+// refuses to make.
+//
+// Best effort by design. A failure is logged and nothing else: the delegate is
+// already saved, the Check button can retry, and a peer that happens to be
+// down must not turn "save your settings" into an error.
+func warmReplyDelegate(app *App, submitted *string) {
+	if app == nil || app.db == nil || submitted == nil {
+		return
+	}
+	handle, ok := normalizeReplyDelegate(*submitted)
+	if !ok || handle == "" {
+		return
+	}
+	if _, err := app.db.GetProfilePageFromHandle(app, handle); err != nil {
+		log.Info("Couldn't resolve reply delegate '%s' on save: %v", handle, err)
+	}
 }
 
 // replyDelegateCheck is the JSON the Customize page's Check button gets back.
@@ -318,11 +361,35 @@ func handleCheckReplyDelegate(app *App, u *User, w http.ResponseWriter, r *http.
 	}
 	c.hostName = app.cfg.App.Host
 
-	status, actorID := replyDelegateState(app, c, true)
+	// Check what is in the box, not what is in the database. The owner presses
+	// this button while typing a handle, and answering about the saved value
+	// looks like the button is broken: the handle changes, the verdict does
+	// not. Nothing here writes, so checking an unsaved handle is a question,
+	// not a change — it is still Save that sets the delegate.
+	handle := c.ReplyDelegate
+	if typed, ok := r.URL.Query()["handle"]; ok && len(typed) > 0 {
+		normalized, valid := normalizeReplyDelegate(typed[0])
+		if !valid {
+			return impart.WriteSuccess(w, replyDelegateCheck{
+				Handle:  strings.TrimSpace(typed[0]),
+				Status:  replyDelegateInvalid,
+				Message: replyDelegateStatusMessage(replyDelegateInvalid, "", collectionFediverseHandle(c)),
+			}, http.StatusOK)
+		}
+		handle = normalized
+	}
+
+	// replyDelegateState reads the delegate off the collection, so ask it
+	// about a copy carrying the handle under test. The copy is a value, so
+	// nothing that follows can reach the stored collection.
+	probe := *c
+	probe.ReplyDelegate = handle
+
+	status, actorID := replyDelegateState(app, &probe, true)
 	return impart.WriteSuccess(w, replyDelegateCheck{
-		Handle:  c.ReplyDelegate,
+		Handle:  handle,
 		ActorID: actorID,
 		Status:  status,
-		Message: replyDelegateStatusMessage(status, c.ReplyDelegate, collectionFediverseHandle(c)),
+		Message: replyDelegateStatusMessage(status, handle, collectionFediverseHandle(c)),
 	}, http.StatusOK)
 }
