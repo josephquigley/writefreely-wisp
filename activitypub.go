@@ -565,6 +565,10 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 
 			a.AppendObject(u.Raw())
 
+			// unfollowed is the actor the undone Follow was addressed to,
+			// which is this instance. It becomes the Accept's actor.
+			var unfollowed *url.URL
+
 			// Check type -- we handle Undo:Like and Undo:Follow
 			_, err := u.ResolveObject(&streams.Resolver{
 				LikeCallback: func(like *streams.Like) error {
@@ -585,7 +589,26 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 					}
 					return nil
 				},
-				// TODO: add FollowCallback for more robust handling
+				FollowCallback: func(f *streams.Follow) error {
+					// The Accept's actor is whoever was being followed,
+					// and that is the *Follow's* object. Reading it off
+					// the Undo instead gives nothing: the Undo's object
+					// is the Follow, so GetObjectIRI on the Undo returns
+					// nil and the Accept went out with a null actor.
+					unfollowed = f.Raw().GetObjectIRI(0)
+					if unfollowed == nil {
+						// Same fallback the Follow callback makes: a peer
+						// may send the object as an embedded actor rather
+						// than as an IRI.
+						if ao := f.Raw().GetObject(0); ao != nil {
+							unfollowed = ao.GetId()
+						}
+					}
+					if unfollowed == nil {
+						log.Error("Couldn't resolve who was unfollowed; the Accept will have no actor")
+					}
+					return nil
+				},
 			}, 0)
 			if err != nil {
 				return err
@@ -596,9 +619,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 
 			isUnfollow = true
 			_, to = u.GetActor(0)
-			// TODO: get actor from object.object, not object
-			obj := u.Raw().GetObjectIRI(0)
-			a.AppendActor(obj)
+			a.AppendActor(unfollowed)
 			if to != nil {
 				// Populate fullActor from DB?
 				remoteUser, err = getRemoteUser(app, to.String())
@@ -1439,6 +1460,22 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 		}
 	}
 
+	// Remove the follower before attempting delivery, for the same reason
+	// the follow above is recorded before it: the remote already believes it
+	// has unfollowed once it gets a 200 on the inbox POST, and it will not
+	// send the Undo again. Leaving the row behind because the Accept could
+	// not be delivered means posting to someone who asked to stop, with
+	// nothing to recover on — there is no retry here and no second Undo.
+	// Delivery failure is not rare enough to gamble on: makeActivityPost
+	// errors when the peer is unreachable, when the actor has no keypair,
+	// and when the inbox is not on the federation allowlist.
+	if isUnfollow {
+		_, err := app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
+		if err != nil {
+			log.Error("Couldn't remove follower from DB: %v\n", err)
+		}
+	}
+
 	am, err := a.Serialize()
 	if err != nil {
 		log.Error("Unable to serialize Accept: %v", err)
@@ -1449,17 +1486,8 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 		logOutgoingActivity("Accept", am)
 	}
 
-	err = makeActivityPost(app, p, fullActor.Inbox, am)
-	if err != nil {
+	if err := makeActivityPost(app, p, fullActor.Inbox, am); err != nil {
 		log.Error("Unable to make activity POST: %v", err)
 		return
-	}
-
-	if isUnfollow {
-		// Remove follower locally
-		_, err = app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
-		if err != nil {
-			log.Error("Couldn't remove follower from DB: %v\n", err)
-		}
 	}
 }
