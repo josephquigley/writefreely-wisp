@@ -6,12 +6,16 @@
 # individually. The generator can filter by label or author and by nothing else,
 # so the release job labels them "release" before it publishes, and this file
 # drops anything wearing that label.
+#
+# The generator reads this file at the commit the release points at, not at the
+# default branch, and a release is cut on main. So it only takes effect once it
+# has been merged to main — on develop alone it does nothing.
+#
+# No "categories" here on purpose: any category renders as a "###" subheading
+# under the generator's own "## What's Changed", and one subheading over one
+# list is noise. Without categories the list is flat, which is what we want.
 changelog:
   exclude:
     labels:
       - release
       - skip-changelog
-  categories:
-    - title: CONFIGPROBE
-      labels:
-        - "*"
