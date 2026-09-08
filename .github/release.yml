@@ -12,6 +12,6 @@ changelog:
       - release
       - skip-changelog
   categories:
-    - title: What's changed
+    - title: CONFIGPROBE
       labels:
         - "*"
