@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/writeas/web-core/activitystreams"
@@ -181,5 +182,137 @@ func TestActivityObjectWithoutAReplyDelegateIsUnchanged(t *testing.T) {
 	}
 	if len(o.CC) != 1 {
 		t.Errorf("a public post's cc must hold only the followers collection, got cc=%v", o.CC)
+	}
+}
+
+// The consent gate's state machine. Handle, resolution and the follow are
+// three independent facts, and the page's wording depends on which one is
+// missing, so each has to map to its own status rather than collapse into
+// "not working".
+func TestReplyDelegateStatusOf(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		handle   string
+		actorIRI string
+		follows  bool
+		want     replyDelegateStatus
+	}{
+		{"no delegate configured", "", "", false, replyDelegateUnset},
+		{"no delegate configured, stray follow", "", delegateIRI, true, replyDelegateUnset},
+		{"configured but never resolved", delegateHandle, "", false, replyDelegateNotFollowing},
+		{"unresolved outranks a stale follow flag", delegateHandle, "", true, replyDelegateNotFollowing},
+		{"resolved but not following", delegateHandle, delegateIRI, false, replyDelegateNotFollowing},
+		{"resolved and following", delegateHandle, delegateIRI, true, replyDelegateFollowing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := replyDelegateStatusOf(tc.handle, tc.actorIRI, tc.follows); got != tc.want {
+				t.Errorf("replyDelegateStatusOf(%q, %q, %v) = %q, want %q", tc.handle, tc.actorIRI, tc.follows, got, tc.want)
+			}
+		})
+	}
+}
+
+// A follow that has not happened is the one status the owner has to act on, so
+// that message must name both accounts: the one to sign in to and the one to
+// follow. Everything else about the feature is invisible from the outside.
+func TestReplyDelegateStatusMessageNamesBothAccounts(t *testing.T) {
+	const blogHandle = "@quigs@blog.example"
+
+	msg := replyDelegateStatusMessage(replyDelegateNotFollowing, delegateHandle, blogHandle)
+	if !strings.Contains(msg, delegateHandle) {
+		t.Errorf("the not-following message must name the delegate, got %q", msg)
+	}
+	if !strings.Contains(msg, blogHandle) {
+		t.Errorf("the not-following message must name the blog to follow, got %q", msg)
+	}
+
+	if got := replyDelegateStatusMessage(replyDelegateUnset, "", blogHandle); got != "" {
+		t.Errorf("an unset delegate has nothing to report, got %q", got)
+	}
+	for _, status := range []replyDelegateStatus{replyDelegateFollowing, replyDelegateUnreachable} {
+		if got := replyDelegateStatusMessage(status, delegateHandle, blogHandle); !strings.Contains(got, delegateHandle) {
+			t.Errorf("the %q message must name the delegate, got %q", status, got)
+		}
+	}
+}
+
+// The handle the owner is told to follow has to be the blog's actual fediverse
+// handle. hostName is a full URL, so a naive concatenation would tell them to
+// follow "@quigs@https://blog.example".
+func TestCollectionFediverseHandle(t *testing.T) {
+	c := &Collection{Alias: "quigs", hostName: "https://blog.example"}
+	if got, want := collectionFediverseHandle(c), "@quigs@blog.example"; got != want {
+		t.Errorf("collectionFediverseHandle() = %q, want %q", got, want)
+	}
+	if got := collectionFediverseHandle(nil); got != "" {
+		t.Errorf("collectionFediverseHandle(nil) = %q, want empty", got)
+	}
+}
+
+// replyDelegateState runs from a page render, so it must survive the same
+// no-datastore App the rest of this file exercises rather than panic on it.
+func TestReplyDelegateStateWithoutADatastore(t *testing.T) {
+	app := &App{}
+
+	if status, _ := replyDelegateState(app, &Collection{Alias: "quigs"}, false); status != replyDelegateUnset {
+		t.Errorf("a blog with no delegate should report %q, got %q", replyDelegateUnset, status)
+	}
+	if status, _ := replyDelegateState(app, &Collection{Alias: "quigs", ReplyDelegate: delegateHandle}, false); status != replyDelegateNotFollowing {
+		t.Errorf("a delegate with nothing cached should report %q, got %q", replyDelegateNotFollowing, status)
+	}
+	if status, _ := replyDelegateState(nil, nil, true); status != replyDelegateUnset {
+		t.Errorf("no app and no collection should report %q, got %q", replyDelegateUnset, status)
+	}
+}
+
+// The consent gate, at the level this file can reach without a datastore: an
+// actor nobody can show a follow for is not mentioned. replyDelegateFollows-
+// Collection is what applyReplyDelegate consults, and its answer for an
+// unknown actor has to be "no" rather than an error the caller might ignore.
+func TestReplyDelegateFollowsCollectionIsFalseWithoutADatastore(t *testing.T) {
+	follows, err := replyDelegateFollowsCollection(&App{}, &Collection{ID: 1, Alias: "quigs"}, delegateIRI)
+	if err != nil {
+		t.Fatalf("checking a follow without a datastore should not error, got %v", err)
+	}
+	if follows {
+		t.Error("a follow that cannot be read must not be reported as a follow")
+	}
+}
+
+// A delegate that cannot be resolved when the owner asks for a lookup is a
+// different report to one that simply has nothing cached: the first names a
+// wrong handle or an unreachable instance, the second is the ordinary state
+// of a page render. Only the resolving path may say "unreachable".
+func TestReplyDelegateStateSeparatesUnreachableFromUncached(t *testing.T) {
+	c := &Collection{Alias: "quigs", ReplyDelegate: delegateHandle}
+
+	if status, _ := replyDelegateState(&App{}, c, true); status != replyDelegateUnreachable {
+		t.Errorf("a lookup that came back empty should report %q, got %q", replyDelegateUnreachable, status)
+	}
+	if status, _ := replyDelegateState(&App{}, c, false); status != replyDelegateNotFollowing {
+		t.Errorf("a page render with nothing cached should report %q, got %q", replyDelegateNotFollowing, status)
+	}
+}
+
+// warmReplyDelegate runs on every save of every blog, including saves that
+// touch nothing to do with the delegate, so each way of carrying "no delegate
+// here" has to be a no-op rather than a panic or a stray lookup.
+func TestWarmReplyDelegateIgnoresNothingToDo(t *testing.T) {
+	empty := ""
+	junk := "not a handle"
+	valid := delegateHandle
+	for _, tc := range []struct {
+		name      string
+		submitted *string
+	}{
+		{"field absent from the form", nil},
+		{"delegate cleared", &empty},
+		{"not a full handle", &junk},
+		{"valid handle but no datastore", &valid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warmReplyDelegate(&App{}, tc.submitted)
+			warmReplyDelegate(nil, tc.submitted)
+		})
 	}
 }

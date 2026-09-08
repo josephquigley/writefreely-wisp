@@ -1405,6 +1405,11 @@ func existingCollection(app *App, w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
+	// Resolve a saved reply delegate now rather than waiting for the first
+	// post to federate, so the settings page can report on it straight away.
+	// Best effort: see warmReplyDelegate.
+	warmReplyDelegate(app, c.ReplyDelegate)
+
 	if reqJSON {
 		return impart.WriteSuccess(w, struct {
 		}{}, http.StatusOK)

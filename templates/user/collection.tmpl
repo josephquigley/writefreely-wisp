@@ -249,9 +249,15 @@ textarea.section.norm {
 	<div class="option">
 		<h2>Reply Delegate</h2>
 		<div class="section">
-			<p class="explain">This blog can publish to the fediverse, but it cannot receive replies &mdash; there is nowhere here for a conversation to happen. Name a fediverse account you read, and every post from this blog will mention it, so replies arrive there instead of vanishing.</p>
-			<input type="text" name="reply_delegate" style="width:100%" value="{{.Collection.ReplyDelegate}}" placeholder="@you@social.example" />
-			<p class="explain">A full handle, including the instance &mdash; <code>@you@social.example</code>. Leave empty for none. The mention is not shown in your posts.</p>
+			<p class="explain">This blog publishes to the fediverse but does not receive replies. Name another account you own and every post will mention it, so you can follow the conversation and reply from there.</p>
+			<div class="delegate-row">
+				<input type="text" name="reply_delegate" value="{{.Collection.ReplyDelegate}}" placeholder="@you@social.example" />
+				<button type="button" class="submit" id="check-reply-delegate">Check</button>
+			</div>
+			<div id="reply-delegate-status" class="delegate-status {{.ReplyDelegateStatus}}">
+				<span id="reply-delegate-message">{{.ReplyDelegateMessage}}</span>
+			</div>
+			<p class="explain">A full handle, including the instance, like <code>@you@social.example</code>. Leave empty for none.</p>
 		</div>
 	</div>
 	{{end}}
@@ -348,6 +354,46 @@ var $fediCustomDomain = document.getElementById('fedi-custom-domain');
 var $customDomain = document.getElementById('domain-alias');
 var $customHandleEnv = document.getElementById('custom-handle-env');
 var $normalHandleEnv = document.getElementById('normal-handle-env');
+
+// Re-check the saved reply delegate on demand. The page render only reports
+// what this instance already knew, because resolving a handle means talking to
+// another server and a settings page must not wait on one. Pressing Check is
+// the owner asking for that lookup on purpose.
+var $delegateStatus = document.getElementById('reply-delegate-status');
+var $delegateMessage = document.getElementById('reply-delegate-message');
+var $delegateCheck = document.getElementById('check-reply-delegate');
+if ($delegateCheck) {
+	$delegateCheck.addEventListener('click', function() {
+		$delegateCheck.disabled = true;
+		var wasLabel = $delegateCheck.innerHTML;
+		$delegateCheck.innerHTML = 'Checking...';
+		var http = new XMLHttpRequest();
+		var typed = document.getElementsByName('reply_delegate')[0].value;
+		http.open("GET", "/me/c/{{.Alias}}/reply-delegate?handle=" + encodeURIComponent(typed), true);
+		http.setRequestHeader("Accept", "application/json");
+		http.onreadystatechange = function() {
+			if (http.readyState != 4) {
+				return;
+			}
+			$delegateCheck.disabled = false;
+			$delegateCheck.innerHTML = wasLabel;
+			var status = 'error';
+			var message = "Couldn't check the delegate just now. Try again in a moment.";
+			if (http.status == 200) {
+				try {
+					var data = JSON.parse(http.responseText).data;
+					status = data.status;
+					message = data.message;
+				} catch (e) {
+					// Fall through to the generic message above.
+				}
+			}
+			$delegateStatus.className = 'delegate-status ' + status;
+			$delegateMessage.innerText = message;
+		};
+		http.send(null);
+	});
+}
 
 var $emailSubsCheck = document.getElementById('email_subs');
 var $letterReply = document.getElementById('letter_reply');

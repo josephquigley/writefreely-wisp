@@ -31,7 +31,6 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/writeas/activity/streams"
-	"github.com/writeas/activityserve"
 	"github.com/writeas/httpsig"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/activitypub"
@@ -442,6 +441,21 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 	}
 
 	a := streams.NewAccept()
+	// Give the Accept an id before any callback runs. ActivityStreams 2.0
+	// requires every activity to have one, and a receiver that enforces it
+	// refuses the delivery rather than ignoring the missing field: Mbin
+	// answers 401 with `Missing required "id" field in the payload`. Setting
+	// it here rather than inside a callback is what keeps every path
+	// covered — the id belonged to the Follow callback, so the Accept sent
+	// for an Undo Follow went out without one and was refused, and the
+	// unfollow was never acknowledged.
+	aID := c.FederatedAccount() + "#accept-" + id.GenerateFriendlyRandomString(20)
+	acceptID, err := url.Parse(aID)
+	if err != nil {
+		log.Error("Couldn't parse generated Accept URL '%s': %v", aID, err)
+	}
+	a.SetId(acceptID)
+
 	p := c.PersonObject()
 	var to *url.URL
 	var isFollow, isUnfollow, isLike, isUnlike bool
@@ -513,13 +527,6 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			_, followID := f.GetId()
 			if followID == nil {
 				log.Error("Didn't resolve follow ID")
-			} else {
-				aID := c.FederatedAccount() + "#accept-" + id.GenerateFriendlyRandomString(20)
-				acceptID, err := url.Parse(aID)
-				if err != nil {
-					log.Error("Couldn't parse generated Accept URL '%s': %v", aID, err)
-				}
-				a.SetId(acceptID)
 			}
 			a.AppendObject(f.Raw())
 			_, to = f.GetActor(0)
@@ -557,6 +564,10 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 
 			a.AppendObject(u.Raw())
 
+			// unfollowed is the actor the undone Follow was addressed to,
+			// which is this instance. It becomes the Accept's actor.
+			var unfollowed *url.URL
+
 			// Check type -- we handle Undo:Like and Undo:Follow
 			_, err := u.ResolveObject(&streams.Resolver{
 				LikeCallback: func(like *streams.Like) error {
@@ -577,7 +588,26 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 					}
 					return nil
 				},
-				// TODO: add FollowCallback for more robust handling
+				FollowCallback: func(f *streams.Follow) error {
+					// The Accept's actor is whoever was being followed,
+					// and that is the *Follow's* object. Reading it off
+					// the Undo instead gives nothing: the Undo's object
+					// is the Follow, so GetObjectIRI on the Undo returns
+					// nil and the Accept went out with a null actor.
+					unfollowed = f.Raw().GetObjectIRI(0)
+					if unfollowed == nil {
+						// Same fallback the Follow callback makes: a peer
+						// may send the object as an embedded actor rather
+						// than as an IRI.
+						if ao := f.Raw().GetObject(0); ao != nil {
+							unfollowed = ao.GetId()
+						}
+					}
+					if unfollowed == nil {
+						log.Error("Couldn't resolve who was unfollowed; the Accept will have no actor")
+					}
+					return nil
+				},
 			}, 0)
 			if err != nil {
 				return err
@@ -588,9 +618,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 
 			isUnfollow = true
 			_, to = u.GetActor(0)
-			// TODO: get actor from object.object, not object
-			obj := u.Raw().GetObjectIRI(0)
-			a.AppendActor(obj)
+			a.AppendActor(unfollowed)
 			if to != nil {
 				// Populate fullActor from DB?
 				remoteUser, err = getRemoteUser(app, to.String())
@@ -1214,7 +1242,13 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = RemoteLookup(handle)
+		actorIRI = remoteLookup(handle)
+		// See GetProfilePageFromHandle: an empty webfinger result must not
+		// reach the INSERT below, or the handle is cached against an empty
+		// actor_id and never resolves again.
+		if actorIRI == "" {
+			return "", fmt.Errorf("couldn't resolve handle %s: webfinger lookup failed", handle)
+		}
 		_, errRemoteUser := getRemoteUser(app, actorIRI)
 		// if it exists then we need to update the handle
 		if errRemoteUser == nil {
@@ -1225,9 +1259,10 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := activityserve.NewRemoteActor(actorIRI)
+			remoteActor, err := newRemoteActor(actorIRI)
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
+				return "", err
 			}
 			if debugging {
 				log.Info("Got remote actor: %s %s %s %s %s", actorIRI, remoteActor.GetInbox(), remoteActor.GetSharedInbox(), remoteActor.URL(), handle)
@@ -1241,15 +1276,15 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		}
 	} else if remoteUser.URL == "" {
 		log.Info("Remote user %s URL empty, fetching", remoteUser.ActorID)
-		newRemoteActor, err := activityserve.NewRemoteActor(remoteUser.ActorID)
+		fetchedActor, err := newRemoteActor(remoteUser.ActorID)
 		if err != nil {
 			log.Error("Couldn't fetch remote actor: %v", err)
 		} else {
-			_, err := app.db.Exec("UPDATE remoteusers SET url = ? WHERE actor_id = ?", newRemoteActor.URL(), remoteUser.ActorID)
+			_, err := app.db.Exec("UPDATE remoteusers SET url = ? WHERE actor_id = ?", fetchedActor.URL(), remoteUser.ActorID)
 			if err != nil {
 				log.Error("Couldn't update handle '%s' for user %s", handle, actorIRI)
 			} else {
-				actorIRI = newRemoteActor.URL()
+				actorIRI = fetchedActor.URL()
 			}
 		}
 	} else {
@@ -1431,6 +1466,22 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 		}
 	}
 
+	// Remove the follower before attempting delivery, for the same reason
+	// the follow above is recorded before it: the remote already believes it
+	// has unfollowed once it gets a 200 on the inbox POST, and it will not
+	// send the Undo again. Leaving the row behind because the Accept could
+	// not be delivered means posting to someone who asked to stop, with
+	// nothing to recover on — there is no retry here and no second Undo.
+	// Delivery failure is not rare enough to gamble on: makeActivityPost
+	// errors when the peer is unreachable, when the actor has no keypair,
+	// and when the inbox is not on the federation allowlist.
+	if isUnfollow {
+		_, err := app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
+		if err != nil {
+			log.Error("Couldn't remove follower from DB: %v\n", err)
+		}
+	}
+
 	am, err := a.Serialize()
 	if err != nil {
 		log.Error("Unable to serialize Accept: %v", err)
@@ -1441,17 +1492,8 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 		logOutgoingActivity("Accept", am)
 	}
 
-	err = makeActivityPost(app, p, fullActor.Inbox, am)
-	if err != nil {
+	if err := makeActivityPost(app, p, fullActor.Inbox, am); err != nil {
 		log.Error("Unable to make activity POST: %v", err)
 		return
-	}
-
-	if isUnfollow {
-		// Remove follower locally
-		_, err = app.db.Exec("DELETE FROM remotefollows WHERE collection_id = ? AND remote_user_id = (SELECT id FROM remoteusers WHERE actor_id = ?)", c.ID, to.String())
-		if err != nil {
-			log.Error("Couldn't remove follower from DB: %v\n", err)
-		}
 	}
 }

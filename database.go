@@ -30,7 +30,6 @@ import (
 	"github.com/guregu/null"
 	"github.com/guregu/null/zero"
 	uuid "github.com/nu7hatch/gouuid"
-	"github.com/writeas/activityserve"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/auth"
 	"github.com/writeas/web-core/data"
@@ -3238,7 +3237,16 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = RemoteLookup(handle)
+		actorIRI = remoteLookup(handle)
+		// An empty result means webfinger failed — the peer was down, the
+		// handle does not exist, the response did not parse. Stop here.
+		// Carrying on writes a remoteusers row with an empty actor_id, and
+		// because the row carries the handle, every later lookup finds it,
+		// reads the empty actor_id back and returns it without retrying the
+		// network. One unreachable moment would disable the handle for good.
+		if actorIRI == "" {
+			return "", fmt.Errorf("couldn't resolve handle %s: webfinger lookup failed", handle)
+		}
 		_, errRemoteUser := getRemoteUser(app, actorIRI)
 		// if it exists then we need to update the handle
 		if errRemoteUser == nil {
@@ -3249,9 +3257,13 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := activityserve.NewRemoteActor(actorIRI)
+			remoteActor, err := newRemoteActor(actorIRI)
+			// Same reasoning as the empty lookup above: a failed fetch has no
+			// inbox to record, and caching it would poison the handle rather
+			// than leave it to be retried.
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
+				return "", err
 			}
 			if debugging {
 				log.Info("%s %s %s %s", actorIRI, remoteActor.GetInbox(), remoteActor.GetSharedInbox(), handle)

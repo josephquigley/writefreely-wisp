@@ -1447,11 +1447,52 @@ li#create-collection {
 		}
 	}
 
+	// The delegate box and its Check button share a row, the same shape the
+	// verification rows use below. Check carries class="submit", so it is the
+	// shared button rule that draws it, not anything here — it is meant to
+	// read as the same kind of control as Save changes.
+	.delegate-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5em;
+
+		input[type=text] {
+			flex: 1;
+			min-width: 0;
+		}
+		#check-reply-delegate {
+			flex: none;
+		}
+	}
+
+	// The reply delegate's status line, under the delegate box.
+	.delegate-status {
+		margin: 0.4em 0 0;
+		font-size: 0.8em;
+
+		// Derived from the page's own text colour rather than given a hue of
+		// its own. A status is information, not an alarm, and a saturated
+		// green sitting under one field is louder than anything else on a
+		// page whose only real accent is Save changes.
+		#reply-delegate-message {
+			color: lighten(#111, 40%);
+		}
+
+		// The two states the owner has to do something about. Still drawn
+		// from the text colour, warmed and darkened rather than reddened, so
+		// it separates from the neutral line without shouting.
+		&.not_following #reply-delegate-message,
+		&.unreachable #reply-delegate-message,
+		&.invalid #reply-delegate-message,
+		&.error #reply-delegate-message {
+			color: desaturate(darken(#8a3f3f, 5%), 25%);
+		}
+	}
+
 	// Neither of these is a submit, so they take the shared input rule's
 	// half-em padding without the primary fill that would justify it, and
 	// render as bare browser buttons next to the panel's styled controls.
-	// Draw them as links: both are secondary to Save changes, which is the
-	// only thing on this page that should look like a button.
+	// Draw them as links: both are secondary to Save changes.
 	.remove-verification, #add-verification {
 		background: none;
 		border: none;

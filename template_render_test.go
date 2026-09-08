@@ -289,6 +289,7 @@ func TestTemplateRendering_MeAndBlogPages(t *testing.T) {
 				{name: "me: collections list", path: "/me/c/", authed: true, wantStatus: http.StatusOK},
 				{name: "me: edit collection", path: "/me/c/" + coll.Alias, authed: true, wantStatus: http.StatusOK},
 				{name: "me: collection stats", path: "/me/c/" + coll.Alias + "/stats", authed: true, wantStatus: http.StatusOK},
+				{name: "me: reply delegate check", path: "/me/c/" + coll.Alias + "/reply-delegate", authed: true, wantStatus: http.StatusOK},
 				{name: "me: posts list", path: "/me/posts/", authed: true, wantStatus: http.StatusOK},
 				{name: "me: export", path: "/me/export", authed: true, wantStatus: http.StatusOK},
 				{name: "me: import", path: "/me/import", authed: true, wantStatus: http.StatusOK},
