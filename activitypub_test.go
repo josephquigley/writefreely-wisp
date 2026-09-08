@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	stdlog "log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/writeas/web-core/activitypub"
 	"github.com/writeas/web-core/activitystreams"
+	"github.com/writeas/web-core/log"
 
 	"github.com/writefreely/writefreely/config"
 )
@@ -250,4 +252,30 @@ func TestActorPrivKeyRefusesMissingKey(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no private key")
 	assert.Contains(t, err.Error(), p.ID, "the error should name the actor, so the operator knows which collection is broken")
+}
+
+func TestMakeActivityPostEmptyURLDoesNotLogPrivateKey(t *testing.T) {
+	// A Person carries the blog's ActivityPub signing private key in an
+	// unexported field, and %+v prints unexported fields via reflection.
+	// Logging the actor struct on the empty-URL path therefore wrote the
+	// signing key to the logs in plaintext. The log line must name the
+	// actor and nothing else about it.
+	app := allowlistApp(t, "")
+
+	p := activitystreams.NewPerson("https://local.example/api/collections/blog")
+	privKey := []byte("NOT-A-REAL-PRIVATE-KEY-placeholder")
+	p.SetPrivKey(privKey)
+
+	var logged bytes.Buffer
+	orig := log.ErrorLog
+	log.ErrorLog = stdlog.New(&logged, "", 0)
+	defer func() { log.ErrorLog = orig }()
+
+	err := makeActivityPost(app, p, "", map[string]string{"type": "Create"})
+
+	assert.Error(t, err)
+	// %+v renders a []byte as a decimal byte array, so the leaked key does
+	// not appear verbatim: look for the rendering fmt would actually emit.
+	assert.NotContains(t, logged.String(), fmt.Sprintf("%v", privKey), "the actor's private key must never reach the log")
+	assert.Contains(t, logged.String(), p.ID, "the log should still name the actor, which is the useful debugging detail")
 }

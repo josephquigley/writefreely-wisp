@@ -21,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/writeas/activityserve"
 	"github.com/writeas/go-webfinger"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/log"
@@ -187,9 +186,15 @@ func isPublicAddr(ip net.IP) bool {
 // remoteusers as a row with an empty actor_id, which disabled that handle for
 // good, and a regression there is invisible without being able to fail them
 // on demand.
+//
+// newRemoteActor was activityserve.NewRemoteActor, which issues an unsigned
+// GET. Instances running Mastodon's authorized fetch answer that with 401, so
+// no handle on one of them could be resolved. It is fetchRemoteActor now,
+// which signs the request with the instance actor's key and refuses to return
+// an actor with no inbox.
 var (
 	remoteLookup   = RemoteLookup
-	newRemoteActor = activityserve.NewRemoteActor
+	newRemoteActor = fetchRemoteActor
 )
 
 // RemoteLookup looks up a user by handle at a remote server

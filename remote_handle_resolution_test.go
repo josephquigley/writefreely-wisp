@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/writeas/activityserve"
 	"github.com/writefreely/writefreely/config"
 )
 
@@ -83,7 +82,7 @@ func stubRemoteLookup(t *testing.T, fn func(string) string) {
 }
 
 // stubNewRemoteActor replaces the actor fetch for one test.
-func stubNewRemoteActor(t *testing.T, fn func(string) (activityserve.RemoteActor, error)) {
+func stubNewRemoteActor(t *testing.T, fn func(*App, string) (remoteActorInfo, error)) {
 	t.Helper()
 	orig := newRemoteActor
 	newRemoteActor = fn
@@ -91,10 +90,10 @@ func stubNewRemoteActor(t *testing.T, fn func(string) (activityserve.RemoteActor
 }
 
 // failingActorFetch fails, and records whether it was called at all.
-func failingActorFetch(called *bool) func(string) (activityserve.RemoteActor, error) {
-	return func(string) (activityserve.RemoteActor, error) {
+func failingActorFetch(called *bool) func(*App, string) (remoteActorInfo, error) {
+	return func(*App, string) (remoteActorInfo, error) {
 		*called = true
-		return activityserve.RemoteActor{}, assert.AnError
+		return remoteActorInfo{}, assert.AnError
 	}
 }
 

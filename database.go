@@ -3257,7 +3257,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(actorIRI)
+			remoteActor, err := newRemoteActor(app, actorIRI)
 			// Same reasoning as the empty lookup above: a failed fetch has no
 			// inbox to record, and caching it would poison the handle rather
 			// than leave it to be retried.

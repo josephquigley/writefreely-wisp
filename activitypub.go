@@ -785,7 +785,14 @@ func makeActivityPost(app *App, p *activitystreams.Person, url string, m interfa
 	}
 
 	if url == "" {
-		log.Error("Target POST URL is empty! Person: %+v, Activity: %+v", p, m)
+		// Log the actor's identity, never the actor itself: a Person
+		// carries the blog's ActivityPub signing private key in an
+		// unexported field, which %+v would print to the log in full.
+		actorID := ""
+		if p != nil {
+			actorID = p.ID
+		}
+		log.Error("Target POST URL is empty! Actor: %s, Activity: %+v", actorID, m)
 		return fmt.Errorf("target POST URL is empty")
 	}
 
@@ -871,14 +878,19 @@ func isPublicIRI(iri string) error {
 	return nil
 }
 
-func resolveIRI(hostName, url string) ([]byte, error) {
-	log.Info("GET %s", url)
-
-	if err := isPublicIRI(url); err != nil {
-		return nil, fmt.Errorf("refusing to fetch IRI: %v", err)
+// signedIRIRequest builds the signed GET that resolveIRI issues: an
+// ActivityPub Accept header, a Digest over the empty body, and a Signature
+// made with the instance actor's key.
+//
+// It is separate from resolveIRI only so that the signing itself can be
+// exercised by a test. resolveIRI refuses to fetch a loopback address, which
+// is the only kind an httptest.Server has, so the request has to be
+// obtainable without issuing it.
+func signedIRIRequest(hostName, url string) (*http.Request, error) {
+	r, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
 	}
-
-	r, _ := http.NewRequest("GET", url, nil)
 	r.Header.Add("Accept", "application/activity+json")
 	r.Header.Set("User-Agent", ServerUserAgent(hostName))
 
@@ -896,6 +908,20 @@ func resolveIRI(hostName, url string) ([]byte, error) {
 	err = signer.SignSigHeader(r)
 	if err != nil {
 		log.Error("Can't sign: %v", err)
+	}
+	return r, nil
+}
+
+func resolveIRI(hostName, url string) ([]byte, error) {
+	log.Info("GET %s", url)
+
+	if err := isPublicIRI(url); err != nil {
+		return nil, fmt.Errorf("refusing to fetch IRI: %v", err)
+	}
+
+	r, err := signedIRIRequest(hostName, url)
+	if err != nil {
+		return nil, err
 	}
 
 	if debugging {
@@ -922,6 +948,16 @@ func resolveIRI(hostName, url string) ([]byte, error) {
 	if debugging {
 		log.Info("Status  : %s", resp.Status)
 		log.Info("Response: %s", body)
+	}
+
+	// An error response is still JSON on most implementations, and it
+	// unmarshals into an actor perfectly happily -- one with no id, no key
+	// and no inbox. Mastodon's authorized fetch answers an unsigned or
+	// unrecognised request with 401 {"error":"Request not signed"}, which is
+	// exactly that shape. Returning the body here would hand every caller a
+	// hollow actor and no error to notice it by.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
 
 	return body, nil
@@ -1178,6 +1214,82 @@ func getRemoteUserFromURL(app *App, urlStr string) (*RemoteUser, error) {
 	return &u, nil
 }
 
+// remoteActorInfo is the part of a remote ActivityPub actor that handle
+// resolution records: the two inboxes and the human-facing profile URL.
+//
+// It replaces activityserve.RemoteActor, whose fields are unexported and so
+// can only ever be filled by activityserve's own unsigned fetch. The accessor
+// names are activityserve's, so the call sites read the same.
+type remoteActorInfo struct {
+	iri, inbox, sharedInbox, url string
+}
+
+// GetInbox returns the actor's personal inbox.
+func (a remoteActorInfo) GetInbox() string { return a.inbox }
+
+// GetSharedInbox returns the actor's shared inbox, falling back to the
+// personal one when the actor publishes no endpoints, as activityserve did.
+func (a remoteActorInfo) GetSharedInbox() string {
+	if a.sharedInbox == "" {
+		return a.inbox
+	}
+	return a.sharedInbox
+}
+
+// URL returns the actor's profile URL.
+func (a remoteActorInfo) URL() string { return a.url }
+
+// fetchActorIRI is the network call fetchRemoteActor makes. It is a variable
+// so a test can answer it, and so that a test can assert it is still wired to
+// the *signed* fetch: an unsigned GET is the whole bug this indirection
+// exists to keep fixed.
+var fetchActorIRI = resolveIRI
+
+// fetchRemoteActor fetches an actor document over a signed request and returns
+// what handle resolution needs from it.
+//
+// It replaces activityserve.NewRemoteActor, which issues a plain unsigned GET.
+// An instance running Mastodon's authorized fetch ("secure mode") answers that
+// with 401 and never hands over the actor, so every handle on such an instance
+// -- hachyderm.io among them -- was unresolvable, and the Accept for a follow
+// from one was never delivered. resolveIRI signs with the instance actor's
+// key, which is what those instances are asking for.
+//
+// An actor with no inbox at all is treated as a failed fetch rather than
+// returned. It is the same reasoning as the empty webfinger result above: the
+// caller's next act is to INSERT what it was given into remoteusers, and a row
+// with an empty inbox is worse than no row, because it is what every later
+// lookup finds and it silently disables delivery to that actor forever --
+// makeActivityPost has nowhere to post and fails with "target POST URL is
+// empty". Leaving the actor uncached leaves it retryable, which is what it is.
+func fetchRemoteActor(app *App, actorIRI string) (remoteActorInfo, error) {
+	resp, err := fetchActorIRI(app.cfg.App.Host, actorIRI)
+	if err != nil {
+		return remoteActorInfo{}, err
+	}
+
+	var info map[string]interface{}
+	if err := json.Unmarshal(resp, &info); err != nil {
+		return remoteActorInfo{}, fmt.Errorf("couldn't parse remote actor %s: %v", actorIRI, err)
+	}
+
+	// Read defensively. Hubzilla returns an object for url, and an actor is
+	// free to publish an endpoints value of any shape; a type assertion
+	// without the comma-ok would panic the request handling it.
+	inbox, _ := info["inbox"].(string)
+	profileURL, _ := info["url"].(string)
+	var sharedInbox string
+	if endpoints, ok := info["endpoints"].(map[string]interface{}); ok {
+		sharedInbox, _ = endpoints["sharedInbox"].(string)
+	}
+
+	a := remoteActorInfo{iri: actorIRI, inbox: inbox, sharedInbox: sharedInbox, url: profileURL}
+	if a.GetInbox() == "" {
+		return remoteActorInfo{}, fmt.Errorf("remote actor %s has no inbox", actorIRI)
+	}
+	return a, nil
+}
+
 func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, error) {
 	log.Info("Fetching actor %s locally", actorIRI)
 	actor := &activitystreams.Person{}
@@ -1218,6 +1330,31 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 			return nil, nil, err
 		}
 	} else {
+		// Self-heal a cached row with no inbox, the same way the empty URL
+		// below is healed: treat it as a cache miss rather than an answer.
+		// Rows like this were written by earlier builds, which cached
+		// whatever an unsigned fetch of an authorized-fetch instance came
+		// back with. Answering from one returns a Person whose Inbox is "",
+		// and every delivery to that actor then dies in makeActivityPost
+		// with "target POST URL is empty" -- a follow stays pending forever
+		// and nothing says why. Repairing it here means an instance already
+		// carrying such a row fixes itself on the next activity, with no
+		// manual SQL.
+		if remoteUser.Inbox == "" {
+			log.Info("Remote user %s inbox empty, fetching", actorIRI)
+			fetched, err := newRemoteActor(app, actorIRI)
+			if err != nil {
+				log.Error("Couldn't re-fetch remote actor %s: %v", actorIRI, err)
+				return nil, nil, err
+			}
+			_, err = app.db.Exec("UPDATE remoteusers SET inbox = ?, shared_inbox = ? WHERE actor_id = ?", fetched.GetInbox(), fetched.GetSharedInbox(), actorIRI)
+			if err != nil {
+				log.Error("Couldn't repair remote user %s: %v", actorIRI, err)
+				return nil, nil, err
+			}
+			remoteUser.Inbox = fetched.GetInbox()
+			remoteUser.SharedInbox = fetched.GetSharedInbox()
+		}
 		actor = remoteUser.AsPerson()
 	}
 	return actor, remoteUser, nil
@@ -1259,7 +1396,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(actorIRI)
+			remoteActor, err := newRemoteActor(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
 				return "", err
@@ -1274,13 +1411,17 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 			}
 			actorIRI = remoteActor.URL()
 		}
-	} else if remoteUser.URL == "" {
-		log.Info("Remote user %s URL empty, fetching", remoteUser.ActorID)
-		fetchedActor, err := newRemoteActor(remoteUser.ActorID)
+	} else if remoteUser.URL == "" || remoteUser.Inbox == "" {
+		// An empty inbox is healed on the same terms as an empty URL, and by
+		// the same fetch. Such a row is a leftover from an unsigned fetch of
+		// an authorized-fetch instance, and it disables delivery to that
+		// actor until something replaces it.
+		log.Info("Remote user %s URL or inbox empty, fetching", remoteUser.ActorID)
+		fetchedActor, err := newRemoteActor(app, remoteUser.ActorID)
 		if err != nil {
 			log.Error("Couldn't fetch remote actor: %v", err)
 		} else {
-			_, err := app.db.Exec("UPDATE remoteusers SET url = ? WHERE actor_id = ?", fetchedActor.URL(), remoteUser.ActorID)
+			_, err := app.db.Exec("UPDATE remoteusers SET url = ?, inbox = ?, shared_inbox = ? WHERE actor_id = ?", fetchedActor.URL(), fetchedActor.GetInbox(), fetchedActor.GetSharedInbox(), remoteUser.ActorID)
 			if err != nil {
 				log.Error("Couldn't update handle '%s' for user %s", handle, actorIRI)
 			} else {
