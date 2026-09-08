@@ -785,7 +785,14 @@ func makeActivityPost(app *App, p *activitystreams.Person, url string, m interfa
 	}
 
 	if url == "" {
-		log.Error("Target POST URL is empty! Person: %+v, Activity: %+v", p, m)
+		// Log the actor's identity, never the actor itself: a Person
+		// carries the blog's ActivityPub signing private key in an
+		// unexported field, which %+v would print to the log in full.
+		actorID := ""
+		if p != nil {
+			actorID = p.ID
+		}
+		log.Error("Target POST URL is empty! Actor: %s, Activity: %+v", actorID, m)
 		return fmt.Errorf("target POST URL is empty")
 	}
 
