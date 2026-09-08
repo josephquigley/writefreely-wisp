@@ -1,0 +1,17 @@
+# Fork-only. Filters the list GitHub generates for a release (the release job
+# in .github/workflows/ asks for it with generate_release_notes=true).
+#
+# Release pull requests — "Release X" into develop, "Release X to main" — are
+# plumbing: they carry no change of their own, only the changes already listed
+# individually. The generator can filter by label or author and by nothing else,
+# so the release job labels them "release" before it publishes, and this file
+# drops anything wearing that label.
+changelog:
+  exclude:
+    labels:
+      - release
+      - skip-changelog
+  categories:
+    - title: What's changed
+      labels:
+        - "*"
