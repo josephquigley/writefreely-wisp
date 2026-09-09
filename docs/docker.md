@@ -138,9 +138,10 @@ front of it and terminate TLS there.
 
 ## Sending mail
 
-WriteFreely reads its mail settings from `config.ini`, not from the
-environment, and sends through either SMTP or the Mailgun API. Password
-resets and invites are silently unavailable until one is configured.
+WriteFreely reads its mail settings from `config.ini` and sends through
+either SMTP or the Mailgun API. Password resets and invites are silently
+unavailable until one is configured. The credentials themselves can live in
+`.env` -- see "Keeping secrets out of config.ini" below.
 
 The development stack runs [Mailpit](https://mailpit.axllent.org/), which
 accepts everything and delivers nothing. Read what the app sent at
@@ -219,13 +220,60 @@ Editing in place (`cat >>`, `cat >`) is picked up on the next page load. An edit
 
 Do not mount over `/usr/share/writefreely` or its `static` directory. That masks the templates and pages the binary needs.
 
+## Keeping secrets out of config.ini
+
+Any value in `config.ini` may be written as a reference to an environment
+variable instead of the value itself:
+
+```ini
+[email]
+mailgun_private = ${WRITEFREELY_EMAIL_MAILGUN_PRIVATE}
+
+[oauth.generic]
+client_secret = ${WRITEFREELY_OAUTH_GENERIC_CLIENT_SECRET}
+```
+
+Put the values in `.env`, which both compose files pass to the container:
+
+```
+WRITEFREELY_EMAIL_MAILGUN_PRIVATE=key-...
+WRITEFREELY_OAUTH_GENERIC_CLIENT_SECRET=...
+```
+
+`config.ini` can then be committed, mirrored or backed up without carrying a
+secret, while `.env` stays on the host.
+
+The variable names are yours to choose. Nothing derives a name from the
+section and key, and an environment variable on its own configures nothing:
+the reference in the file is what makes it apply.
+
+**A value is substituted only when it is entirely a reference.** `${NAME}`
+alone is replaced; `p@ss$word`, `$HOME` and `a${NAME}b` are literals and are
+left exactly as written. There is no escape sequence, so a value whose literal
+content is `${SOME_NAME}` cannot be expressed -- pick a different value or a
+different variable name.
+
+**A referenced variable that is not set stops the instance from starting**,
+naming every one it could not resolve:
+
+```
+configuration references environment variables that are not set:
+  [email] mailgun_private references WRITEFREELY_EMAIL_MAILGUN_PRIVATE, which is not set
+```
+
+That is deliberate. The alternative is passing the literal `${...}` on as a
+credential, which fails much later and much less clearly.
+
+Saving settings from `/admin/settings` leaves references intact, so the UI
+cannot write an expanded secret back into the file.
+
 ## Environment variables
 
 Read from `.env` by both compose files:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MYSQL_PASSWORD` | none, required | Password for the `writefreely` database user. Also goes in `config.ini` |
+| `MYSQL_PASSWORD` | none, required | Password for the `writefreely` database user. Reference it from `config.ini` as `password = ${MYSQL_PASSWORD}` rather than copying the value |
 | `MYSQL_ROOT_PASSWORD` | none, required | MariaDB root password, for administration only |
 | `PUID` / `PGID` | `1000` | User and group both containers run as, and the ownership MariaDB writes with |
 | `TZ` | `Etc/UTC` | Container timezone |

@@ -35,6 +35,7 @@ This edition keeps that intact and adds a small set of blog management features,
 * **Image uploads.** Upload images from the editor rather than hosting them elsewhere.
 * **Instance-wide announce actor.** One actor for the whole instance that anyone can follow to receive every new post from every public blog, instead of following each blog separately. Off unless `instance_announce` is set. Public blogs only, and delivery still obeys `federation_allowlist`.
 * **Reply delegate.** Route replies to a blog's posts to a configured account on another fediverse instance, so a reply lands somewhere a reader can actually see it. The delegate is mentioned only while it follows the blog, so a blog cannot address an account that never asked for its posts.
+* **Secrets out of `config.ini`.** Any value may be written as `${VAR}` and read from the environment, so API keys and client secrets can live in `.env` while the config file stays safe to commit or mirror. A referenced variable that is not set stops the instance from starting rather than passing the literal through.
 
 Plus assorted fixes carried on top of upstream. Each feature is developed on its own branch so it can be offered upstream independently.
 
