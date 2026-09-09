@@ -355,6 +355,14 @@ func Load(fname string) (*Config, error) {
 		return nil, err
 	}
 
+	// Two passes, because ini.ValueMapper is func(string) string and so
+	// cannot refuse a load. The first decides whether every reference can be
+	// resolved; the second resolves them.
+	if err := checkEnvRefs(cfg); err != nil {
+		return nil, err
+	}
+	cfg.ValueMapper = expandEnvRef
+
 	// Parse INI file
 	uc := &Config{}
 	err = cfg.MapTo(uc)
@@ -434,18 +442,44 @@ func Load(fname string) (*Config, error) {
 }
 
 // Save writes the given Config to the given file.
+//
+// It updates the file that is there rather than replacing it. ini.Empty()
+// plus ReflectFrom, which this did before, serialized the whole in-memory
+// Config over the file on every admin settings save -- destroying every
+// comment and dropping every key the struct does not map, although only
+// fourteen [app] fields are reachable from that form.
+//
+// ReflectFrom against a loaded file updates the keys it knows, appends the
+// ones the file lacks, and leaves comments alone. What it does not do is
+// leave an environment reference alone: it writes the expanded secret over
+// it. So the references are recorded first and restored after, which is what
+// stops a UI click from writing a secret into a file that deliberately does
+// not hold one.
 func Save(uc *Config, fname string) error {
-	cfg := ini.Empty()
-	err := ini.ReflectFrom(cfg, uc)
-	if err != nil {
-		return err
-	}
-
 	if fname == "" {
 		fname = FileName
 	}
-	err = cfg.SaveTo(fname)
+
+	// No readable file to update -- a first run, or --config -- so write a
+	// whole one, as this has always done.
+	cfg, err := ini.Load(fname)
 	if err != nil {
+		cfg = ini.Empty()
+	}
+
+	// Read before ReflectFrom overwrites them. No ValueMapper is installed
+	// on this file, so these are the literal references from disk.
+	refs := envRefsIn(cfg)
+
+	if err := ini.ReflectFrom(cfg, uc); err != nil {
+		return err
+	}
+
+	for _, r := range refs {
+		cfg.Section(r.section).Key(r.key).SetValue(r.raw)
+	}
+
+	if err := cfg.SaveTo(fname); err != nil {
 		return err
 	}
 	return os.Chmod(fname, 0600)

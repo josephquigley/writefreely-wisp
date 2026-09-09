@@ -106,7 +106,8 @@ jobs:
     permissions:
       contents: write
       packages: write
-      pull-requests: read
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -175,6 +176,32 @@ jobs:
             echo "$body"
             echo "PRBODY_EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # Release pull requests carry no change of their own. The notes generator
+      # filters by label and by nothing else, so they are labelled here, before
+      # the notes are generated below, and dropped by .github/release.yml.
+      #
+      # Two of them per release: the "Release X" pull request into develop, and
+      # the "Release X to main" pull request that this run is the merge of.
+      - name: Label the release pull requests
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh label create release --repo "$REPO" --force \
+            --color ededed \
+            --description 'Release plumbing; excluded from generated release notes'
+          {
+            gh api "repos/${REPO}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[] | select(.merged_at != null) | .number'
+            gh pr list --repo "$REPO" --state merged --limit 20 \
+              --json number,headRefName \
+              --jq '.[] | select(.headRefName | startswith("release-")) | .number'
+          } | sort -u | while read -r pr; do
+            gh pr edit "$pr" --repo "$REPO" --add-label release
+          done
 
       - name: Publish the GitHub Release
         if: steps.decide.outputs.release == 'true'
