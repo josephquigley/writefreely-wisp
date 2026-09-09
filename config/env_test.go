@@ -106,3 +106,50 @@ func TestEnvRefsInFindsReferencesAndNothingElse(t *testing.T) {
 		t.Errorf("envRefsIn = %+v, want %+v", refs[0], want)
 	}
 }
+
+func TestLoadExpandsEnvReference(t *testing.T) {
+	t.Setenv("WF_TEST_MAILGUN", "mg-secret")
+	t.Setenv("WF_TEST_OAUTH", "oauth-secret")
+	cfg, err := Load(writeConfig(t, "[app]\nhost = http://localhost:8080\n\n"+
+		"[email]\nmailgun_private = ${WF_TEST_MAILGUN}\n\n"+
+		"[oauth.generic]\nclient_secret = ${WF_TEST_OAUTH}\n"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Email.MailgunPrivate != "mg-secret" {
+		t.Errorf("mailgun_private = %q, want mg-secret", cfg.Email.MailgunPrivate)
+	}
+	if cfg.GenericOauth.ClientSecret != "oauth-secret" {
+		t.Errorf("client_secret = %q, want oauth-secret", cfg.GenericOauth.ClientSecret)
+	}
+}
+
+func TestLoadFailsOnUnsetEnvReference(t *testing.T) {
+	unsetEnv(t, "WF_TEST_MISSING")
+	_, err := Load(writeConfig(t, "[app]\nhost = http://localhost:8080\n\n"+
+		"[email]\nmailgun_private = ${WF_TEST_MISSING}\n"))
+	if err == nil {
+		t.Fatal("load: want an error for an unset reference, got nil")
+	}
+	if !strings.Contains(err.Error(), "[email] mailgun_private references WF_TEST_MISSING") {
+		t.Errorf("error %q does not name the section, key and variable", err)
+	}
+}
+
+// The feature is opt-in by file content: a config with no references behaves
+// exactly as it did before it existed, which is what keeps bare-metal
+// installs unaffected.
+func TestLoadLeavesLiteralSecretsAlone(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	cfg, err := Load(writeConfig(t, "[app]\nhost = http://localhost:8080\n\n"+
+		"[email]\nsmtp_password = p@ss$word\nmailgun_private = $HOME\n"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Email.Password != "p@ss$word" {
+		t.Errorf("smtp_password = %q, want p@ss$word", cfg.Email.Password)
+	}
+	if cfg.Email.MailgunPrivate != "$HOME" {
+		t.Errorf("mailgun_private = %q, want $HOME", cfg.Email.MailgunPrivate)
+	}
+}

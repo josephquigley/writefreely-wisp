@@ -355,6 +355,14 @@ func Load(fname string) (*Config, error) {
 		return nil, err
 	}
 
+	// Two passes, because ini.ValueMapper is func(string) string and so
+	// cannot refuse a load. The first decides whether every reference can be
+	// resolved; the second resolves them.
+	if err := checkEnvRefs(cfg); err != nil {
+		return nil, err
+	}
+	cfg.ValueMapper = expandEnvRef
+
 	// Parse INI file
 	uc := &Config{}
 	err = cfg.MapTo(uc)
