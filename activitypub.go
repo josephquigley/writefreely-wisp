@@ -877,7 +877,7 @@ func isPublicIRI(iri string) error {
 		// Shared with the webfinger client's dial-time check; the
 		// ruleset lives in ssrf_guard.go. This one stays a pre-flight
 		// check so an IRI is refused before anything is signed or sent.
-		if !isPublicAddr(ip, host, nil) {
+		if !isPublicAddr(ip, host, guardOptions()) {
 			return fmt.Errorf("host %q resolves to disallowed address %s", host, ip)
 		}
 	}

@@ -112,7 +112,39 @@ func (app *App) initFederationAllowlist() error {
 	if app.fedKeys == nil {
 		app.fedKeys = newKeyCache()
 	}
+	// Installed only once the allowlist has been accepted, so a refused
+	// configuration never leaves a half-applied exemption behind it, and
+	// only when there is an allowlist to consult: an instance without one
+	// keeps the strict ruleset and the nil-options fast path with it.
+	if app.federationAllowlistActive() {
+		setPeerAddressExemption(app.peerAddressExempt)
+	} else {
+		setPeerAddressExemption(nil)
+	}
 	return nil
+}
+
+// peerAddressExempt reports whether host may be reached on an address the
+// SSRF guard would otherwise refuse. It is what ssrfGuardOptions.hostAllowed
+// is wired to, and it exempts nothing beyond RFC1918/ULA and CGNAT — see
+// isPublicAddr for the ranges no exemption can reopen.
+//
+// The exemption exists because this software is deployed on private
+// networks. A community whose peers all sit on a tailnet has every peer on
+// 100.64.0.0/10, so the strict ruleset refuses every webfinger lookup for a
+// sibling instance and no peer handle in a post can resolve.
+//
+// It deliberately does NOT reuse federationAllowed's answer directly.
+// federationAllowed treats an unconfigured allowlist as "federate with
+// anyone" and returns true for every host; read straight, that would exempt
+// every host on the internet from the address guard on an instance that has
+// simply not been configured. An exemption has to be something the operator
+// asked for, so an empty allowlist exempts nobody.
+func (app *App) peerAddressExempt(host string) bool {
+	if app == nil || !app.federationAllowlistActive() {
+		return false
+	}
+	return app.federationAllowed(host)
 }
 
 const (
