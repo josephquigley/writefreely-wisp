@@ -138,7 +138,11 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 	}
 	var lastErr error
 	for _, ip := range ips {
-		if !isPublicAddr(ip.IP) {
+		// The check happens here, after the resolver and before the
+		// dial, so a DNS rebind cannot move the connection to an
+		// address that was public when the name was first looked up.
+		// The ruleset itself lives in ssrf_guard.go.
+		if !isPublicAddr(ip.IP, host, nil) {
 			lastErr = fmt.Errorf("%w: %s", errBlockedRemoteAddr, ip.IP)
 			continue
 		}
@@ -154,30 +158,6 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 		lastErr = fmt.Errorf("no addresses found for %s", host)
 	}
 	return nil, lastErr
-}
-
-// isPublicAddr reports whether ip is safe to connect to, i.e. not a
-// loopback, private, link-local, multicast, or otherwise special-purpose
-// address that could be used to reach internal services or cloud metadata
-// endpoints via SSRF.
-func isPublicAddr(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	if ip4 := ip.To4(); ip4 != nil {
-		// 100.64.0.0/10 (Carrier-Grade NAT) and 169.254.169.254-style
-		// cloud metadata addresses are covered by IsLinkLocalUnicast above,
-		// but explicitly block the CGNAT range too.
-		if ip4[0] == 100 && ip4[1]&0xc0 == 64 {
-			return false
-		}
-	}
-	return true
 }
 
 // RemoteLookup looks up a user by handle at a remote server
