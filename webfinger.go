@@ -142,7 +142,7 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 		// dial, so a DNS rebind cannot move the connection to an
 		// address that was public when the name was first looked up.
 		// The ruleset itself lives in ssrf_guard.go.
-		if !isPublicAddr(ip.IP, host, nil) {
+		if !isPublicAddr(ip.IP, host, guardOptions()) {
 			lastErr = fmt.Errorf("%w: %s", errBlockedRemoteAddr, ip.IP)
 			continue
 		}
