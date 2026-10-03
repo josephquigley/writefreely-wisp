@@ -1554,7 +1554,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 		err = rows.Scan(&p.ID, &p.Slug, &p.Font, &p.Language, &p.RTL, &p.Privacy, &p.OwnerID, &p.CollectionID, &p.PinnedPosition, &p.Created, &p.Updated, &p.ViewCount, &p.Title, &p.Content)
 		if err != nil {
 			log.Error("Failed scanning row: %v", err)
-			break
+			return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
 		}
 		p.extractData()
 		p.augmentContent(c)
@@ -1565,6 +1565,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	err = rows.Err()
 	if err != nil {
 		log.Error("Error after Next() on rows: %v", err)
+		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
 	}
 
 	return &posts, nil
