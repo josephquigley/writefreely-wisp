@@ -26,7 +26,12 @@ after a failover the settings quietly revert.
 ## Non-goals
 
 * The AES keys under `keys/` (WFPG-14 part 1). They are per-node disk state too
-  and full HA needs them handled, but that is separate work.
+  and full HA needs them handled, but that is separate work. They stay out
+  of the database: the email key beside the ciphertext it protects would
+  defeat the encryption, and the cookie and CSRF keys would let anyone who
+  reads a backup forge sessions. Founder decision, 2026-10-03: keeping
+  identical keys on every node, and redistributing them in the rare event
+  they change, is the sysadmin's job.
 * Moving images off local disk (WFPG-13).
 * Updating any particular deployment's copy of `config.ini`, e.g. a
   config-management tree that would re-deliver stripped keys. That is deploy
