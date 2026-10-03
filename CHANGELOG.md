@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and tag pages escape the tag, work on MySQL 8, and report failures instead of showing missing or partial posts.
+- Access tokens match exactly instead of via `LIKE`, closing a wildcard bypass, `db init` stops at the first failed table, and tag pages escape tags, work on MySQL 8, and report query failures.
 
 ## [0.20.0+wisp] - 2026-09-09
 
