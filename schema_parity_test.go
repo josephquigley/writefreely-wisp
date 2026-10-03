@@ -59,12 +59,15 @@ func TestPostgresInit(t *testing.T) {
 	var ver, rows int
 	require.NoError(t, db.QueryRow("SELECT COALESCE(MAX(version), 0), COUNT(*) FROM appmigrations").Scan(&ver, &rows))
 	assert.Equal(t, migrations.CurrentVer(), ver, "a fresh Postgres database is at the current version")
-	assert.Equal(t, 1, rows, "init records one row; V1 to V18 never run on Postgres")
+	// One row for the V18 base that init records (V1 to V18 never run on
+	// Postgres), plus one per migration init then runs on top of it.
+	wantRows := 1 + migrations.CurrentVer() - migrations.PostgresBaseVersion
+	assert.Equal(t, wantRows, rows, "init records the base version, then one row per later migration")
 
 	// db migrate is a no-op.
 	require.NoError(t, migrations.Migrate(migrations.NewDatastore(db.DB, driverPostgres)))
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM appmigrations").Scan(&rows))
-	assert.Equal(t, 1, rows)
+	assert.Equal(t, wantRows, rows)
 
 	types := map[string]string{}
 	r, err := db.Query(`SELECT table_name || '.' || column_name, format_type(a.atttypid, a.atttypmod)

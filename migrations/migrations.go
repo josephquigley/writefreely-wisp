@@ -113,6 +113,7 @@ var migrations = []Migration{
 	New("support ActivityPub likes", supportRemoteLikes),             // V15 -> V16 (v0.16.0)
 	New("fix post signature character set", fixPostSignatureCharset), // V16 -> V17 (v0.17.0)
 	New("support post images", supportPostImages),                    // V17 -> V18
+	New("case-insensitive subscriber email", subscriberEmailCase),    // V18 -> V19
 }
 
 // CurrentVer returns the current migration version the application is on
