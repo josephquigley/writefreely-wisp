@@ -1,25 +1,29 @@
 name: Changelog
 
-# Fork-only. Blocks a pull request into main unless CHANGELOG.md is valid Keep
-# a Changelog and carries the summary of the release it cuts.
+# Fork-only. Keeps CHANGELOG.md to one summary per release: a single bullet
+# under [Unreleased], one sentence of at most 35 words. Detail belongs in the
+# GitHub release notes. Only the bullet count and the word count are checked;
+# that it is one sentence is left to review.
 #
-# A pull request into main is a release: wisp-release.yml tags whatever
-# softwareVer app.go names once it merges, and moves the [Unreleased] entry
-# into a section for that version with kacl-cli. So the summary is expected
-# under [Unreleased]. A section already named for the version, with the
-# +wisp suffix the tags carry, is accepted too, in case it was cut by hand.
+# Into develop: a pull request must edit that summary, adding it when
+# [Unreleased] is empty and otherwise rewriting the sentence to cover the
+# change too. Adding a second bullet fails, because the release needs one.
+# A pull request with nothing worth summarising opts out by starting its head
+# commit's message with "[kacl-skip]" or "kacl-skip:", which is also how an
+# upstream sync gets through: push an empty commit carrying the prefix.
 #
-# Either way the entry is one bullet of at most 35 words, one sentence,
-# summarising the whole release. Detail belongs in the GitHub release notes.
-# Only the bullet count and the word count are checked here; that it is one
-# sentence is left to review.
+# Into main: a pull request into main is a release. wisp-release.yml tags
+# whatever softwareVer app.go names once it merges, and moves the [Unreleased]
+# summary into a section for that version with kacl-cli. So the summary must be
+# there. A section already named for the version, with the +wisp suffix the
+# tags carry, is accepted too, in case it was cut by hand. There is no opt-out.
 #
 # Uses pull_request_target and an in-job merge for the same reasons as
 # test.yml: the definition comes from the base branch, and what is checked is
 # the merge result. It requests no secrets and only read access to contents.
 on:
   pull_request_target:
-    branches: [main]
+    branches: [develop, main]
 
 permissions:
   contents: read
@@ -31,6 +35,7 @@ concurrency:
 env:
   KACL_VERSION: "0.7.0"
   MAX_WORDS: "35"
+  BASE_REF: ${{ github.event.pull_request.base.ref }}
 
 jobs:
   changelog:
@@ -43,18 +48,65 @@ jobs:
           # The in-job merge below needs real history, not a depth 1 clone,
           # or git refuses it as unrelated histories.
           fetch-depth: 0
+      - name: Install kacl-cli
+        run: pipx install "python-kacl==$KACL_VERSION"
+      # Read before the merge, so the develop check can tell whether the pull
+      # request changed the summary. Empty when the base has no changelog.
+      - name: Record the base branch's summary
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            kacl-cli get unreleased > "$RUNNER_TEMP/base-unreleased"
+          else
+            : > "$RUNNER_TEMP/base-unreleased"
+          fi
       - name: Merge the pull request branch
+        id: merge
         run: |
           git fetch --no-tags origin "$HEAD_REF"
+          if git log -1 --format=%s FETCH_HEAD | grep -Eqi '^[[:space:]]*(\[kacl-skip\]|kacl-skip:)'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
           git -c user.name=ci -c user.email=ci@localhost \
             merge --no-edit FETCH_HEAD
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      - name: Install kacl-cli
-        run: pipx install "python-kacl==$KACL_VERSION"
       - name: Verify the changelog format
         run: kacl-cli verify
+
+      - name: Require the pull request to update the summary
+        if: env.BASE_REF == 'develop'
+        env:
+          SKIP: ${{ steps.merge.outputs.skip }}
+        run: |
+          if [ "$SKIP" = true ]; then
+            echo "Head commit opts out with kacl-skip; no summary change required."
+            exit 0
+          fi
+
+          entry=$(kacl-cli get unreleased)
+          if [ "$entry" = "$(cat "$RUNNER_TEMP/base-unreleased")" ]; then
+            echo "::error file=CHANGELOG.md::[Unreleased] is unchanged. Add the release summary, or rewrite it to cover this change. To opt out, start the head commit message with [kacl-skip] or kacl-skip:."
+            exit 1
+          fi
+
+          bullets=$(printf '%s\n' "$entry" | grep -c '^- ' || true)
+          if [ "$bullets" -ne 1 ]; then
+            echo "::error file=CHANGELOG.md::[Unreleased] has $bullets bullets. It holds exactly one: a single sentence summarising the release so far. Rewrite it rather than adding another."
+            exit 1
+          fi
+
+          words=$(printf '%s\n' "$entry" | sed -n 's/^- //p' | wc -w)
+          if [ "$words" -gt "$MAX_WORDS" ]; then
+            echo "::error file=CHANGELOG.md::The [Unreleased] entry is $words words. The limit is $MAX_WORDS."
+            exit 1
+          fi
+
+          echo "[Unreleased] updated: one bullet, $words words."
+
       - name: Require one summary of the release
+        if: env.BASE_REF == 'main'
         run: |
           version=$(sed -n 's/^[[:space:]]*softwareVer = "\(.*\)"/\1/p' app.go)
           test -n "$version" || { echo "::error::no softwareVer in app.go"; exit 1; }
