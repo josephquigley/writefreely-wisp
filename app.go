@@ -804,9 +804,13 @@ func DoConfig(app *App, configSections string) {
 		log.Info("Database already initialized.")
 	}
 
-	if _, err := app.importSettings(context.Background()); err != nil {
+	imp, err := app.importSettings(context.Background())
+	if err != nil {
 		log.Error("Unable to move settings into the database: %v", err)
 		os.Exit(1)
+	}
+	if note := configStartNote(imp); note != "" {
+		log.Info("%s", note)
 	}
 
 	if d.User != nil {

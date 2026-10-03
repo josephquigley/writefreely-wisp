@@ -310,3 +310,17 @@ func TestImportReadOnlyINIWithMarker(t *testing.T) {
 		t.Errorf("res %+v err %v", res, err)
 	}
 }
+
+func TestConfigStartNote(t *testing.T) {
+	if n := configStartNote(settingsImport{Imported: true, Stripped: []string{"app.site_name"}}); n != "" {
+		t.Errorf("note after a real import: %q", n)
+	}
+	if n := configStartNote(settingsImport{}); n != "" {
+		t.Errorf("note with nothing to say: %q", n)
+	}
+	n := configStartNote(settingsImport{Stripped: []string{"app.site_name", "app.private"}, Drift: []string{"app.private"}})
+	want := "The database already holds this instance's settings; the answers just given for app.site_name, app.private were not applied. Change them with `writefreely settings set` or the admin page."
+	if n != want {
+		t.Errorf("note %q", n)
+	}
+}

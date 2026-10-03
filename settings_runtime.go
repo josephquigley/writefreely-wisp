@@ -253,6 +253,29 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 	return res, nil
 }
 
+// configStartNote tells `config start` that answers it just wrote to
+// config.ini were ignored, because an earlier run had already moved the
+// settings into the database. It is empty when nothing was ignored.
+func configStartNote(imp settingsImport) string {
+	if imp.Imported {
+		return ""
+	}
+	var keys []string
+	seen := map[string]bool{}
+	for _, list := range [][]string{imp.Stripped, imp.Left, imp.Drift} {
+		for _, k := range list {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("The database already holds this instance's settings; the answers just given for %s were not applied. Change them with `writefreely settings set` or the admin page.", strings.Join(keys, ", "))
+}
+
 // settingNameError explains why name cannot be set at runtime.
 func settingNameError(name, cfgPath string) error {
 	if config.IsBootstrap(name) {
