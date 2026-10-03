@@ -326,8 +326,8 @@ func TestConfigStartNote(t *testing.T) {
 }
 
 // A malformed allowlist in the ini must stop the import, as it stopped
-// startup before; storing the default instead would drop the allowlist and
-// open a private instance's federation to every peer.
+// startup before; normalising it would silently drop the operator's
+// allowlist and cut the instance off from its peers.
 func TestImportRefusesMalformedAllowlist(t *testing.T) {
 	a := newSettingsTestApp(t, "[app]\nhost = https://blog.example\nprivate = true\nfederation_allowlist = a.*.b\n")
 	loadINIInto(t, a)

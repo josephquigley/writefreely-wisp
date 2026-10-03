@@ -205,8 +205,8 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 			return res, errors.New(emptyDatabaseRefusal)
 		}
 		// A malformed allowlist stops the import, as it always stopped
-		// startup. Normalising it to the default would drop it, and open a
-		// private instance's federation to every peer.
+		// startup. Normalising it to the default would silently drop the
+		// operator's allowlist and cut the instance off from its peers.
 		if err := config.ValidateFederationAllowlist(config.ParseFederationAllowlist(app.cfg.App.FederationAllowlist)); err != nil {
 			return res, fmt.Errorf("%s: %v; fix it, then start again", app.configPath(), err)
 		}

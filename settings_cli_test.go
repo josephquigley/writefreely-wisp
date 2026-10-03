@@ -155,3 +155,23 @@ func TestSettingsCLIReadOnlyDoesNotWrite(t *testing.T) {
 		t.Errorf("version %d err %v", v, err)
 	}
 }
+
+// A restored backup: config.ini says the settings were moved, but the
+// database is at version 0. The read-only commands must refuse as the
+// import does, not show the stripped file's zero values.
+func TestSettingsCLIReadOnlyRefusesMarkerAtVersionZero(t *testing.T) {
+	app := cliTestApp(t)
+	if _, err := config.MarkSettingsInDatabase(app.cfgFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SettingsList(NewApp(app.cfgFile)); err == nil || err.Error() != emptyDatabaseRefusal {
+		t.Errorf("list: %v", err)
+	}
+	if _, err := SettingGet(NewApp(app.cfgFile), "app.site_name"); err == nil || err.Error() != emptyDatabaseRefusal {
+		t.Errorf("get: %v", err)
+	}
+	out, err := SettingsExport(NewApp(app.cfgFile))
+	if err == nil || err.Error() != emptyDatabaseRefusal || out != "" {
+		t.Errorf("export %q: %v", out, err)
+	}
+}

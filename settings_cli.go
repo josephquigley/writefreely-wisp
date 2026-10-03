@@ -72,6 +72,16 @@ func effectiveSettings(app *App) (map[string]string, bool, error) {
 		return nil, false, err
 	}
 	if ver == 0 {
+		// Same refusal as the import: a marker over an empty database is a
+		// restored backup, and the stripped file's zero values are not the
+		// instance's settings.
+		marked, err := config.HasSettingsMarker(app.configPath())
+		if err != nil {
+			return nil, false, err
+		}
+		if marked {
+			return nil, false, errors.New(emptyDatabaseRefusal)
+		}
 		log.Info(notImportedNote)
 		return app.normalisedSettings(), false, nil
 	}
