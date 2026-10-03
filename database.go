@@ -1513,6 +1513,7 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	err = rows.Err()
 	if err != nil {
 		log.Error("Error after Next() on rows: %v", err)
+		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve tagged collection posts."}
 	}
 
 	return ids, nil
