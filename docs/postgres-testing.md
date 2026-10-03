@@ -78,11 +78,11 @@ isolated from one another and need no teardown of their own.
 
 The schema is loaded by `adminInitDatabase`, the same function `db init`
 uses, so these tests exercise the real schema and migrations rather than a
-copy. **Until the Postgres schema is ported, that function panics with "not
-implemented for database driver", and the helpers turn that one panic into a
-skip that names the schema ticket.** Any other schema-load error fails the
-test. `TestPostgresSchemaLoads` is the probe: it skips today and passes once
-the schema loads.
+copy. The helpers still turn one specific panic, "not implemented for
+database driver", into a skip naming the schema ticket; since the Postgres
+schema landed (WFPG-03) that panic no longer happens, and any schema-load
+error fails the test. `TestPostgresSchemaLoads` is the probe that a full
+`db init` works against a real server.
 
 `withTestDB`, the older helper used by MySQL-only tests, also hands out a
 fresh schema-loaded database under Postgres. `TestOAuthDatastore` and
@@ -124,10 +124,8 @@ Any other Postgres works the same way: set the two variables and run
 ## In CI
 
 `.github/workflows/test.yml` has a `test-postgres` job with a `postgres:18`
-service container and the same two variables. It is marked
-`continue-on-error` while Postgres support is incomplete, so its failures are
-visible on a pull request without blocking it. It becomes a required check
-once the dialect work is finished.
+service container and the same two variables. It is required: a failure
+there fails the run, the same as the SQLite job.
 
 ## Version
 
