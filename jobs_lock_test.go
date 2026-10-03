@@ -89,7 +89,7 @@ func seedDueEmailJob(t *testing.T, app *App, db *sql.DB) {
 	if err := app.db.CreateUser(app.cfg, u, "", ""); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	coll, err := app.db.CreateCollection(app.cfg, "alice-blog", "alice-blog", u.ID)
+	coll, err := app.db.CreateCollection(app.cfg, "alice-blog", "alice-blog", u.ID, false)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
