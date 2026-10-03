@@ -23,10 +23,6 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
 
-### Fixed
-
-- Deleting an image now removes its stored file before its database row, so a failed delete from object storage can be retried instead of leaking the file permanently.
-
 ### Security
 
 - Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
