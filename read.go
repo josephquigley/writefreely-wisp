@@ -131,6 +131,10 @@ func (app *App) FetchPublicPosts() (interface{}, error) {
 }
 
 func viewLocalTimelineAPI(app *App, w http.ResponseWriter, r *http.Request) error {
+	if !app.Config().App.LocalTimeline {
+		return impart.HTTPError{http.StatusNotFound, "Page doesn't exist."}
+	}
+
 	updateTimelineCache(app.timeline, false)
 
 	skip, _ := strconv.Atoi(r.FormValue("skip"))
