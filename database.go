@@ -932,10 +932,6 @@ func (db *datastore) GetCollectionByID(id int64) (*Collection, error) {
 	return db.GetCollectionBy("id = ?", id)
 }
 
-func (db *datastore) GetCollectionFromDomain(host string) (*Collection, error) {
-	return db.GetCollectionBy("host = ?", host)
-}
-
 func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias string) error {
 	// Truncate fields correctly, so we don't get "Data too long for column" errors in MySQL (writefreely#600)
 	if c.Title != nil {
