@@ -211,7 +211,7 @@ func TestPostgresCreateUserDuplicate(t *testing.T) {
 		err := db.CreateUser(cfg, u, "", "")
 		if err != nil && strings.Contains(err.Error(), "LastInsertId") {
 			// CreateUser reads the new user's ID with LastInsertId between
-			// the two INSERTs, which pgx does not support. That is a
+			// the two INSERTs, which lib/pq does not support. That is a
 			// separate port (InsertReturningID); this path is reachable on
 			// Postgres only once it lands.
 			t.Skipf("CreateUser still uses LastInsertId on Postgres: %v", err)

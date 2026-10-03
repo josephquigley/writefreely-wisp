@@ -11,6 +11,9 @@
 package writefreely
 
 import (
+	"database/sql"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -162,4 +165,59 @@ func TestPostgresUsersFilteredWindow(t *testing.T) {
 		names = append(names, u.Username)
 	}
 	assert.Equal(t, []string{"newer"}, names)
+}
+
+// TestPostgresTimeIsUTCWhateverTheEnvironment: lib/pq reads timestamptz in
+// the session TimeZone. postgresDSN pins it to UTC, and that must beat a
+// host's PGTZ or PGOPTIONS, or Created8601 renders the wrong instant.
+func TestPostgresTimeIsUTCWhateverTheEnvironment(t *testing.T) {
+	newPostgresTestDB(t) // skips unless WF_TEST_DB_TYPE=postgres
+	t.Setenv("PGTZ", "America/Detroit")
+	t.Setenv("PGOPTIONS", "-c timezone=Asia/Tokyo")
+
+	dsn, err := testPGDSN(os.Getenv(envTestPGDSN), "postgres")
+	require.NoError(t, err)
+	db, err := sql.Open(driverPostgresRebind, dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	var zone string
+	var now time.Time
+	require.NoError(t, db.QueryRow("SELECT current_setting('TimeZone'), now()").Scan(&zone, &now))
+	assert.Equal(t, "UTC", zone)
+	assert.Same(t, time.UTC, now.Location())
+}
+
+// TestPostgresTestDSNAlwaysUTC: a WF_TEST_PG_DSN that names another zone
+// must not change what the suite tests.
+func TestPostgresTestDSNAlwaysUTC(t *testing.T) {
+	dsn, err := testPGDSN("postgres://u@h/db?timezone=America/Detroit", "x")
+	require.NoError(t, err)
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	assert.Equal(t, "UTC", u.Query().Get("timezone"))
+}
+
+func TestPostgresTimeArgTruncatesToMicroseconds(t *testing.T) {
+	pg := postgresDialect{}
+	in := time.Date(2026, 10, 3, 12, 0, 59, 999999600, time.UTC)
+	assert.Equal(t, time.Date(2026, 10, 3, 12, 0, 59, 999999000, time.UTC), pg.TimeArg(in))
+	assert.Zero(t, pg.NowForInsert().Nanosecond()%1000)
+}
+
+// TestPostgresTimeArgRoundTrip: a value sent through TimeArg reads back
+// unchanged. Without truncation lib/pq sends the nanoseconds and Postgres
+// rounds 59.9999996 up into the next minute.
+func TestPostgresTimeArgRoundTrip(t *testing.T) {
+	sdb := newPostgresTestDB(t)
+	db := newDatastore(sdb, driverPostgres)
+	_, err := db.Exec("CREATE TABLE tt (v timestamptz NOT NULL)")
+	require.NoError(t, err)
+
+	in := postgresDialect{}.TimeArg(time.Date(2026, 10, 3, 12, 0, 59, 999999600, time.UTC))
+	_, err = db.Exec("INSERT INTO tt (v) VALUES (?)", in)
+	require.NoError(t, err)
+	var out time.Time
+	require.NoError(t, db.QueryRow("SELECT v FROM tt").Scan(&out))
+	assert.True(t, in.Equal(out), "sent %s, read %s", in, out)
 }
