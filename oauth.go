@@ -351,6 +351,10 @@ func (h oauthHandler) viewOauthCallback(app *App, w http.ResponseWriter, r *http
 		log.Error("Unable to inspectOauthAccessToken: %s", err)
 		return impart.HTTPError{http.StatusInternalServerError, err.Error()}
 	}
+	if !isStorableOAuthRemoteUserID(tokenInfo.UserID) {
+		log.Error("OAuth provider %s returned an account ID that cannot be stored (%d bytes)", provider, len(tokenInfo.UserID))
+		return errOAuthRemoteUserIDUnstorable
+	}
 
 	localUserID, err := h.DB.GetIDForRemoteUser(ctx, tokenInfo.UserID, provider, clientID)
 	if err != nil {
