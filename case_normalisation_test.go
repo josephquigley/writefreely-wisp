@@ -38,14 +38,16 @@ import (
 // spec, and a test that a differently cased value does NOT match turns that
 // decision into a guard.
 //
-// Every test runs on SQLite, and on Postgres too under `make test-postgres`.
+// Every test runs on SQLite, on Postgres too under `make test-postgres`, and
+// on MySQL too under `make test-mysql`.
 
 // forEachCaseEngine runs fn against a freshly initialised SQLite app and,
-// on a Postgres run, a freshly initialised Postgres app.
+// on a Postgres or MySQL run, a freshly initialised app on that engine.
 func forEachCaseEngine(t *testing.T, fn func(t *testing.T, app *App)) {
 	t.Helper()
-	t.Run("sqlite", func(t *testing.T) { fn(t, newHandleTestApp(t)) })
+	t.Run("sqlite", func(t *testing.T) { fn(t, newHandleTestAppOn(t, openSQLiteAppTestDB)) })
 	t.Run("postgres", func(t *testing.T) { fn(t, newPostgresTestApp(t, nil)) })
+	t.Run("mysql", func(t *testing.T) { fn(t, newMySQLTestApp(t, nil)) })
 }
 
 func caseInsertUser(t *testing.T, app *App, username string) int64 {

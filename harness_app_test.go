@@ -86,7 +86,13 @@ func openAppTestDB(t testing.TB, app *App, sqliteDriver, sqliteDSN string) *sql.
 		app.db = e.db
 		return app.db.DB
 	}
+	return openSQLiteAppTestDB(t, app, sqliteDriver, sqliteDSN)
+}
 
+// openSQLiteAppTestDB is openAppTestDB's SQLite path, whatever
+// WF_TEST_DB_TYPE says, for a test that compares engines side by side.
+func openSQLiteAppTestDB(t testing.TB, app *App, sqliteDriver, sqliteDSN string) *sql.DB {
+	t.Helper()
 	db, err := sql.Open(sqliteDriver, sqliteDSN)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)

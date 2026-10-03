@@ -93,8 +93,8 @@ func newTestPost(t *testing.T, app *App, collID int64, postID string, created ti
 	userID := announceTestUserID(t, app)
 	_, err := app.db.Exec(`INSERT INTO posts
 (id, slug, text_appearance, language, rtl, privacy, owner_id, collection_id, created, updated, view_count, title, content)
-VALUES (?, ?, 'norm', 'en', 0, 1, ?, ?, ?, ?, 0, ?, ?)`,
-		postID, postID, userID, collID, created, created, "Title "+postID, "Body of "+postID)
+VALUES (?, ?, 'norm', 'en', ?, 1, ?, ?, ?, ?, 0, ?, ?)`,
+		postID, postID, false, userID, collID, created, created, "Title "+postID, "Body of "+postID)
 	if err != nil {
 		t.Fatalf("insert post %s: %v", postID, err)
 	}

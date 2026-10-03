@@ -77,10 +77,13 @@ func newSignupTestApp(t *testing.T) *App {
 
 // seedInvite inserts a directly-usable invite code owned by ownerID, with no
 // expiration or use limit.
+// Codes are at most six characters, the width of userinvites.id, which
+// MySQL's strict mode and Postgres enforce.
 func seedInvite(t *testing.T, app *App, code string, ownerID int64) {
 	t.Helper()
-	_, err := app.db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, NULL, ?, NULL, 0)",
-		code, ownerID, time.Now().UTC().Format("2006-01-02 15:04:05"))
+	// inactive is bound, not a literal 0: it is a boolean column on Postgres.
+	_, err := app.db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, NULL, ?, NULL, ?)",
+		code, ownerID, time.Now().UTC().Format("2006-01-02 15:04:05"), false)
 	if err != nil {
 		t.Fatalf("seed invite: %v", err)
 	}
@@ -111,7 +114,7 @@ func TestWebSignupClosedRegistration(t *testing.T) {
 	}{
 		{"no invite code", "", http.StatusForbidden, false},
 		{"bogus invite code", "not-a-real-code", http.StatusForbidden, false},
-		{"valid invite code", "webvalid1", http.StatusFound, true},
+		{"valid invite code", "webok1", http.StatusFound, true},
 	}
 
 	for _, tc := range cases {
@@ -119,8 +122,8 @@ func TestWebSignupClosedRegistration(t *testing.T) {
 			app := newSignupTestApp(t)
 			app.cfg.App.OpenRegistration = false
 
-			if tc.invite == "webvalid1" {
-				seedInvite(t, app, "webvalid1", 0)
+			if tc.invite == "webok1" {
+				seedInvite(t, app, "webok1", 0)
 			}
 
 			username := "websignup-" + strings.ReplaceAll(tc.name, " ", "-")
@@ -304,7 +307,7 @@ func TestOAuthSignupClosedRegistration(t *testing.T) {
 	}{
 		{"no invite code", "", false},
 		{"bogus invite code", "not-a-real-code", false},
-		{"valid invite code", "oauthok", true},
+		{"valid invite code", "oauok1", true},
 	}
 
 	for _, tc := range cases {
@@ -313,8 +316,8 @@ func TestOAuthSignupClosedRegistration(t *testing.T) {
 			app.cfg.App.OpenRegistration = false
 			h := newTestOauthHandler(app)
 
-			if tc.invite == "oauthok" {
-				seedInvite(t, app, "oauthok", 0)
+			if tc.invite == "oauok1" {
+				seedInvite(t, app, "oauok1", 0)
 			}
 
 			username := "oauthsignup-" + strings.ReplaceAll(tc.name, " ", "-")
