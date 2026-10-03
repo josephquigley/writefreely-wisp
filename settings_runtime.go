@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/writeas/web-core/log"
 	"github.com/writefreely/go-nodeinfo"
@@ -76,18 +78,45 @@ func (app *App) loadSettingsLocked(ctx context.Context) error {
 	return nil
 }
 
+// settingsCheckTimeout bounds each database call refreshSettings makes. It
+// runs before every request, static assets included, so a database that has
+// stopped answering must cost a request this much and no more. A variable so
+// tests can shorten it.
+var settingsCheckTimeout = 2 * time.Second
+
+// settingsCheckLastLog is when a refresh failure was last logged (Unix
+// nanoseconds), so a database outage logs once a minute, not once a request.
+var settingsCheckLastLog atomic.Int64
+
+func logSettingsCheckFailure(format string, err error) {
+	now := time.Now().UnixNano()
+	last := settingsCheckLastLog.Load()
+	if last != 0 && now-last < int64(time.Minute) {
+		return
+	}
+	if settingsCheckLastLog.CompareAndSwap(last, now) {
+		log.Error(format, err)
+	}
+}
+
 // refreshSettings reloads the settings if another node (or the CLI) has
 // saved since this node last loaded them. It costs one primary-key read.
 // On any failure the cached snapshot stays in force: a database that is
 // unreachable mid-failover must not take the configuration with it.
+//
+// Each database call gets its own settingsCheckTimeout and does not die with
+// the request: a client that hangs up mid-check must not leave a reload
+// abandoned, and the next request would only start it again.
 func (app *App) refreshSettings(ctx context.Context) {
 	cur := app.settings.Load()
 	if cur == nil {
 		return // settings are not in the database (yet); nothing to refresh
 	}
-	ver, err := app.db.SettingsVersion(ctx)
+	vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settingsCheckTimeout)
+	ver, err := app.db.SettingsVersion(vctx)
+	cancel()
 	if err != nil {
-		log.Error("settings: version check failed, keeping cached settings: %v", err)
+		logSettingsCheckFailure("settings: version check failed, keeping cached settings: %v", err)
 		return
 	}
 	if ver == cur.version {
@@ -98,8 +127,10 @@ func (app *App) refreshSettings(ctx context.Context) {
 	if s := app.settings.Load(); s != nil && s.version == ver {
 		return // another request reloaded while this one waited
 	}
-	if err := app.loadSettingsLocked(ctx); err != nil {
-		log.Error("settings: reload failed, keeping cached settings: %v", err)
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settingsCheckTimeout)
+	defer cancel()
+	if err := app.loadSettingsLocked(rctx); err != nil {
+		logSettingsCheckFailure("settings: reload failed, keeping cached settings: %v", err)
 	}
 }
 

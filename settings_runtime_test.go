@@ -13,12 +13,16 @@
 package writefreely
 
 import (
+	"bytes"
 	"context"
+	"github.com/writeas/web-core/log"
+	stdlog "log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // secondNode is another App on the same database: its own snapshot, the
@@ -112,17 +116,74 @@ func TestSecondNodeSeesSaveOnNextRequest(t *testing.T) {
 	}
 }
 
+// holdDB exhausts a's connection pool, so every query waits for a
+// connection until its context gives up. It stands in for a database that
+// has stopped answering.
+func holdDB(t *testing.T, a *App) {
+	t.Helper()
+	a.db.SetMaxOpenConns(1)
+	conn, err := a.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+}
+
+func shortSettingsTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := settingsCheckTimeout
+	settingsCheckTimeout = d
+	t.Cleanup(func() { settingsCheckTimeout = old })
+}
+
 func TestRefreshKeepsSnapshotOnError(t *testing.T) {
 	a := newSettingsTestApp(t, "")
 	ctx := context.Background()
 	a.db.SaveSettings(ctx, map[string]string{"app.site_name": "Kept"})
 	a.loadSettings(ctx)
 	a.db.SaveSettings(ctx, map[string]string{"app.site_name": "Not yet seen"})
-	dead, cancel := context.WithCancel(ctx)
-	cancel()
-	a.refreshSettings(dead) // the version check fails: logs, keeps the cache
+	shortSettingsTimeout(t, 50*time.Millisecond)
+	holdDB(t, a)
+	a.refreshSettings(ctx) // the version check fails: logs, keeps the cache
 	if got := a.Config().App.SiteName; got != "Kept" {
 		t.Errorf("site_name %q", got)
+	}
+}
+
+// A request must not wait on a database that is not answering, and a
+// client hanging up must not abandon a check halfway.
+func TestSettingsMiddlewareBoundedWhenDBBlocks(t *testing.T) {
+	a := loadedSettingsApp(t)
+	shortSettingsTimeout(t, 100*time.Millisecond)
+	holdDB(t, a)
+	served := false
+	h := a.settingsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = a.Config().App.Host == "https://blog.example"
+	}))
+	start := time.Now()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("middleware took %v", d)
+	}
+	if !served {
+		t.Error("request was not served with the cached settings")
+	}
+}
+
+func TestSettingsCheckFailureLoggedOncePerMinute(t *testing.T) {
+	a := loadedSettingsApp(t)
+	shortSettingsTimeout(t, 20*time.Millisecond)
+	holdDB(t, a)
+	settingsCheckLastLog.Store(0)
+	var logged bytes.Buffer
+	orig := log.ErrorLog
+	log.ErrorLog = stdlog.New(&logged, "", 0)
+	defer func() { log.ErrorLog = orig }()
+	for i := 0; i < 5; i++ {
+		a.refreshSettings(context.Background())
+	}
+	if n := strings.Count(logged.String(), "version check failed"); n != 1 {
+		t.Errorf("logged %d times:\n%s", n, logged.String())
 	}
 }
 
