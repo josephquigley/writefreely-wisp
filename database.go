@@ -95,8 +95,8 @@ type writestore interface {
 	GetOwnedPost(id string, ownerID int64) (*PublicPost, error)
 	GetPostProperty(id string, collectionID int64, property string) (interface{}, error)
 
-	CreateCollectionFromToken(*config.Config, string, string, string) (*Collection, error)
-	CreateCollection(*config.Config, string, string, int64) (*Collection, error)
+	CreateCollectionFromToken(cfg *config.Config, alias, title, accessToken string, retryOnDuplicate bool) (*Collection, error)
+	CreateCollection(cfg *config.Config, alias, title string, userID int64, retryOnDuplicate bool) (*Collection, error)
 	GetCollectionBy(condition string, value interface{}) (*Collection, error)
 	GetCollection(alias string) (*Collection, error)
 	GetCollectionForPad(alias string) (*Collection, error)
@@ -287,13 +287,13 @@ func (db *datastore) UpdateEncryptedUserEmail(userID int64, encEmail []byte) err
 	return nil
 }
 
-func (db *datastore) CreateCollectionFromToken(cfg *config.Config, alias, title, accessToken string) (*Collection, error) {
+func (db *datastore) CreateCollectionFromToken(cfg *config.Config, alias, title, accessToken string, retryOnDuplicate bool) (*Collection, error) {
 	userID := db.GetUserID(accessToken)
 	if userID == -1 {
 		return nil, ErrBadAccessToken
 	}
 
-	return db.CreateCollection(cfg, alias, title, userID)
+	return db.CreateCollection(cfg, alias, title, userID, retryOnDuplicate)
 }
 
 func (db *datastore) GetUserCollectionCount(userID int64) (uint64, error) {
@@ -310,13 +310,33 @@ func (db *datastore) GetUserCollectionCount(userID int64) (uint64, error) {
 	return collCount, nil
 }
 
-func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, userID int64) (*Collection, error) {
+// CreateCollection creates a blog. retryOnDuplicate must be true only when the
+// application generated alias (for example from a title); then a taken alias
+// is retried up to maxSlugRetries times with a fresh random suffix on the
+// original. An alias the user chose, including the signup alias, which equals
+// the username, must pass false: renaming it would change their URL and
+// federated handle, so a taken alias is an error.
+func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, userID int64, retryOnDuplicate bool) (*Collection, error) {
 	if db.PostIDExists(alias) {
 		return nil, impart.HTTPError{http.StatusConflict, "Invalid collection name."}
 	}
 
 	// All good, so create new collection
-	res, err := db.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
+	const insertColl = "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)"
+	res, err := db.Exec(insertColl, alias, title, "", defaultVisibility(cfg), userID, 0)
+	if err != nil && retryOnDuplicate && db.isDuplicateKeyErr(err) {
+		baseAlias := alias
+		for attempt := 0; attempt < maxSlugRetries; attempt++ {
+			alias = genSafeUniqueSlug(baseAlias)
+			if db.PostIDExists(alias) {
+				continue
+			}
+			res, err = db.Exec(insertColl, alias, title, "", defaultVisibility(cfg), userID, 0)
+			if err == nil || !db.isDuplicateKeyErr(err) {
+				break
+			}
+		}
+	}
 	if err != nil {
 		if db.isDuplicateKeyErr(err) {
 			return nil, impart.HTTPError{http.StatusConflict, "Collection already exists."}
@@ -673,9 +693,11 @@ func (db *datastore) CreateOwnedPost(post *SubmittedPost, accessToken, collAlias
 	return rp, nil
 }
 
-// maxSlugRetries bounds how many times CreatePost generates a new random slug
-// suffix after a duplicate (collection_id, slug) before giving up.
-const maxSlugRetries = 8
+// maxSlugRetries bounds how many times a write that hit a duplicate slug or
+// collection alias generates a new random suffix on the original value before
+// giving up. CreatePost, UpdateOwnedPost, AttemptClaim and CreateCollection
+// all share it.
+const maxSlugRetries = 10
 
 // genSafeUniqueSlug makes a slug unique by adding a random suffix. It is a
 // variable so tests can force collisions.
@@ -791,10 +813,14 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) error {
 	params := []interface{}{}
 	var queryUpdates, sep, authCondition string
+	slugIdx := -1
+	var baseSlug string
 	if post.Slug != nil && *post.Slug != "" {
 		queryUpdates += sep + "slug = ?"
 		sep = ", "
-		params = append(params, getSlug(*post.Slug, ""))
+		baseSlug = getSlug(*post.Slug, "")
+		slugIdx = len(params)
+		params = append(params, baseSlug)
 	}
 	if post.Content != nil {
 		queryUpdates += sep + "content = ?"
@@ -845,7 +871,19 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 
 	queryUpdates += sep + "updated = " + db.now()
 
-	res, err := db.Exec("UPDATE posts SET "+queryUpdates+" WHERE id = ? AND "+authCondition, params...)
+	updateQuery := "UPDATE posts SET " + queryUpdates + " WHERE id = ? AND " + authCondition
+	res, err := db.Exec(updateQuery, params...)
+	if err != nil && slugIdx >= 0 && db.isDuplicateKeyErr(err) {
+		// The requested slug is taken in this blog; try fresh random suffixes
+		// on the original requested slug, a bounded number of times.
+		for attempt := 0; attempt < maxSlugRetries; attempt++ {
+			params[slugIdx] = genSafeUniqueSlug(baseSlug)
+			res, err = db.Exec(updateQuery, params...)
+			if err == nil || !db.isDuplicateKeyErr(err) {
+				break
+			}
+		}
+	}
 	if err != nil {
 		log.Error("Unable to update owned post: %v", err)
 		return err
@@ -1615,22 +1653,30 @@ func (db *datastore) CanCollect(cpr *ClaimPostRequest, userID int64) bool {
 	return true
 }
 
+// AttemptClaim runs a claim query. If it hits a duplicate (collection_id, slug)
+// it retries up to maxSlugRetries times, each time suffixing the original slug
+// with fresh random characters rather than the previous attempt's slug.
 func (db *datastore) AttemptClaim(p *ClaimPostRequest, query string, params []interface{}, slugIdx int) (sql.Result, error) {
 	qRes, err := db.Exec(query, params...)
-	if err != nil {
-		if db.isDuplicateKeyErr(err) && slugIdx > -1 {
-			s := id.GenSafeUniqueSlug(p.Slug)
-			if s == p.Slug {
-				// Sanity check to prevent infinite recursion
-				return qRes, fmt.Errorf("GenSafeUniqueSlug generated nothing unique: %s", s)
-			}
-			p.Slug = s
-			params[slugIdx] = p.Slug
-			return db.AttemptClaim(p, query, params, slugIdx)
-		}
+	if err == nil {
+		return qRes, nil
+	}
+	if !db.isDuplicateKeyErr(err) || slugIdx < 0 {
 		return qRes, fmt.Errorf("attemptClaim: %s", err)
 	}
-	return qRes, nil
+	baseSlug := p.Slug
+	for attempt := 0; attempt < maxSlugRetries; attempt++ {
+		p.Slug = genSafeUniqueSlug(baseSlug)
+		params[slugIdx] = p.Slug
+		qRes, err = db.Exec(query, params...)
+		if err == nil {
+			return qRes, nil
+		}
+		if !db.isDuplicateKeyErr(err) {
+			break
+		}
+	}
+	return qRes, fmt.Errorf("attemptClaim: retried slug generation %d times, still failed: %s", maxSlugRetries, err)
 }
 
 func (db *datastore) DispersePosts(userID int64, postIDs []string) (*[]ClaimPostResult, error) {
@@ -1767,7 +1813,7 @@ func (db *datastore) ClaimPosts(cfg *config.Config, userID int64, collAlias stri
 				// This is a new collection
 				// TODO: consider removing this. This seriously complicates this
 				// method and adds another (unnecessary?) logic path.
-				coll, err = db.CreateCollection(cfg, postCollAlias, "", userID)
+				coll, err = db.CreateCollection(cfg, postCollAlias, "", userID, false)
 				if err != nil {
 					if err, ok := err.(impart.HTTPError); ok {
 						r.Code = err.Status

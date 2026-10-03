@@ -508,7 +508,7 @@ func newCollection(app *App, w http.ResponseWriter, r *http.Request) error {
 		return impart.HTTPError{http.StatusPreconditionFailed, "Collection alias isn't valid."}
 	}
 
-	coll, err := app.db.CreateCollection(app.cfg, c.Alias, c.Title, userID)
+	coll, err := app.db.CreateCollection(app.cfg, c.Alias, c.Title, userID, false)
 	if err != nil {
 		// TODO: handle this
 		return err
