@@ -8,14 +8,19 @@ Versions carry a `+wisp` build suffix to distinguish them from upstream releases
 
 This edition diverged from upstream WriteFreely. See its [releases](https://github.com/writefreely/writefreely/releases) for further context.
 
-Each release is summarized in one sentence of at most 35 words. Detailed notes
-are on the corresponding [GitHub release](https://github.com/josephquigley/writefreely-wisp/releases).
+Each change gets one bullet, a single sentence of at most 35 words; related
+changes share a bullet. Detailed notes are on the corresponding
+[GitHub release](https://github.com/josephquigley/writefreely-wisp/releases).
 
 ## [Unreleased]
 
 ### Security
 
-- Access tokens match exactly instead of via `LIKE`, closing a wildcard bypass, `db init` stops at the first failed table, and failed post deletions roll back their transaction.
+- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+
+### Fixed
+
+- `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 
 ## [0.20.0+wisp] - 2026-09-09
 
