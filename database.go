@@ -167,7 +167,7 @@ func (db *datastore) now() string {
 
 func (db *datastore) clip(field string, l int) string {
 	if db.driverName == driverSQLite {
-		return fmt.Sprintf("SUBSTR(%s, 0, %d)", field, l)
+		return fmt.Sprintf("SUBSTR(%s, 1, %d)", field, l)
 	}
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)
 }
