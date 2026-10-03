@@ -167,6 +167,71 @@ jobs:
           cache: true
       - run: go test -count=1 -tags sqlite ./...
 
+  # The S3 image store against a real S3-compatible server: a throwaway
+  # Garage, started by the same scripts/test-s3-garage.sh that is used
+  # locally. Not a services: block, because Garage needs a config file
+  # mounted before it starts and a layout, bucket and key created after, and
+  # services start before checkout with no hook for either.
+  #
+  # Those tests skip without WF_TEST_S3_ENDPOINT, and a run where they all
+  # skip looks green. So a skip anywhere in the run fails the job, and so
+  # does a run with no S3 subtest in it, which is what the table tests
+  # (local plus s3) quietly become when the store is not configured.
+  test-s3:
+    name: test-s3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        if: github.event_name == 'pull_request_target'
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The key and secret are made up per run and die with the container,
+      # so they are not secrets, but the secret is masked anyway.
+      - name: Start Garage
+        run: |
+          vars=$(scripts/test-s3-garage.sh)
+          eval "$vars"
+          if [ -z "${WF_TEST_S3_ENDPOINT:-}" ] || [ -z "${WF_TEST_S3_SECRET_ACCESS_KEY:-}" ]; then
+            echo "test-s3-garage.sh printed no endpoint or secret" >&2
+            exit 1
+          fi
+          echo "::add-mask::$WF_TEST_S3_SECRET_ACCESS_KEY"
+          printf '%s\n' "$vars" | sed 's/^export //' >> "$GITHUB_ENV"
+      # The pattern is every test that reaches the store; the S3-only ones
+      # and the table tests that add an s3 case when it is configured.
+      - name: go test (S3)
+        run: |
+          set -o pipefail
+          go test -count=1 -tags sqlite -v \
+            -run 'S3|ImageStore|ImageSync|StreamImages' . | tee s3-test.log
+          if grep -E -- '--- SKIP' s3-test.log; then
+            echo "S3 tests skipped; the store was not reachable or not configured" >&2
+            exit 1
+          fi
+          s3=$(grep -cE -- '--- PASS: Test[^ ]*/s3 ' s3-test.log || true)
+          if [ "$s3" -eq 0 ]; then
+            echo "no s3 subtest ran; the store was not configured" >&2
+            exit 1
+          fi
+          echo "passed: $(grep -cE -- '--- PASS: ' s3-test.log) tests and subtests, $s3 of them s3 table cases"
+      - name: Stop Garage
+        if: always()
+        run: scripts/test-s3-garage.sh stop
+
   lint:
     name: lint
     runs-on: ubuntu-latest
