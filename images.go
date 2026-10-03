@@ -158,13 +158,8 @@ func handleDeleteImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return nil
 	}
 
-	// Delete the row first: an orphaned file is recoverable, but a row
-	// pointing at a missing file is a broken page.
-	if err = app.db.DeletePostImage(img.ID); err != nil {
+	if err = app.deleteImage(r.Context(), img); err != nil {
 		return err
-	}
-	if err = app.removeUploadedImage(r.Context(), img.RelPath()); err != nil {
-		log.Error("Failed removing image file %s: %v", img.RelPath(), err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -317,13 +312,37 @@ func removeImageIfUnreferenced(app *App, img *PostImage, excludingPostID string)
 	if refs > 0 {
 		return
 	}
-	if err = app.db.DeletePostImage(img.ID); err != nil {
+	if err = app.deleteImage(context.Background(), img); err != nil {
 		log.Error("Unable to delete image %s: %v", img.ID, err)
-		return
+		// The row is still here. If it still names a post, that post is gone
+		// or has let go of it, so release it: the orphan sweep only looks at
+		// images attached to nothing, and would never retry this one.
+		if img.PostID.Valid {
+			if derr := app.db.DetachImageFromPost(img.ID); derr != nil {
+				log.Error("Unable to release image %s for the orphan sweep: %v", img.ID, derr)
+			}
+		}
 	}
-	if err = app.removeUploadedImage(context.Background(), img.RelPath()); err != nil {
-		log.Error("Unable to remove image file %s: %v", img.RelPath(), err)
+}
+
+// deleteImage removes an image's stored file and then its row, in that order.
+//
+// The file goes first because the two failures are not equally bad. A row
+// whose file is missing is a broken image that shows up and can be retried:
+// the delete is idempotent, a missing file counts as deleted, so trying again
+// goes straight on to the row. A file whose row is gone is invisible and
+// permanent: the orphan sweep works from rows, so nothing would ever find the
+// file again. If the file cannot be removed the row is kept and the error
+// returned, so the user's retry or the sweep's next tick can finish the job.
+//
+// No transaction is held across the store call; the row delete is one
+// statement of its own.
+func (app *App) deleteImage(ctx context.Context, img *PostImage) error {
+	if err := app.removeUploadedImage(ctx, img.RelPath()); err != nil && !errors.Is(err, errImageNotFound) {
+		log.Error("Failed removing image file %s: %v", img.RelPath(), err)
+		return impart.HTTPError{http.StatusInternalServerError, "Couldn't delete the image."}
 	}
+	return app.db.DeletePostImage(img.ID)
 }
 
 // sweepOrphanedImages removes uploads that were never attached to a post --
