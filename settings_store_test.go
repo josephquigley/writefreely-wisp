@@ -14,6 +14,7 @@ package writefreely
 
 import (
 	"context"
+	"github.com/writefreely/writefreely/migrations"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,5 +154,40 @@ func writeTestINI(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// V21 must survive being run again over what an earlier, interrupted run
+// left: MySQL commits each DDL statement as it goes, so a crash can leave
+// the tables, with or without the version row, and no appmigrations entry.
+func TestSettingsMigrationIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	run := func(a *App) {
+		t.Helper()
+		if _, err := a.db.ExecContext(ctx, "DELETE FROM appmigrations WHERE version >= 21"); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrations.Migrate(migrations.NewDatastore(a.db.DB, a.db.driverName)); err != nil {
+			t.Fatalf("rerun: %v", err)
+		}
+	}
+	a := newSettingsTestApp(t, "")
+	v, err := a.db.SaveSettings(ctx, map[string]string{"app.site_name": "Kept"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(a) // tables, row and data all present
+	run(a)
+	rows, ver, err := a.db.LoadSettings(ctx)
+	if err != nil || ver != v || rows["app.site_name"] != "Kept" {
+		t.Fatalf("after rerun: rows %v ver %d (want %d) err %v", rows, ver, v, err)
+	}
+	// Crash between CREATE TABLE and the INSERT: tables, no version row.
+	if _, err := a.db.ExecContext(ctx, "DELETE FROM app_settings_version"); err != nil {
+		t.Fatal(err)
+	}
+	run(a)
+	if ver, err := a.db.SettingsVersion(ctx); err != nil || ver != 0 {
+		t.Fatalf("version row after repair: %d %v", ver, err)
 	}
 }
