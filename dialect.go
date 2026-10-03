@@ -16,8 +16,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/writeas/web-core/log"
 )
 
 // dialect is the single home for SQL that differs between database engines.
@@ -49,6 +51,16 @@ type dialect interface {
 
 	// Now returns an SQL expression for the current timestamp.
 	Now() string
+	// NowForInsert returns the current time as a Go value to bind to a
+	// datetime parameter, in the zone this engine's stored values use:
+	// server-local on MySQL (its connection uses loc=Local, so existing
+	// installs hold local times), UTC on SQLite and Postgres.
+	NowForInsert() time.Time
+	// TimeArg returns t as it should be bound to a datetime parameter. It is
+	// t.UTC() on Postgres, so every value it is sent is UTC (the columns are
+	// timestamptz, so the instant is the same either way). MySQL and SQLite
+	// return t unchanged, preserving their behaviour.
+	TimeArg(t time.Time) time.Time
 	// Clip returns an SQL expression for the first l characters of field.
 	Clip(field string, l int) string
 	// Upsert returns the clause that follows an INSERT … VALUES (…) to turn
@@ -80,6 +92,23 @@ type dialect interface {
 	// database (MySQL), the main schema (SQLite) or the search_path
 	// (Postgres).
 	TableExists(ctx context.Context, q sqlQueryer, name string) (bool, error)
+	// BinaryEquals returns a condition matching the binary column col
+	// (binary/bytea, or TEXT on SQLite) exactly against b, and the arguments
+	// it consumes, in order. It exists for SQLite, whose databases hold
+	// values written both as TEXT (older code bound a Go string) and as BLOB
+	// (a Go []byte), which `=` never considers equal.
+	BinaryEquals(col string, b []byte) (string, []interface{})
+	// InsertIgnore rewrites a plain `INSERT INTO …` statement so that a row
+	// conflicting with any unique key is skipped instead of failing:
+	// `INSERT IGNORE INTO` on MySQL, `INSERT OR IGNORE INTO` on SQLite, and
+	// a trailing `ON CONFLICT DO NOTHING` on Postgres. Use it instead of
+	// running the INSERT and then forgiving isDuplicateKeyErr: on Postgres
+	// that error has already aborted the enclosing transaction, so every
+	// later statement fails and Commit rolls back. insert must begin with
+	// "INSERT INTO " and have no trailing clause or semicolon; anything
+	// else panics. (MySQL's IGNORE also downgrades some other errors, such
+	// as truncation, to warnings; that is the existing MySQL behaviour.)
+	InsertIgnore(insert string) string
 }
 
 // sqlQueryer is satisfied by *sql.DB, *sql.Tx and *sql.Conn, so dialect
@@ -137,6 +166,10 @@ func (mysqlDialect) DriverName() string { return driverMySQL }
 
 func (mysqlDialect) Now() string { return "NOW()" }
 
+func (mysqlDialect) NowForInsert() time.Time { return time.Now() }
+
+func (mysqlDialect) TimeArg(t time.Time) time.Time { return t }
+
 func (mysqlDialect) Clip(field string, l int) string {
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)
 }
@@ -163,6 +196,10 @@ func (mysqlDialect) InsertReturningID(ctx context.Context, q sqlQueryer, query s
 	return execLastInsertID(ctx, q, query, args...)
 }
 
+func (mysqlDialect) InsertIgnore(insert string) string {
+	return "INSERT IGNORE INTO " + insertIntoRest("mysqlDialect", insert)
+}
+
 func (mysqlDialect) TableExists(ctx context.Context, q sqlQueryer, name string) (bool, error) {
 	var n int
 	err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", name).Scan(&n)
@@ -172,6 +209,10 @@ func (mysqlDialect) TableExists(ctx context.Context, q sqlQueryer, name string) 
 	return n > 0, nil
 }
 
+func (mysqlDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
+	return col + " = ?", []interface{}{b}
+}
+
 // --------------------------------------------------------------- SQLite --
 
 type sqliteDialect struct{}
@@ -179,6 +220,11 @@ type sqliteDialect struct{}
 func (sqliteDialect) DriverName() string { return driverSQLite }
 
 func (sqliteDialect) Now() string { return "strftime('%Y-%m-%d %H:%M:%S','now')" }
+
+// SQLite stores datetimes in UTC.
+func (sqliteDialect) NowForInsert() time.Time { return time.Now().UTC() }
+
+func (sqliteDialect) TimeArg(t time.Time) time.Time { return t }
 
 // SQLite strings are 1-indexed (WFPG-11 defect B).
 func (sqliteDialect) Clip(field string, l int) string {
@@ -222,6 +268,21 @@ func (sqliteDialect) TableExists(ctx context.Context, q sqlQueryer, name string)
 	return true, nil
 }
 
+// BinaryEquals on SQLite matches the value stored either as a BLOB or as
+// TEXT holding the same bytes. A BLOB never equals TEXT under `=`, and
+// access tokens were inserted as TEXT (a Go string) until WFPG-05, so
+// existing databases hold TEXT tokens while new ones are BLOBs. CAST(? AS
+// TEXT) reinterprets the bytes without changing them, and BINARY collation
+// compares TEXT byte for byte, so this is still an exact match. An IN list
+// on the column keeps the primary-key index usable.
+func (sqliteDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
+	return col + " IN (?, CAST(? AS TEXT))", []interface{}{b, b}
+}
+
+func (sqliteDialect) InsertIgnore(insert string) string {
+	return "INSERT OR IGNORE INTO " + insertIntoRest("sqliteDialect", insert)
+}
+
 // ------------------------------------------------------------- Postgres --
 
 type postgresDialect struct{}
@@ -248,6 +309,13 @@ var postgresIntervalUnits = map[string]bool{
 func (postgresDialect) DriverName() string { return driverPostgres }
 
 func (postgresDialect) Now() string { return "NOW()" }
+
+// The columns are timestamptz and the session TimeZone is UTC (postgresDSN),
+// so Go always sends UTC and the stored instant never depends on the
+// process's time zone.
+func (postgresDialect) NowForInsert() time.Time { return time.Now().UTC() }
+
+func (postgresDialect) TimeArg(t time.Time) time.Time { return t.UTC() }
 
 func (postgresDialect) Clip(field string, l int) string {
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)
@@ -300,6 +368,14 @@ func (postgresDialect) TableExists(ctx context.Context, q sqlQueryer, name strin
 	return exists, nil
 }
 
+func (postgresDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
+	return col + " = ?", []interface{}{b}
+}
+
+func (postgresDialect) InsertIgnore(insert string) string {
+	return "INSERT INTO " + insertIntoRest("postgresDialect", insert) + " ON CONFLICT DO NOTHING"
+}
+
 // isPostgresErrCode reports whether err is (or wraps) a Postgres error with
 // the given SQLSTATE code.
 func isPostgresErrCode(err error, code string) bool {
@@ -323,4 +399,50 @@ func execLastInsertID(ctx context.Context, q sqlQueryer, query string, args ...i
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// insertIntoRest returns what follows "INSERT INTO " in insert, panicking
+// (with the calling dialect's name) if insert is not a plain INSERT INTO or
+// ends in a semicolon.
+func insertIntoRest(d, insert string) string {
+	const prefix = "INSERT INTO "
+	if !strings.HasPrefix(insert, prefix) {
+		panic(fmt.Sprintf("%s.InsertIgnore: want a statement beginning %q, got %q", d, prefix, insert))
+	}
+	rest := strings.TrimRight(insert[len(prefix):], " \t\r\n")
+	if strings.HasSuffix(rest, ";") {
+		panic(fmt.Sprintf("%s.InsertIgnore: statement must not end in a semicolon: %q", d, insert))
+	}
+	return rest
+}
+
+// execBestEffort runs one statement inside t that is allowed to fail without
+// failing the transaction, by fencing it in a savepoint. On error the
+// statement's effects are rolled back to the savepoint, the error is logged
+// and returned, and t remains usable.
+//
+// On MySQL and SQLite a failed statement leaves the transaction usable
+// anyway, so this only makes that explicit; on Postgres any error aborts the
+// whole transaction (SQLSTATE 25P02 on every later statement, and Commit
+// rolls back), and the savepoint is what lets the caller carry on. All three
+// engines support SAVEPOINT inside a transaction. name must be a constant SQL
+// identifier: it is concatenated into the statement.
+func execBestEffort(t *sql.Tx, name, query string, args ...interface{}) error {
+	if _, err := t.Exec("SAVEPOINT " + name); err != nil {
+		log.Error("Unable to set savepoint %s: %v", name, err)
+		return err
+	}
+	_, err := t.Exec(query, args...)
+	if err != nil {
+		log.Error("Best-effort statement failed (rolled back to savepoint %s): %v", name, err)
+		if _, rbErr := t.Exec("ROLLBACK TO SAVEPOINT " + name); rbErr != nil {
+			log.Error("Unable to roll back to savepoint %s: %v", name, rbErr)
+			return rbErr
+		}
+	}
+	if _, relErr := t.Exec("RELEASE SAVEPOINT " + name); relErr != nil {
+		log.Error("Unable to release savepoint %s: %v", name, relErr)
+		return relErr
+	}
+	return err
 }

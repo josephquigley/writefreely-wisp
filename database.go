@@ -206,6 +206,10 @@ func (db *datastore) upsert(indexedCols ...string) string {
 	return db.dialectOrDefault().Upsert(indexedCols...)
 }
 
+func (db *datastore) insertIgnore(insert string) string {
+	return db.dialectOrDefault().InsertIgnore(insert)
+}
+
 func (db *datastore) dateAdd(l int, unit string) string {
 	return db.dialectOrDefault().DateAdd(l, unit)
 }
@@ -219,6 +223,12 @@ func (db *datastore) dateSub(l int, unit string) string {
 // dialect.InsertReturningID for what query may contain.
 func (db *datastore) insertReturningID(q sqlQueryer, query string, args ...interface{}) (int64, error) {
 	return db.dialectOrDefault().InsertReturningID(context.Background(), q, query, args...)
+}
+
+// binaryEquals returns a condition matching the binary column col exactly
+// against b, and its arguments. See dialect.BinaryEquals.
+func (db *datastore) binaryEquals(col string, b []byte) (string, []interface{}) {
+	return db.dialectOrDefault().BinaryEquals(col, b)
 }
 
 func (db *datastore) version() (string, error) {
@@ -239,7 +249,14 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 
 	// 1. Add to `users` table
 	// NOTE: Assumes User's Password is already hashed!
-	u.ID, err = db.insertReturningID(t, "INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, u.HashedPass, u.Email)
+	// The bcrypt hash goes into a text column, so it is passed as a string.
+	// The email is ciphertext (see prepareUserEmail) bound for a binary
+	// column, so it is passed as []byte, as UpdateUserEmail does.
+	var encEmail []byte
+	if u.Email.Valid {
+		encEmail = []byte(u.Email.String)
+	}
+	u.ID, err = db.insertReturningID(t, "INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, string(u.HashedPass), encEmail)
 	if err != nil {
 		t.Rollback()
 		if db.isDuplicateKeyErr(err) {
@@ -254,6 +271,10 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 	if collectionTitle == "" {
 		collectionTitle = u.Username
 	}
+	// The title can be an OAuth provider's display name and the description
+	// comes from the signup form; neither is bounded before this.
+	collectionTitle = boundedDBText(collectionTitle, collMaxLengthTitle)
+	collectionDesc = boundedDBText(collectionDesc, collMaxLengthDescription)
 	_, err = t.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", u.Username, collectionTitle, collectionDesc, defaultVisibility(cfg), u.ID, 0)
 	if err != nil {
 		t.Rollback()
@@ -264,7 +285,14 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 		return err
 	}
 
-	db.RemoveCollectionRedirect(t, u.Username)
+	// A redirect left behind under this alias would never be followed (a
+	// redirect is consulted only when no collection has the alias), but a
+	// failure here must not be ignored: on Postgres it has already aborted
+	// the transaction, and the Commit below would roll back the signup.
+	if err = db.RemoveCollectionRedirect(t, u.Username); err != nil {
+		t.Rollback()
+		return err
+	}
 
 	err = t.Commit()
 	if err != nil {
@@ -323,6 +351,10 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	if db.PostIDExists(alias) {
 		return nil, impart.HTTPError{http.StatusConflict, "Invalid collection name."}
 	}
+
+	// Truncated the same way UpdateCollection does (writefreely#600); on
+	// Postgres an over-long title is an error rather than a truncation.
+	title = boundedDBText(title, collMaxLengthTitle)
 
 	// All good, so create new collection
 	collID, err := db.insertReturningID(db.DB, "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
@@ -460,7 +492,8 @@ func (db *datastore) GetUserNameFromToken(accessToken string) (string, error) {
 
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&username, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return "", ErrBadAccessToken
@@ -485,7 +518,8 @@ func (db *datastore) GetUserDataFromToken(accessToken string) (int64, string, er
 	var userID int64
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&userID, &username, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&userID, &username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return 0, "", ErrBadAccessToken
@@ -524,7 +558,8 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 	}
 
 	var oneTime bool
-	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&userID, &sudo, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&userID, &sudo, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return -1, false
@@ -541,7 +576,8 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 }
 
 func (db *datastore) DeleteToken(accessToken []byte) error {
-	res, err := db.Exec("DELETE FROM accesstokens WHERE token = ?", accessToken)
+	tokCond, tokArgs := db.binaryEquals("token", accessToken)
+	res, err := db.Exec("DELETE FROM accesstokens WHERE "+tokCond, tokArgs...)
 	if err != nil {
 		return err
 	}
@@ -596,7 +632,9 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 		return "", err
 	}
 
-	// Insert UUID to `accesstokens`
+	// Insert UUID to `accesstokens`. The 16 raw bytes go in as []byte: as a
+	// Go string they are text, which Postgres rejects as invalid UTF-8 for
+	// bytea and SQLite stores as TEXT (see dialect.BinaryEquals).
 	binTok := u[:]
 
 	expirationVal := "NULL"
@@ -604,7 +642,7 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 		expirationVal = db.dateAdd(validSecs, "SECOND")
 	}
 
-	_, err = db.Exec("INSERT INTO accesstokens (token, user_id, one_time, expires) VALUES (?, ?, ?, "+expirationVal+")", string(binTok), userID, oneTime)
+	_, err = db.Exec("INSERT INTO accesstokens (token, user_id, one_time, expires) VALUES (?, ?, ?, "+expirationVal+")", binTok, userID, oneTime)
 	if err != nil {
 		log.Error("Couldn't INSERT accesstoken: %v", err)
 		return "", err
@@ -616,7 +654,7 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 func (db *datastore) CreatePasswordResetToken(userID int64) (string, error) {
 	t := id.Generate62RandomString(32)
 
-	_, err := db.Exec("INSERT INTO password_resets (user_id, token, used, created) VALUES (?, ?, 0, "+db.now()+")", userID, t)
+	_, err := db.Exec("INSERT INTO password_resets (user_id, token, used, created) VALUES (?, ?, FALSE, "+db.now()+")", userID, t)
 	if err != nil {
 		log.Error("Couldn't INSERT password_resets: %v", err)
 		return "", err
@@ -627,7 +665,7 @@ func (db *datastore) CreatePasswordResetToken(userID int64) (string, error) {
 
 func (db *datastore) GetUserFromPasswordReset(token string) int64 {
 	var userID int64
-	err := db.QueryRow("SELECT user_id FROM password_resets WHERE token = ? AND used = 0 AND created > "+db.dateSub(3, "HOUR"), token).Scan(&userID)
+	err := db.QueryRow("SELECT user_id FROM password_resets WHERE token = ? AND used = FALSE AND created > "+db.dateSub(3, "HOUR"), token).Scan(&userID)
 	if err != nil {
 		return 0
 	}
@@ -635,7 +673,7 @@ func (db *datastore) GetUserFromPasswordReset(token string) int64 {
 }
 
 func (db *datastore) ConsumePasswordResetToken(t string) error {
-	_, err := db.Exec("UPDATE password_resets SET used = 1 WHERE token = ?", t)
+	_, err := db.Exec("UPDATE password_resets SET used = TRUE WHERE token = ?", t)
 	if err != nil {
 		log.Error("Couldn't UPDATE password_resets: %v", err)
 		return err
@@ -679,6 +717,8 @@ func (db *datastore) CreateOwnedPost(post *SubmittedPost, accessToken, collAlias
 }
 
 func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Post, error) {
+	post.sanitizeForStorage()
+
 	idLen := postIDLen
 	friendlyID := id.GenerateFriendlyRandomString(idLen)
 
@@ -724,28 +764,13 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 		}
 	}
 
-	created := time.Now()
-	switch db.driverName {
-	case driverSQLite:
-		// SQLite stores datetimes in UTC, so convert time.Now() to it here
-		created = created.UTC()
-	case driverMySQL:
-	default:
-		unsupportedDriver("CreatePost", db.driverName)
-	}
+	created := db.dialectOrDefault().NowForInsert()
 	if post.Created != nil && *post.Created != "" {
+		// Parsed with a literal Z, so already UTC on every engine.
 		created, err = time.Parse("2006-01-02T15:04:05Z", *post.Created)
 		if err != nil {
 			log.Error("Unable to parse Created time '%s': %v", *post.Created, err)
-			created = time.Now()
-			switch db.driverName {
-			case driverSQLite:
-				// SQLite stores datetimes in UTC, so convert time.Now() to it here
-				created = created.UTC()
-			case driverMySQL:
-			default:
-				unsupportedDriver("CreatePost", db.driverName)
-			}
+			created = db.dialectOrDefault().NowForInsert()
 		}
 	}
 
@@ -788,6 +813,8 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 // UpdateOwnedPost updates an existing post with only the given fields in the
 // supplied AuthenticatedPost.
 func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) error {
+	post.SubmittedPost.sanitizeForStorage()
+
 	params := []interface{}{}
 	var queryUpdates, sep, authCondition string
 	if post.Slug != nil && *post.Slug != "" {
@@ -815,7 +842,10 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 		sep = ", "
 		params = append(params, post.IsRTL.Bool)
 	}
-	if post.Font != "" {
+	// text_appearance is varchar(4), so a font that is not one of the known
+	// values is ignored here, as CreatePost already does, rather than sent to
+	// the database.
+	if post.Font != "" && post.isFontValid() {
 		queryUpdates += sep + "text_appearance = ?"
 		sep = ", "
 		params = append(params, post.Font)
@@ -828,7 +858,7 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 		}
 		queryUpdates += sep + "created = ?"
 		sep = ", "
-		params = append(params, createTime)
+		params = append(params, db.dialectOrDefault().TimeArg(createTime))
 	}
 
 	// WHERE parameters...
@@ -903,11 +933,16 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	return c, nil
 }
 
+// GetCollection and GetCollectionForPad trim the alias first. collections.alias
+// is utf8mb4_bin on MySQL, a PAD SPACE collation, so 'blog ' used to match
+// 'blog' there; SQLite and Postgres do not pad, and an alias never ends in a
+// space (aliases are slugs).
 func (db *datastore) GetCollection(alias string) (*Collection, error) {
-	return db.GetCollectionBy("alias = ?", alias)
+	return db.GetCollectionBy("alias = ?", strings.TrimSpace(alias))
 }
 
 func (db *datastore) GetCollectionForPad(alias string) (*Collection, error) {
+	alias = strings.TrimSpace(alias)
 	c := &Collection{Alias: alias}
 
 	row := db.QueryRow("SELECT id, alias, title, description, privacy FROM collections WHERE alias = ?", alias)
@@ -930,6 +965,8 @@ func (db *datastore) GetCollectionByID(id int64) (*Collection, error) {
 }
 
 func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias string) error {
+	c.sanitizeForStorage()
+
 	// Truncate fields correctly, so we don't get "Data too long for column" errors in MySQL (writefreely#600)
 	if c.Title != nil {
 		*c.Title = parse.Truncate(*c.Title, collMaxLengthTitle)
@@ -1167,9 +1204,9 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 		}
 		switch db.driverName {
 		case driverSQLite:
-			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, hashedPass)
+			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, string(hashedPass))
 		case driverMySQL, driverPostgres:
-			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, hashedPass, hashedPass)
+			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, string(hashedPass), string(hashedPass))
 		default:
 			unsupportedDriver("UpdateCollection", db.driverName)
 		}
@@ -1589,9 +1626,17 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	return &posts, nil
 }
 
+// normalizeLangCode is the form a language code from a URL is compared in.
+// posts.language holds whatever a client sent, and MySQL's case-insensitive
+// collation used to match EN against en; SQLite and Postgres do not, so both
+// sides are lower-cased instead.
+func normalizeLangCode(lang string) string {
+	return strings.ToLower(strings.TrimSpace(lang))
+}
+
 func (db *datastore) GetCollLangTotalPosts(collID int64, lang string) (uint64, error) {
 	var articles uint64
-	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND language = ? AND created <= "+db.now(), collID, lang).Scan(&articles)
+	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND LOWER(language) = ? AND created <= "+db.now(), collID, normalizeLangCode(lang)).Scan(&articles)
 	if err != nil && err != sql.ErrNoRows {
 		log.Error("Couldn't get total lang posts count for collection %d: %v", collID, err)
 		return 0, err
@@ -1626,8 +1671,8 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 
 	rows, err := db.Query(`SELECT `+postCols+`
 FROM posts
-WHERE collection_id = ? AND language = ? `+timeCondition+`
-ORDER BY created `+order+`, id `+order+limitStr, collID, lang)
+WHERE collection_id = ? AND LOWER(language) = ? `+timeCondition+`
+ORDER BY created `+order+`, id `+order+limitStr, collID, normalizeLangCode(lang))
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -2416,16 +2461,18 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 			return ErrInternalGeneral
 		}
 
-		// Keep track of name changes for redirection
-		db.RemoveCollectionRedirect(t, newUsername)
-		_, err = t.Exec("UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
-		if err != nil {
-			log.Error("Unable to update collectionredirects: %v", err)
-		}
-		_, err = t.Exec("INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?)", u.Username, newUsername)
-		if err != nil {
-			log.Error("Unable to add new collectionredirect: %v", err)
-		}
+		// Keep track of name changes for redirection. These statements are
+		// best-effort: a missing or stale redirect only affects old links,
+		// and must never undo the rename itself. Each is fenced in a
+		// savepoint, because on Postgres a failed statement would otherwise
+		// abort the transaction and the Commit below would roll back the
+		// username and alias change while the user is told it succeeded.
+		// Errors are logged by execBestEffort.
+		execBestEffort(t, "redirect_remove", "DELETE FROM collectionredirects WHERE prev_alias = ?", newUsername)
+		execBestEffort(t, "redirect_repoint", "UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
+		// An existing redirect from the old name (left by an earlier owner
+		// of it) is replaced, so the old name now points here.
+		execBestEffort(t, "redirect_add", "INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?) "+db.upsert("prev_alias")+" new_alias = ?", u.Username, newUsername, newUsername)
 
 		err = t.Commit()
 		if err != nil {
@@ -2473,7 +2520,7 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 			errPass = impart.HTTPError{http.StatusInternalServerError, "Could not create password hash."}
 			return errPass
 		}
-		q.SetBytes(hashedPass, "password")
+		q.Set(string(hashedPass), "password")
 	}
 
 	// WHERE values
@@ -2530,7 +2577,7 @@ func (db *datastore) ChangePassphrase(userID int64, sudo bool, curPass string, h
 		return impart.HTTPError{http.StatusUnauthorized, "Incorrect password."}
 	}
 
-	_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", hashedPass, userID)
+	_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", string(hashedPass), userID)
 	if err != nil {
 		log.Error("Could not update passphrase: %v", err)
 		return err
@@ -2869,7 +2916,11 @@ func (db *datastore) GetAPActorKeys(collectionID int64) ([]byte, []byte) {
 }
 
 func (db *datastore) CreateUserInvite(id string, userID int64, maxUses int, expires *time.Time) error {
-	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, 0)", id, userID, maxUses, expires)
+	if expires != nil {
+		e := db.dialectOrDefault().TimeArg(*expires)
+		expires = &e
+	}
+	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, FALSE)", id, userID, maxUses, expires)
 	return err
 }
 
@@ -3058,11 +3109,11 @@ func (db *datastore) GetUsersFiltered(f UserFilter) ([]FilteredUser, error) {
 
 	if f.Since != nil {
 		where = append(where, "u.created >= ?")
-		params = append(params, *f.Since)
+		params = append(params, db.dialectOrDefault().TimeArg(*f.Since))
 	}
 	if f.Until != nil {
 		where = append(where, "u.created < ?")
-		params = append(params, *f.Until)
+		params = append(params, db.dialectOrDefault().TimeArg(*f.Until))
 	}
 	if f.NoInvite {
 		where = append(where, "NOT EXISTS (SELECT 1 FROM usersinvited i WHERE i.user_id = u.id)")
@@ -3185,6 +3236,10 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 }
 
 func (db *datastore) RecordRemoteUserID(ctx context.Context, localUserID int64, remoteUserID, provider, clientID, accessToken string) error {
+	if !isStorableOAuthRemoteUserID(remoteUserID) {
+		log.Error("Refusing to record OAuth remote user ID for '%d': not storable (%d bytes)", localUserID, len(remoteUserID))
+		return errOAuthRemoteUserIDUnstorable
+	}
 	var err error
 	switch db.driverName {
 	case driverSQLite:
@@ -3270,7 +3325,7 @@ func handleFailedPostInsert(err error) error {
 
 // Deprecated: use GetProfileURLFromHandle() instead, which returns user-facing URL instead of actor_id
 func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, error) {
-	handle = strings.TrimLeft(handle, "@")
+	handle = sanitizeDBText(normalizeRemoteHandle(handle))
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -3288,7 +3343,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = sanitizeDBText(remoteLookup(handle))
 		// An empty result means webfinger failed — the peer was down, the
 		// handle does not exist, the response did not parse. Stop here.
 		// Carrying on writes a remoteusers row with an empty actor_id, and
@@ -3308,7 +3363,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(app, actorIRI)
+			remoteActor, err := fetchRemoteActorForStorage(app, actorIRI)
 			// Same reasoning as the empty lookup above: a failed fetch has no
 			// inbox to record, and caching it would poison the handle rather
 			// than leave it to be retried.
@@ -3331,7 +3386,19 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 	return actorIRI, nil
 }
 
+// normalizeSubscriberEmail is the one form an email subscriber's address is
+// stored and looked up in: trimmed and lower-cased. MySQL's case-insensitive
+// collation used to hide the difference between Foo@x and foo@x; SQLite and
+// Postgres compare exactly, so without this the same reader becomes two
+// subscribers and cannot unsubscribe with a differently cased address. The
+// lookups below also compare LOWER(email), so rows written before this
+// normalisation existed are still found.
+func normalizeSubscriberEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 func (db *datastore) AddEmailSubscription(collID, userID int64, email string, confirmed bool) (*EmailSubscriber, error) {
+	email = normalizeSubscriberEmail(email)
 	friendlyChars := "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz"
 	subID := id.GenerateRandomString(friendlyChars, 8)
 	token := id.GenerateRandomString(friendlyChars, 16)
@@ -3366,8 +3433,9 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 func (db *datastore) IsEmailSubscriber(email string, userID, collID int64) bool {
 	var dummy int
 	var err error
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID).Scan(&dummy)
+		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID).Scan(&dummy)
 	} else {
 		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID).Scan(&dummy)
 	}
@@ -3383,7 +3451,7 @@ func (db *datastore) IsEmailSubscriber(email string, userID, collID int64) bool 
 func (db *datastore) GetEmailSubscribers(collID int64, reqConfirmed bool) ([]*EmailSubscriber, error) {
 	cond := ""
 	if reqConfirmed {
-		cond = " AND confirmed = 1"
+		cond = " AND confirmed = TRUE"
 	}
 	rows, err := db.Query(`SELECT s.id, collection_id, user_id, s.email, u.email, subscribed, token, confirmed, allow_export
 FROM emailsubscribers s
@@ -3430,8 +3498,9 @@ func (db *datastore) FetchEmailSubscriber(email string, userID, collID int64) (*
 
 	s := &EmailSubscriber{}
 	var row *sql.Row
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID)
+		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID)
 	} else {
 		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID)
 	}
@@ -3461,8 +3530,9 @@ func (db *datastore) DeleteEmailSubscriber(subID, token string) error {
 func (db *datastore) DeleteEmailSubscriberByUser(email string, userID, collID int64) error {
 	var res sql.Result
 	var err error
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		res, err = db.Exec("DELETE FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID)
+		res, err = db.Exec("DELETE FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID)
 	} else {
 		res, err = db.Exec("DELETE FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID)
 	}
@@ -3485,7 +3555,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 	}
 
 	// TODO: ensure all addresses with original name are also confirmed, e.g. matt+fake@write.as and matt@write.as are now confirmed
-	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = 1 WHERE email = ?", email)
+	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = TRUE WHERE LOWER(email) = ?", normalizeSubscriberEmail(email))
 	if err != nil {
 		log.Error("Could not update email subscriber confirmation status: %v", err)
 		return err
@@ -3495,7 +3565,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 
 func (db *datastore) IsSubscriberConfirmed(email string) bool {
 	var dummy int64
-	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND confirmed = 1", email).Scan(&dummy)
+	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND confirmed = TRUE", normalizeSubscriberEmail(email)).Scan(&dummy)
 	switch {
 	case err == sql.ErrNoRows:
 		return false

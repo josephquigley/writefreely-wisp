@@ -11,7 +11,6 @@
 package writefreely
 
 import (
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -47,25 +46,14 @@ func (s staticSessionStore) Save(*http.Request, http.ResponseWriter, *sessions.S
 // transaction") and holds its locks until the process exits.
 func TestDeletePostRollsBackOnFailedDelete(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
 	cfg := config.New()
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.SingleUser = false
 	cfg.App.Federation = false
 
-	app := &App{
-		db:  &datastore{DB: db, driverName: driverSQLite},
-		cfg: cfg,
-	}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	db := openAppTestDB(t, app, "sqlite3", dbPath+"?parseTime=true&cached=shared")
 
 	u := &User{Username: "alice", HashedPass: []byte("x")}
 	if err := app.db.CreateUser(cfg, u, "", ""); err != nil {
@@ -77,14 +65,30 @@ func TestDeletePostRollsBackOnFailedDelete(t *testing.T) {
 	}
 	_, err = db.Exec(`INSERT INTO posts
 (id, slug, text_appearance, language, rtl, privacy, owner_id, collection_id, created, updated, view_count, title, content)
-VALUES ('p1', 'p1', 'norm', 'en', 0, 0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 'T', 'B')`, u.ID, coll.ID)
+VALUES ('p1', 'p1', 'norm', 'en', ?, 0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 'T', 'B')`, false, u.ID, coll.ID)
 	if err != nil {
 		t.Fatalf("insert post: %v", err)
 	}
-	// Make the DELETE inside deletePost's transaction fail.
-	if _, err := db.Exec(`CREATE TRIGGER fail_post_delete BEFORE DELETE ON posts
-BEGIN SELECT RAISE(ABORT, 'forced delete failure'); END`); err != nil {
-		t.Fatalf("create trigger: %v", err)
+	// Make the DELETE inside deletePost's transaction fail. Trigger syntax
+	// is per engine; each raises an error from a BEFORE DELETE trigger.
+	failDelete := []string{`CREATE TRIGGER fail_post_delete BEFORE DELETE ON posts
+BEGIN SELECT RAISE(ABORT, 'forced delete failure'); END`}
+	switch engine, _ := testDBEngine(); engine {
+	case driverMySQL:
+		failDelete = []string{`CREATE TRIGGER fail_post_delete BEFORE DELETE ON posts
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced delete failure'`}
+	case driverPostgres:
+		failDelete = []string{
+			`CREATE FUNCTION fail_post_delete() RETURNS trigger LANGUAGE plpgsql AS
+$$ BEGIN RAISE EXCEPTION 'forced delete failure'; END $$`,
+			`CREATE TRIGGER fail_post_delete BEFORE DELETE ON posts
+FOR EACH ROW EXECUTE FUNCTION fail_post_delete()`,
+		}
+	}
+	for _, q := range failDelete {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
 	}
 
 	app.sessionStore = staticSessionStore{u: &User{ID: u.ID, Username: u.Username}}

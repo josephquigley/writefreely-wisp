@@ -71,13 +71,12 @@ jobs:
   # harness reads to pick its database; docs/postgres-testing.md describes
   # them, and `make test-postgres` sets the same ones locally.
   #
-  # continue-on-error until the Postgres dialect is complete: until then this
-  # job is expected to fail, and it must not block the other checks. The
-  # release verification ticket removes it to make the job required.
+  # Required: a failure here fails the run. It was continue-on-error while the
+  # dialect work was incomplete; the release verification ticket (WFPG-17)
+  # removed that once the whole suite was seen green on Postgres 18.
   test-postgres:
     name: test-postgres
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       postgres:
         image: postgres:18
@@ -117,7 +116,57 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -count=1 ./...
+      # -tags sqlite so the app-level tests behind that tag (signup, OAuth
+      # state, tokens, tags) are compiled and run against Postgres too.
+      - run: go test -count=1 -tags sqlite ./...
+
+  # The suite against a real MariaDB, through the same harness (WF_TEST_DB_TYPE
+  # selects the engine; docs/database-testing.md). `make test-mysql` runs the
+  # same thing locally, and with MYSQL_IMAGE=mysql:8.4 against MySQL.
+  #
+  # continue-on-error until it has been seen green. Known open failures on
+  # MySQL: the case-insensitive collation (TestExactMatch*) and latin1
+  # remoteusers columns, both awaiting a decision.
+  test-mysql:
+    name: test-mysql
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      mysql:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: writefreely
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WF_TEST_DB_TYPE: mysql
+      # A throwaway service container on the runner, not a secret.
+      WF_TEST_MYSQL_DSN: root:writefreely@tcp(127.0.0.1:3306)/
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        if: github.event_name == 'pull_request_target'
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -count=1 -tags sqlite ./...
 
   lint:
     name: lint

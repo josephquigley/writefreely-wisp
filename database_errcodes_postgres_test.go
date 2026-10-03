@@ -237,9 +237,6 @@ func TestPostgresCreateCollectionDuplicate(t *testing.T) {
 }
 
 func TestPostgresCreatePostDuplicateSlug(t *testing.T) {
-	if n := unportedDriverSites["database.go:datastore.CreatePost"]; n > 0 {
-		t.Skip("CreatePost still panics on Postgres in its created-time branches (WFPG-06)")
-	}
 	db, _ := newErrCodeDB(t)
 	owner := errCodeInsertUser(t, db, "writer")
 	coll := errCodeInsertCollection(t, db, "writer", owner)

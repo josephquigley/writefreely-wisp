@@ -39,7 +39,6 @@ import (
 var unportedDriverSites = map[string]int{
 	// Seeded by WFPG-01 from develop 04bf560. The trailing ticket is a best
 	// guess at the owner; the ticket texts in Outline win.
-	"database.go:datastore.CreatePost": 2, // WFPG-06
 }
 
 // reviewedDriverSites lists driver comparisons that have been read and are

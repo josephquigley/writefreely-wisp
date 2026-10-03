@@ -38,15 +38,15 @@ func captureErrorLog(t *testing.T) *bytes.Buffer {
 // "unrecognized driver" on every lookup.
 func TestGetUserInviteSuccessLogsNothing(t *testing.T) {
 	app := newSignupTestApp(t)
-	seedInvite(t, app, "invitelookup1", 1)
+	seedInvite(t, app, "invlk1", 1)
 
 	buf := captureErrorLog(t)
-	inv, err := app.db.GetUserInvite("invitelookup1")
+	inv, err := app.db.GetUserInvite("invlk1")
 	if err != nil {
 		t.Fatalf("GetUserInvite: %v", err)
 	}
-	if inv == nil || inv.ID != "invitelookup1" {
-		t.Fatalf("GetUserInvite returned %+v, want invite invitelookup1", inv)
+	if inv == nil || inv.ID != "invlk1" {
+		t.Fatalf("GetUserInvite returned %+v, want invite invlk1", inv)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("successful lookup logged an error: %q", buf.String())
