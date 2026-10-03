@@ -28,6 +28,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -543,6 +544,97 @@ func TestDBCopyRefusals_Postgres(t *testing.T) {
 			t.Fatalf("over-long prev_alias: err = %v", err)
 		}
 	})
+}
+
+// TestDBCopyVersionRefusals_Postgres covers a source or target at a
+// migration version other than dbCopySchemaVersion, in either direction: each
+// is refused with an error naming the version found, before anything is
+// written to the target, in a real copy and in a dry run alike.
+func TestDBCopyVersionRefusals_Postgres(t *testing.T) {
+	newer, older := dbCopySchemaVersion+1, dbCopySchemaVersion-1
+	addVersion := func(t *testing.T, db *sql.DB, v int) {
+		t.Helper()
+		if _, err := db.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, CURRENT_TIMESTAMP, '')", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dropAbove := func(t *testing.T, db *sql.DB, v int) {
+		t.Helper()
+		if _, err := db.Exec("DELETE FROM appmigrations WHERE version > ?", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		setup  func(t *testing.T, src, dst *sql.DB)
+		want   []string // substrings the error must contain
+		reject string   // substring the error must not contain
+	}{
+		{
+			name:   "source newer",
+			setup:  func(t *testing.T, src, _ *sql.DB) { addVersion(t, src, newer) },
+			want:   []string{"source database", fmt.Sprintf("V%d", newer), fmt.Sprintf("newer than the V%d", dbCopySchemaVersion)},
+			reject: "db migrate",
+		},
+		{
+			name:  "target newer",
+			setup: func(t *testing.T, _, dst *sql.DB) { addVersion(t, dst, newer) },
+			want:  []string{"target database", fmt.Sprintf("V%d, not V%d", newer, dbCopySchemaVersion), "db init"},
+		},
+		{
+			name:  "target behind",
+			setup: func(t *testing.T, _, dst *sql.DB) { dropAbove(t, dst, older) },
+			want:  []string{"target database", fmt.Sprintf("V%d, not V%d", older, dbCopySchemaVersion), "db init"},
+		},
+	} {
+		for _, dry := range []bool{false, true} {
+			name := c.name
+			if dry {
+				name += " dry run"
+			}
+			t.Run(name, func(t *testing.T) {
+				fx := buildDBCopyFixture(t)
+				pg := newPostgresTestApp(t, nil)
+				c.setup(t, fx.app.db.DB, pg.db.DB)
+				migsBefore := dbCopyCount(t, pg.db, "appmigrations")
+
+				out, err := dbCopyRun(t, fx, pg.db.DB, DBCopyOptions{DryRun: dry})
+				if err == nil {
+					t.Fatalf("copy succeeded; want a version refusal\n%s", out)
+				}
+				for _, w := range c.want {
+					if !strings.Contains(err.Error(), w) {
+						t.Errorf("error %q does not contain %q", err, w)
+					}
+				}
+				if c.reject != "" && strings.Contains(err.Error(), c.reject) {
+					t.Errorf("error %q contains %q", err, c.reject)
+				}
+				if out != "" {
+					t.Errorf("refused copy printed a report:\n%s", out)
+				}
+				for _, tb := range []string{"users", "collections", "posts", "app_settings"} {
+					if n := dbCopyCount(t, pg.db, tb); n != 0 {
+						t.Errorf("refused copy left %d rows in %s", n, tb)
+					}
+				}
+				if n := dbCopyCount(t, pg.db, "appmigrations"); n != migsBefore {
+					t.Errorf("appmigrations has %d rows, had %d before the copy", n, migsBefore)
+				}
+			})
+		}
+	}
+}
+
+// TestDBCopyFlagConflict needs no database: --dry-run with --verify-only is
+// refused before the source is opened or the configuration loaded, so a nil
+// Apper and a source that does not exist must not be reached.
+func TestDBCopyFlagConflict(t *testing.T) {
+	missing := "sqlite:" + filepath.Join(t.TempDir(), "absent.db")
+	err := CopySQLiteDatabase(nil, DBCopyOptions{From: missing, DryRun: true, VerifyOnly: true})
+	if err == nil || !strings.Contains(err.Error(), "--dry-run and --verify-only cannot be used together") {
+		t.Fatalf("err = %v, want the flag conflict refusal", err)
+	}
 }
 
 func TestDBCopyVersionPin(t *testing.T) {
