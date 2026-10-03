@@ -1493,7 +1493,7 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 		err = rows.Scan(&id)
 		if err != nil {
 			log.Error("Failed scanning row: %v", err)
-			break
+			return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve tagged collection posts."}
 		}
 
 		ids = append(ids, id)
