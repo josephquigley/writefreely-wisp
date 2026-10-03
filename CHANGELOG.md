@@ -6,11 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 Versions carry a `+wisp` build suffix to distinguish them from upstream releases.
 
-This edition diverged from upstream [WriteFreely](https://github.com/writefreely/writefreely)
-0.17.2 (upstream `develop` at `71d6410`). Changes before that point are upstream's;
-see its [releases](https://github.com/writefreely/writefreely/releases).
+This edition diverged from upstream WriteFreely. See its [releases](https://github.com/writefreely/writefreely/releases) for further context.
 
-Each release is summarised in one sentence of at most 35 words. Detailed notes
+Each release is summarized in one sentence of at most 35 words. Detailed notes
 are on the corresponding [GitHub release](https://github.com/josephquigley/writefreely-wisp/releases).
 
 ## [Unreleased]
