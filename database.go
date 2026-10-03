@@ -1954,7 +1954,18 @@ func (db *datastore) UpdatePostPinState(pinned bool, postID string, collID, owne
 		return err
 	}
 	if rowsAffected == 0 {
-		return ErrForbiddenCollection
+		// MySQL counts changed rows, not matched ones, so re-pinning a post
+		// at its current position (or unpinning an unpinned one) affects
+		// nothing. Only a post the owner does not have is forbidden.
+		var n int
+		err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE id = ? AND collection_id = ? AND owner_id = ?", postID, collID, ownerID).Scan(&n)
+		if err != nil {
+			log.Error("Unable to check pinned post ownership: %v", err)
+			return err
+		}
+		if n == 0 {
+			return ErrForbiddenCollection
+		}
 	}
 	return nil
 }
