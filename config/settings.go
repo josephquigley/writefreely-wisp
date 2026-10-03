@@ -286,22 +286,48 @@ func ApplySettings(base *Config, rows map[string]string) (*Config, []string) {
 // pasting back into config.ini before downgrading. rows never holds a
 // secret: secrets are bootstrap.
 func ExportINI(rows map[string]string) (string, error) {
-	f := ini.Empty()
+	var buf bytes.Buffer
+	section := ""
 	for _, s := range dbSettings {
 		v, ok := rows[s.Name]
 		if !ok {
 			continue
 		}
 		sec, key := splitSettingName(s.Name)
-		if _, err := f.Section(sec).NewKey(key, v); err != nil {
+		if sec != section {
+			if section != "" {
+				buf.WriteString("\n")
+			}
+			fmt.Fprintf(&buf, "[%s]\n", sec)
+			section = sec
+		}
+		line, err := iniValue(key, v)
+		if err != nil {
 			return "", err
 		}
+		fmt.Fprintf(&buf, "%s = %s\n", key, line)
+	}
+	return buf.String(), nil
+}
+
+// iniValue renders v so that reading it back gives v. go-ini does the
+// quoting for ordinary values (`;`, `#`, backticks). It leaves a value that
+// starts or ends in a quote character bare, and the reader then strips the
+// quotes, so those are wrapped in triple quotes, which it keeps whole.
+func iniValue(key, v string) (string, error) {
+	if v != "" && (strings.ContainsAny(v[:1], `"'`) || strings.ContainsAny(v[len(v)-1:], `"'`)) {
+		return `"""` + v + `"""`, nil
+	}
+	f := ini.Empty()
+	if _, err := f.Section("x").NewKey(key, v); err != nil {
+		return "", err
 	}
 	var buf bytes.Buffer
 	if _, err := f.WriteTo(&buf); err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	out := strings.TrimSuffix(buf.String(), "\n")
+	return strings.TrimPrefix(out, "[x]\n"+key+" = "), nil
 }
 
 // SuggestSettings returns up to three registered names close to name,

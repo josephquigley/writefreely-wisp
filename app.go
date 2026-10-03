@@ -545,8 +545,15 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 	return apper.App(), nil
 }
 
-func Serve(app *App, r *mux.Router) {
+// useMiddleware installs the middleware every request passes through. Serve
+// calls it before anything else; TestServeInstallsMiddleware holds it to
+// that, since Serve itself blocks serving.
+func (app *App) useMiddleware(r *mux.Router) {
 	r.Use(app.settingsMiddleware)
+}
+
+func Serve(app *App, r *mux.Router) {
+	app.useMiddleware(r)
 
 	log.Info("Going to serve...")
 
