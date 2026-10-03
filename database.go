@@ -221,6 +221,12 @@ func (db *datastore) insertReturningID(q sqlQueryer, query string, args ...inter
 	return db.dialectOrDefault().InsertReturningID(context.Background(), q, query, args...)
 }
 
+// binaryEquals returns a condition matching the binary column col exactly
+// against b, and its arguments. See dialect.BinaryEquals.
+func (db *datastore) binaryEquals(col string, b []byte) (string, []interface{}) {
+	return db.dialectOrDefault().BinaryEquals(col, b)
+}
+
 func (db *datastore) version() (string, error) {
 	return db.dialectOrDefault().Version(context.Background(), db.DB)
 }
@@ -239,7 +245,14 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 
 	// 1. Add to `users` table
 	// NOTE: Assumes User's Password is already hashed!
-	u.ID, err = db.insertReturningID(t, "INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, u.HashedPass, u.Email)
+	// The bcrypt hash goes into a text column, so it is passed as a string.
+	// The email is ciphertext (see prepareUserEmail) bound for a binary
+	// column, so it is passed as []byte, as UpdateUserEmail does.
+	var encEmail []byte
+	if u.Email.Valid {
+		encEmail = []byte(u.Email.String)
+	}
+	u.ID, err = db.insertReturningID(t, "INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, string(u.HashedPass), encEmail)
 	if err != nil {
 		t.Rollback()
 		if db.isDuplicateKeyErr(err) {
@@ -460,7 +473,8 @@ func (db *datastore) GetUserNameFromToken(accessToken string) (string, error) {
 
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&username, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return "", ErrBadAccessToken
@@ -485,7 +499,8 @@ func (db *datastore) GetUserDataFromToken(accessToken string) (int64, string, er
 	var userID int64
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&userID, &username, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&userID, &username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return 0, "", ErrBadAccessToken
@@ -524,7 +539,8 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 	}
 
 	var oneTime bool
-	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&userID, &sudo, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&userID, &sudo, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return -1, false
@@ -541,7 +557,8 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 }
 
 func (db *datastore) DeleteToken(accessToken []byte) error {
-	res, err := db.Exec("DELETE FROM accesstokens WHERE token = ?", accessToken)
+	tokCond, tokArgs := db.binaryEquals("token", accessToken)
+	res, err := db.Exec("DELETE FROM accesstokens WHERE "+tokCond, tokArgs...)
 	if err != nil {
 		return err
 	}
@@ -596,7 +613,9 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 		return "", err
 	}
 
-	// Insert UUID to `accesstokens`
+	// Insert UUID to `accesstokens`. The 16 raw bytes go in as []byte: as a
+	// Go string they are text, which Postgres rejects as invalid UTF-8 for
+	// bytea and SQLite stores as TEXT (see dialect.BinaryEquals).
 	binTok := u[:]
 
 	expirationVal := "NULL"
@@ -604,7 +623,7 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 		expirationVal = db.dateAdd(validSecs, "SECOND")
 	}
 
-	_, err = db.Exec("INSERT INTO accesstokens (token, user_id, one_time, expires) VALUES (?, ?, ?, "+expirationVal+")", string(binTok), userID, oneTime)
+	_, err = db.Exec("INSERT INTO accesstokens (token, user_id, one_time, expires) VALUES (?, ?, ?, "+expirationVal+")", binTok, userID, oneTime)
 	if err != nil {
 		log.Error("Couldn't INSERT accesstoken: %v", err)
 		return "", err
@@ -616,7 +635,7 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 func (db *datastore) CreatePasswordResetToken(userID int64) (string, error) {
 	t := id.Generate62RandomString(32)
 
-	_, err := db.Exec("INSERT INTO password_resets (user_id, token, used, created) VALUES (?, ?, 0, "+db.now()+")", userID, t)
+	_, err := db.Exec("INSERT INTO password_resets (user_id, token, used, created) VALUES (?, ?, FALSE, "+db.now()+")", userID, t)
 	if err != nil {
 		log.Error("Couldn't INSERT password_resets: %v", err)
 		return "", err
@@ -627,7 +646,7 @@ func (db *datastore) CreatePasswordResetToken(userID int64) (string, error) {
 
 func (db *datastore) GetUserFromPasswordReset(token string) int64 {
 	var userID int64
-	err := db.QueryRow("SELECT user_id FROM password_resets WHERE token = ? AND used = 0 AND created > "+db.dateSub(3, "HOUR"), token).Scan(&userID)
+	err := db.QueryRow("SELECT user_id FROM password_resets WHERE token = ? AND used = FALSE AND created > "+db.dateSub(3, "HOUR"), token).Scan(&userID)
 	if err != nil {
 		return 0
 	}
@@ -635,7 +654,7 @@ func (db *datastore) GetUserFromPasswordReset(token string) int64 {
 }
 
 func (db *datastore) ConsumePasswordResetToken(t string) error {
-	_, err := db.Exec("UPDATE password_resets SET used = 1 WHERE token = ?", t)
+	_, err := db.Exec("UPDATE password_resets SET used = TRUE WHERE token = ?", t)
 	if err != nil {
 		log.Error("Couldn't UPDATE password_resets: %v", err)
 		return err
@@ -1152,9 +1171,9 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 		}
 		switch db.driverName {
 		case driverSQLite:
-			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, hashedPass)
+			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, string(hashedPass))
 		case driverMySQL, driverPostgres:
-			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, hashedPass, hashedPass)
+			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, string(hashedPass), string(hashedPass))
 		default:
 			unsupportedDriver("UpdateCollection", db.driverName)
 		}
@@ -2458,7 +2477,7 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 			errPass = impart.HTTPError{http.StatusInternalServerError, "Could not create password hash."}
 			return errPass
 		}
-		q.SetBytes(hashedPass, "password")
+		q.Set(string(hashedPass), "password")
 	}
 
 	// WHERE values
@@ -2515,7 +2534,7 @@ func (db *datastore) ChangePassphrase(userID int64, sudo bool, curPass string, h
 		return impart.HTTPError{http.StatusUnauthorized, "Incorrect password."}
 	}
 
-	_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", hashedPass, userID)
+	_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", string(hashedPass), userID)
 	if err != nil {
 		log.Error("Could not update passphrase: %v", err)
 		return err
@@ -2858,7 +2877,7 @@ func (db *datastore) CreateUserInvite(id string, userID int64, maxUses int, expi
 		e := db.dialectOrDefault().TimeArg(*expires)
 		expires = &e
 	}
-	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, 0)", id, userID, maxUses, expires)
+	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, FALSE)", id, userID, maxUses, expires)
 	return err
 }
 
@@ -3372,7 +3391,7 @@ func (db *datastore) IsEmailSubscriber(email string, userID, collID int64) bool 
 func (db *datastore) GetEmailSubscribers(collID int64, reqConfirmed bool) ([]*EmailSubscriber, error) {
 	cond := ""
 	if reqConfirmed {
-		cond = " AND confirmed = 1"
+		cond = " AND confirmed = TRUE"
 	}
 	rows, err := db.Query(`SELECT s.id, collection_id, user_id, s.email, u.email, subscribed, token, confirmed, allow_export
 FROM emailsubscribers s
@@ -3474,7 +3493,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 	}
 
 	// TODO: ensure all addresses with original name are also confirmed, e.g. matt+fake@write.as and matt@write.as are now confirmed
-	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = 1 WHERE email = ?", email)
+	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = TRUE WHERE email = ?", email)
 	if err != nil {
 		log.Error("Could not update email subscriber confirmation status: %v", err)
 		return err
@@ -3484,7 +3503,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 
 func (db *datastore) IsSubscriberConfirmed(email string) bool {
 	var dummy int64
-	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND confirmed = 1", email).Scan(&dummy)
+	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND confirmed = TRUE", email).Scan(&dummy)
 	switch {
 	case err == sql.ErrNoRows:
 		return false
