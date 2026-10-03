@@ -11,12 +11,7 @@
 package writefreely
 
 import (
-	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
-	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -127,7 +122,7 @@ func TestPostgresInit(t *testing.T) {
 // TestPostgresInitIsAtomic breaks the last statement of postgres.sql and
 // checks that init fails and leaves nothing behind.
 func TestPostgresInitIsAtomic(t *testing.T) {
-	db := newPostgresTestDB(t)
+	db := newEmptyPostgresDatastore(t)
 	cfg := config.New()
 	cfg.Database.Type = driverPostgres
 	app := &App{cfg: cfg, db: db}
@@ -145,7 +140,7 @@ func TestPostgresInitIsAtomic(t *testing.T) {
 // TestMigrateRefusesPostgresBeforeBase checks that migrations V1 to V18
 // cannot run on Postgres, whether appmigrations is missing or behind.
 func TestMigrateRefusesPostgresBeforeBase(t *testing.T) {
-	db := newPostgresTestDB(t)
+	db := newEmptyPostgresDatastore(t)
 	mdb := migrations.NewDatastore(db.DB, driverPostgres)
 
 	err := migrations.Migrate(mdb)
@@ -165,7 +160,7 @@ func newInitializedPostgresApp(t *testing.T) *App {
 	t.Helper()
 	cfg := config.New()
 	cfg.Database.Type = driverPostgres
-	app := &App{cfg: cfg, db: newPostgresTestDB(t)}
+	app := &App{cfg: cfg, db: newEmptyPostgresDatastore(t)}
 	require.NoError(t, adminInitDatabase(app))
 	return app
 }
@@ -183,42 +178,11 @@ func newInitializedSQLiteApp(t *testing.T) *App {
 	return app
 }
 
-// newPostgresTestDB creates an empty database on the server in
-// WF_TEST_PG_DSN, and drops it when the test ends. It skips the test when
-// the variable is unset.
-func newPostgresTestDB(t *testing.T) *datastore {
+// newEmptyPostgresDatastore returns a datastore on a fresh, empty database
+// from the WFPG-02 harness (harness_pg_test.go).
+func newEmptyPostgresDatastore(t *testing.T) *datastore {
 	t.Helper()
-	dsn := os.Getenv("WF_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("WF_TEST_PG_DSN not set; run `make test-postgres`")
-	}
-	admin, err := sql.Open(driverPostgresRebind, dsn)
-	require.NoError(t, err)
-	t.Cleanup(func() { admin.Close() })
-
-	b := make([]byte, 6)
-	_, err = rand.Read(b)
-	require.NoError(t, err)
-	name := "wf_schema_test_" + hex.EncodeToString(b)
-	_, err = admin.Exec("CREATE DATABASE " + name)
-	require.NoError(t, err)
-
-	u, err := url.Parse(dsn)
-	require.NoError(t, err)
-	u.Path = "/" + name
-	q := u.Query()
-	q.Set("timezone", "UTC")
-	u.RawQuery = q.Encode()
-	sdb, err := sql.Open(driverPostgresRebind, u.String())
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		sdb.Close()
-		if _, err := admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
-			t.Logf("drop %s: %v", name, err)
-		}
-	})
-	return newDatastore(sdb, driverPostgres)
+	return newDatastore(newPostgresTestDB(t), driverPostgres)
 }
 
 func postgresColumns(t *testing.T, db *sql.DB) map[string][]string {
