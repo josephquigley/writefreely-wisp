@@ -392,7 +392,7 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var content string
 	var font string
 	var language []byte
-	var rtl []byte
+	var rtl sql.NullBool
 	var views int64
 	var post *AnonymousPost
 	var found bool
@@ -425,10 +425,9 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		found = true
 
 		var d string
-		if len(rtl) == 0 {
+		if !rtl.Valid {
 			d = "auto"
-		} else if rtl[0] == 49 {
-			// TODO: find a cleaner way to get this (possibly NULL) value
+		} else if rtl.Bool {
 			d = "rtl"
 		} else {
 			d = "ltr"

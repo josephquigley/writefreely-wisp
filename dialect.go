@@ -80,6 +80,12 @@ type dialect interface {
 	// database (MySQL), the main schema (SQLite) or the search_path
 	// (Postgres).
 	TableExists(ctx context.Context, q sqlQueryer, name string) (bool, error)
+	// BinaryEquals returns a condition matching the binary column col
+	// (binary/bytea, or TEXT on SQLite) exactly against b, and the arguments
+	// it consumes, in order. It exists for SQLite, whose databases hold
+	// values written both as TEXT (older code bound a Go string) and as BLOB
+	// (a Go []byte), which `=` never considers equal.
+	BinaryEquals(col string, b []byte) (string, []interface{})
 }
 
 // sqlQueryer is satisfied by *sql.DB, *sql.Tx and *sql.Conn, so dialect
@@ -172,6 +178,10 @@ func (mysqlDialect) TableExists(ctx context.Context, q sqlQueryer, name string) 
 	return n > 0, nil
 }
 
+func (mysqlDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
+	return col + " = ?", []interface{}{b}
+}
+
 // --------------------------------------------------------------- SQLite --
 
 type sqliteDialect struct{}
@@ -220,6 +230,17 @@ func (sqliteDialect) TableExists(ctx context.Context, q sqlQueryer, name string)
 		return false, err
 	}
 	return true, nil
+}
+
+// BinaryEquals on SQLite matches the value stored either as a BLOB or as
+// TEXT holding the same bytes. A BLOB never equals TEXT under `=`, and
+// access tokens were inserted as TEXT (a Go string) until WFPG-05, so
+// existing databases hold TEXT tokens while new ones are BLOBs. CAST(? AS
+// TEXT) reinterprets the bytes without changing them, and BINARY collation
+// compares TEXT byte for byte, so this is still an exact match. An IN list
+// on the column keeps the primary-key index usable.
+func (sqliteDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
+	return col + " IN (?, CAST(? AS TEXT))", []interface{}{b, b}
 }
 
 // ------------------------------------------------------------- Postgres --
@@ -298,6 +319,10 @@ func (postgresDialect) TableExists(ctx context.Context, q sqlQueryer, name strin
 		return false, err
 	}
 	return exists, nil
+}
+
+func (postgresDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
+	return col + " = ?", []interface{}{b}
 }
 
 // isPostgresErrCode reports whether err is (or wraps) a Postgres error with
