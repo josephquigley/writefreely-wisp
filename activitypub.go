@@ -1476,6 +1476,10 @@ func unmarshalActor(actorResp []byte, actor *activitystreams.Person) error {
 		}
 	}(flexActor.Context)
 
+	// Everything above came from another server. Make it storable before
+	// any of it can reach remoteusers or remoteuserkeys.
+	sanitizeRemoteActor(actor)
+
 	return nil
 }
 
