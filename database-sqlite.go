@@ -15,6 +15,7 @@ package writefreely
 
 import (
 	"database/sql"
+	"errors"
 	"regexp"
 
 	"github.com/go-sql-driver/mysql"
@@ -46,7 +47,8 @@ func (db *datastore) isDuplicateKeyErr(err error) bool {
 			return mysqlErr.Number == mySQLErrDuplicateKey
 		}
 	} else if db.driverName == driverPostgres {
-		if postgresErr, ok := err.(*pq.Error); ok {
+		var postgresErr *pq.Error
+		if errors.As(err, &postgresErr) {
 			return postgresErr.Code == postgresErrDuplicateKey
 		}
 	} else {
@@ -76,7 +78,8 @@ func (db *datastore) isHighLoadError(err error) bool {
 	}
 
 	if db.driverName == driverPostgres {
-		if postgresErr, ok := err.(*pq.Error); ok {
+		var postgresErr *pq.Error
+		if errors.As(err, &postgresErr) {
 			return postgresErr.Code == postgresErrMaxUserConns || postgresErr.Code == postgresErrTooManyConns
 		}
 	}
