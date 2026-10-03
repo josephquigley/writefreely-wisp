@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and tag pages escape the tag, so tags containing regex characters match only themselves.
+- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and tag pages escape the tag and work on MySQL 8.
 
 ## [0.20.0+wisp] - 2026-09-09
 
