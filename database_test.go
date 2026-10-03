@@ -49,3 +49,32 @@ func TestOAuthDatastore(t *testing.T) {
 		assert.Equal(t, localUserID, foundUserID)
 	})
 }
+
+func TestUpdatePostPinStateUnchanged(t *testing.T) {
+	if !runMySQLTests() {
+		t.Skip("skipping mysql tests")
+	}
+	withTestDB(t, func(db *sql.DB) {
+		ds := &datastore{DB: db, driverName: ""}
+
+		const postID = "repinsamepos0001"
+		var collID, ownerID int64 = 7, 3
+		_, err := db.Exec("INSERT INTO posts (id, privacy, owner_id, collection_id, view_count, title, content) VALUES (?, 0, ?, ?, 0, '', '')", postID, ownerID, collID)
+		assert.NoError(t, err)
+
+		// Pinning, then pinning again at the same position, leaves the row
+		// unchanged the second time. That is still the owner's own post.
+		assert.NoError(t, ds.UpdatePostPinState(true, postID, collID, ownerID, 1))
+		assert.NoError(t, ds.UpdatePostPinState(true, postID, collID, ownerID, 1))
+
+		// Likewise unpinning a post that is already unpinned.
+		assert.NoError(t, ds.UpdatePostPinState(false, postID, collID, ownerID, 0))
+		assert.NoError(t, ds.UpdatePostPinState(false, postID, collID, ownerID, 0))
+
+		// Someone else's post, or a post in another collection, is still
+		// forbidden.
+		assert.Equal(t, ErrForbiddenCollection, ds.UpdatePostPinState(true, postID, collID, ownerID+1, 1))
+		assert.Equal(t, ErrForbiddenCollection, ds.UpdatePostPinState(true, postID, collID+1, ownerID, 1))
+		assert.Equal(t, ErrForbiddenCollection, ds.UpdatePostPinState(false, postID, collID, ownerID+1, 0))
+	})
+}
