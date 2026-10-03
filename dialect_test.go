@@ -301,3 +301,47 @@ func TestPostgresConnection(t *testing.T) {
 		return p.Ping(ctx)
 	}))
 }
+
+// TestPostgresIgnoresPGEnvironment: lib/pq's NewConnector reads PG*
+// variables and refuses some outright (PGSSLMODE=prefer, PGGSSENCMODE,
+// PGSERVICE). The [database] section is the whole configuration, so a host
+// that exports them for psql must still start.
+func TestPostgresIgnoresPGEnvironment(t *testing.T) {
+	t.Setenv("PGSSLMODE", "prefer")
+	t.Setenv("PGGSSENCMODE", "disable")
+	t.Setenv("PGSERVICE", "elsewhere")
+	t.Setenv("PGDATABASE", "not_this_one")
+	dsn := postgresDSN(config.DatabaseCfg{User: "wf", Password: "pw", Database: "writefreely", Host: "db.internal", TLS: true})
+	_, err := rebindDriver{}.OpenConnector(dsn)
+	require.NoError(t, err)
+}
+
+// TestPqConfigFromDSN: the DSN is parsed the way lib/pq parses it, minus
+// the environment.
+func TestPqConfigFromDSN(t *testing.T) {
+	for _, dsn := range []string{
+		postgresDSN(config.DatabaseCfg{User: "wf", Password: "p@ss/w:rd?# '\\", Database: "writefreely", Host: "db.internal", Port: 6543, TLS: true}),
+		postgresDSN(config.DatabaseCfg{User: "wf", Database: "wf", Host: "::1"}),
+		"postgres://writefreely:writefreely@127.0.0.1:5432/wf_test_00?sslmode=disable&timezone=UTC&connect_timeout=5",
+	} {
+		want, err := pq.NewConfig(dsn)
+		require.NoError(t, err, dsn)
+		got, err := pqConfigFromDSN(dsn)
+		require.NoError(t, err, dsn)
+		assert.Equal(t, want.Host, got.Host, dsn)
+		assert.Equal(t, want.Port, got.Port, dsn)
+		assert.Equal(t, want.User, got.User, dsn)
+		assert.Equal(t, want.Password, got.Password, dsn)
+		assert.Equal(t, want.Database, got.Database, dsn)
+		assert.Equal(t, want.SSLMode, got.SSLMode, dsn)
+		assert.Equal(t, want.ApplicationName, got.ApplicationName, dsn)
+		assert.Equal(t, want.ConnectTimeout, got.ConnectTimeout, dsn)
+		assert.Equal(t, want.Runtime, got.Runtime, dsn)
+		// lib/pq parses timestamps assuming ISO output in UTF-8.
+		assert.Equal(t, want.ClientEncoding, got.ClientEncoding, dsn)
+		assert.Equal(t, want.Datestyle, got.Datestyle, dsn)
+	}
+
+	_, err := pqConfigFromDSN("host=x dbname=y")
+	assert.Error(t, err, "only URL DSNs are accepted")
+}

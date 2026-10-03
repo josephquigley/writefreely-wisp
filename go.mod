@@ -51,7 +51,7 @@ require (
 
 require (
 	github.com/go-fed/httpsig v0.1.1-0.20200204213531-0ef28562fabe
-	github.com/lib/pq v1.11.2
+	github.com/lib/pq v1.12.3
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/xhit/go-simple-mail/v2 v2.16.0
 )

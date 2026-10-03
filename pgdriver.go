@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 	"github.com/writefreely/writefreely/config"
@@ -226,14 +227,72 @@ func (d rebindDriver) Open(name string) (driver.Conn, error) {
 	return c.Connect(context.Background())
 }
 
-// OpenConnector uses pq.NewConnector: pq.Driver does not implement
-// driver.DriverContext itself.
+// OpenConnector parses name with pqConfigFromDSN and opens it with
+// pq.NewConnectorConfig. pq.NewConnector is not used: it also reads the PG*
+// environment variables and refuses to start on some of them (PGSSLMODE=
+// prefer, PGGSSENCMODE, PGSERVICE), which a host may export for psql. The
+// [database] section is the whole configuration.
 func (rebindDriver) OpenConnector(name string) (driver.Connector, error) {
-	inner, err := pq.NewConnector(name)
+	cfg, err := pqConfigFromDSN(name)
+	if err != nil {
+		return nil, err
+	}
+	inner, err := pq.NewConnectorConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &rebindConnector{inner: inner}, nil
+}
+
+// pqConfigFromDSN parses a postgres:// URL, as postgresDSN builds, into a
+// pq.Config the way pq.NewConfig would, but without the environment.
+// sslmode, application_name and connect_timeout (seconds) map to their
+// fields; every other query parameter, such as timezone, is sent as a
+// session setting. A missing sslmode is lib/pq's default, require.
+func pqConfigFromDSN(dsn string) (pq.Config, error) {
+	u, err := url.Parse(dsn)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		return pq.Config{}, fmt.Errorf("%s: the DSN must be a postgres:// URL", driverPostgresRebind)
+	}
+	cfg := pq.Config{
+		Host: "localhost", Port: 5432, SSLSNI: true,
+		// NewConfig's defaults; lib/pq parses timestamps as ISO text in UTF-8.
+		ClientEncoding: "UTF8", Datestyle: "ISO, MDY",
+		Runtime: map[string]string{},
+	}
+	if h := u.Hostname(); h != "" {
+		cfg.Host = h
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.ParseUint(p, 10, 16)
+		if err != nil {
+			return pq.Config{}, fmt.Errorf("%s: invalid port %q", driverPostgresRebind, p)
+		}
+		cfg.Port = uint16(n)
+	}
+	if u.User != nil {
+		cfg.User = u.User.Username()
+		cfg.Password, _ = u.User.Password()
+	}
+	cfg.Database = strings.TrimPrefix(u.Path, "/")
+	for k, vs := range u.Query() {
+		v := vs[len(vs)-1]
+		switch k {
+		case "sslmode":
+			cfg.SSLMode = pq.SSLMode(v)
+		case "application_name":
+			cfg.ApplicationName = v
+		case "connect_timeout":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return pq.Config{}, fmt.Errorf("%s: invalid connect_timeout %q", driverPostgresRebind, v)
+			}
+			cfg.ConnectTimeout = time.Duration(n) * time.Second
+		default:
+			cfg.Runtime[k] = v
+		}
+	}
+	return cfg, nil
 }
 
 type rebindConnector struct {
