@@ -18,6 +18,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - Re-pinning a post at the position it already holds is no longer refused as forbidden on MySQL and MariaDB.
+- Re-pinning a post at the position it already holds is no longer refused as forbidden on MySQL and MariaDB.
 
 ### Security
 
