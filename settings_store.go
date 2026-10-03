@@ -13,6 +13,7 @@ package writefreely
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -104,21 +105,43 @@ func sortedSettingNames(m map[string]string) []string {
 	return ks
 }
 
+// errSettingsStale is returned when a save was made from a page older than
+// the settings in the database. Nothing was written.
+var errSettingsStale = errors.New("Settings were changed elsewhere since this page was loaded. Nothing was saved; reload the page and try again.")
+
 // SaveSettings writes values and bumps the version in one transaction,
 // and returns the new version. Callers validate first; this stores text.
 func (db *datastore) SaveSettings(ctx context.Context, values map[string]string) (int64, error) {
+	return db.SaveSettingsIf(ctx, values, nil)
+}
+
+// SaveSettingsIf is SaveSettings that, when expected is not nil, writes only
+// if the version is still *expected, and returns errSettingsStale otherwise.
+// The version row is bumped first: that takes its lock on MySQL and Postgres,
+// so two saves from the same version cannot both pass the check.
+func (db *datastore) SaveSettingsIf(ctx context.Context, values map[string]string, expected *int64) (int64, error) {
 	t, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer t.Rollback()
+	q, args := "UPDATE app_settings_version SET version = version + 1 WHERE id = 1", []interface{}{}
+	if expected != nil {
+		q, args = q+" AND version = ?", append(args, *expected)
+	}
+	res, err := t.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, err
+	} else if n == 0 && expected != nil {
+		return 0, errSettingsStale
+	}
 	for _, name := range sortedSettingNames(values) {
 		if err := db.upsertSetting(ctx, t, name, values[name]); err != nil {
 			return 0, fmt.Errorf("save %s: %v", name, err)
 		}
-	}
-	if _, err := t.ExecContext(ctx, "UPDATE app_settings_version SET version = version + 1 WHERE id = 1"); err != nil {
-		return 0, err
 	}
 	var v int64
 	if err := t.QueryRowContext(ctx, "SELECT version FROM app_settings_version WHERE id = 1").Scan(&v); err != nil {

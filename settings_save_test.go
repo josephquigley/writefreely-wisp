@@ -16,6 +16,8 @@ import (
 	"context"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,6 +89,7 @@ func TestSaveSettingsBeforeMigration(t *testing.T) {
 func TestAdminUpdateConfigHandler(t *testing.T) {
 	a := loadedSettingsApp(t)
 	form := url.Values{
+		"settings_version":    {settingsFormVersion(a)},
 		"site_name":           {"Handled"},
 		"min_username_len":    {"3"},
 		"max_blogs":           {"2"},
@@ -114,6 +117,7 @@ func TestAdminUpdateConfigSkipsUnsupportedUpdateChecks(t *testing.T) {
 	}
 	a := loadedSettingsApp(t)
 	form := url.Values{
+		"settings_version":    {settingsFormVersion(a)},
 		"site_name":           {"X"},
 		"min_username_len":    {"3"},
 		"max_blogs":           {"2"},
@@ -149,5 +153,100 @@ func TestSaveSettingsRefusesEnvReference(t *testing.T) {
 	}
 	if _, after, _ := a.db.LoadSettings(ctx); after != before {
 		t.Error("a refused save wrote something")
+	}
+}
+
+const staleSettingsMessage = "Settings were changed elsewhere since this page was loaded. Nothing was saved; reload the page and try again."
+
+// settingsFormVersion is what the settings page would put in the hidden
+// settings_version field when rendered now.
+func settingsFormVersion(a *App) string {
+	return strconv.FormatInt(a.settings.Load().version, 10)
+}
+
+func postSettingsForm(t *testing.T, a *App, version, siteName string) string {
+	t.Helper()
+	form := url.Values{
+		"site_name":           {siteName},
+		"min_username_len":    {"3"},
+		"max_blogs":           {"2"},
+		"user_invites":        {"none"},
+		"default_visibility":  {"public"},
+		"theme":               {"write"},
+		"uploads_max_size_mb": {"10"},
+	}
+	if version != "" {
+		form.Set("settings_version", version)
+	}
+	r := httptest.NewRequest("POST", "/admin/settings", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	err := handleAdminUpdateConfig(a, nil, httptest.NewRecorder(), r)
+	he, ok := err.(impart.HTTPError)
+	if !ok {
+		t.Fatalf("handler returned %v", err)
+	}
+	msg, _ := url.QueryUnescape(he.Message)
+	return msg
+}
+
+func TestAdminSaveRefusesStaleForm(t *testing.T) {
+	a := loadedSettingsApp(t)
+	ctx := context.Background()
+	// Two admins load the page at the same version.
+	v1, v2 := settingsFormVersion(a), settingsFormVersion(a)
+	if m := postSettingsForm(t, a, v1, "First"); !strings.Contains(m, "Configuration saved.") {
+		t.Fatalf("first save: %s", m)
+	}
+	rows, ver, _ := a.db.LoadSettings(ctx)
+	m := postSettingsForm(t, a, v2, "Second")
+	if !strings.Contains(m, staleSettingsMessage) {
+		t.Fatalf("second save: %s", m)
+	}
+	rows2, ver2, _ := a.db.LoadSettings(ctx)
+	if ver2 != ver || rows2["app.site_name"] != "First" || len(rows2) != len(rows) {
+		t.Errorf("stale save changed the database: version %d -> %d, site_name %q", ver, ver2, rows2["app.site_name"])
+	}
+	if a.Config().App.SiteName != "First" {
+		t.Errorf("site name %q", a.Config().App.SiteName)
+	}
+	// Reloaded, the form works again.
+	if m := postSettingsForm(t, a, settingsFormVersion(a), "Third"); !strings.Contains(m, "Configuration saved.") {
+		t.Errorf("fresh form: %s", m)
+	}
+}
+
+func TestAdminSaveRefusesMissingOrBadVersion(t *testing.T) {
+	a := loadedSettingsApp(t)
+	for _, v := range []string{"", "abc", "-1", "99999999999999999999"} {
+		if m := postSettingsForm(t, a, v, "Nope"); !strings.Contains(m, staleSettingsMessage) {
+			t.Errorf("version %q: %s", v, m)
+		}
+	}
+	if a.Config().App.SiteName == "Nope" {
+		t.Error("a refused save landed")
+	}
+}
+
+// The CLI has no form to be stale: it saves unconditionally, even after
+// another save has moved the version.
+func TestSaveSettingsWithoutExpectedVersionIsUnconditional(t *testing.T) {
+	a := loadedSettingsApp(t)
+	ctx := context.Background()
+	a.db.SaveSettings(ctx, map[string]string{"app.site_name": "Elsewhere"}) // a.settings is now behind
+	if err := a.saveSettings(ctx, map[string]string{"app.max_blogs": "4"}); err != nil {
+		t.Fatal(err)
+	}
+	if a.Config().App.MaxBlogs != 4 {
+		t.Error("save did not land")
+	}
+}
+
+func TestSettingsTemplateCarriesVersion(t *testing.T) {
+	b, err := os.ReadFile("templates/user/admin/app-settings.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `name="settings_version"`) {
+		t.Error("the settings form has no settings_version field")
 	}
 }

@@ -165,11 +165,21 @@ func handleViewAdminMonitor(app *App, u *User, w http.ResponseWriter, r *http.Re
 }
 
 func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
+	// One snapshot, so the values and their version cannot come from
+	// different reloads.
+	cfg, ver := app.Config(), int64(0)
+	if snap := app.settings.Load(); snap != nil {
+		cfg, ver = snap.cfg, snap.version
+	}
 	p := struct {
 		*UserPage
 		*AdminPage
 		Config  config.AppCfg
 		Uploads config.UploadsCfg
+
+		// SettingsVersion is the version Config and Uploads were read at.
+		// The form sends it back so a save can tell it is stale.
+		SettingsVersion int64
 
 		UpdateChecksSupported bool
 
@@ -177,8 +187,10 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.Config().App,
-		Uploads:   app.Config().Uploads,
+		Config:    cfg.App,
+		Uploads:   cfg.Uploads,
+
+		SettingsVersion: ver,
 
 		UpdateChecksSupported: updateChecksSupported,
 
@@ -622,8 +634,21 @@ func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *htt
 		changes["app.update_checks"] = check("update_checks")
 	}
 
+	// The version the page was rendered from. A form without one (an old
+	// cached page) or with a garbled one is as stale as any other.
+	var expected *int64
+	if v, err := strconv.ParseInt(r.FormValue("settings_version"), 10, 64); err == nil && v >= 0 {
+		expected = &v
+	}
+
 	m := "?cm=Configuration+saved."
-	if err := apper.App().saveSettings(r.Context(), changes); err != nil {
+	var err error
+	if expected == nil {
+		err = errSettingsStale
+	} else {
+		err = apper.App().saveSettingsIf(r.Context(), changes, expected)
+	}
+	if err != nil {
 		m = "?cm=" + url.QueryEscape(err.Error())
 	}
 	return impart.HTTPError{http.StatusFound, "/admin/settings" + m + "#config"}

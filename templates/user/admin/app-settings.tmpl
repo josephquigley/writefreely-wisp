@@ -32,6 +32,7 @@ select {
 	{{if .ConfigMessage}}<p class="success" style="text-align: center">{{.ConfigMessage}}</p>{{end}}
 
 	<form action="/admin/update/config" method="post">
+		<input type="hidden" name="settings_version" value="{{.SettingsVersion}}" />
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}>
 				Site Title

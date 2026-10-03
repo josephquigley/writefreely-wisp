@@ -301,8 +301,20 @@ func settingNameError(name, cfgPath string) error {
 // next request. Nothing is written unless every value, and the
 // combination, is valid.
 func (app *App) saveSettings(ctx context.Context, changes map[string]string) error {
-	if app.settings.Load() == nil {
+	return app.saveSettingsIf(ctx, changes, nil)
+}
+
+// saveSettingsIf is saveSettings that, when expected is not nil, refuses
+// with errSettingsStale unless the settings are still at version *expected:
+// the version the admin page was rendered from. The CLI passes nil and
+// saves unconditionally.
+func (app *App) saveSettingsIf(ctx context.Context, changes map[string]string, expected *int64) error {
+	snap := app.settings.Load()
+	if snap == nil {
 		return errors.New("settings are not in the database yet: run `writefreely db migrate` and restart")
+	}
+	if expected != nil && *expected != snap.version {
+		return errSettingsStale // validating against newer settings would be a guess
 	}
 	cur := app.Config()
 	cand := *cur
@@ -325,7 +337,7 @@ func (app *App) saveSettings(ctx context.Context, changes map[string]string) err
 			return fmt.Errorf("cannot enable uploads on this node: %v", err)
 		}
 	}
-	if _, err := app.db.SaveSettings(ctx, stored); err != nil {
+	if _, err := app.db.SaveSettingsIf(ctx, stored, expected); err != nil {
 		return err
 	}
 	app.settingsMu.Lock()
