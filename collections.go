@@ -462,10 +462,14 @@ func newCollection(app *App, w http.ResponseWriter, r *http.Request) error {
 		c.Title = title
 	}
 
+	// aliasGenerated is true only when we derive the alias from the title; an
+	// alias the user supplied must never be renamed on a collision.
+	aliasGenerated := false
 	if c.Alias == "" {
 		if c.Title != "" {
 			// If only a title was given, just use it to generate the alias.
 			c.Alias = getSlug(c.Title, "")
+			aliasGenerated = true
 		} else {
 			missingParams += "`alias` "
 		}
@@ -508,7 +512,7 @@ func newCollection(app *App, w http.ResponseWriter, r *http.Request) error {
 		return impart.HTTPError{http.StatusPreconditionFailed, "Collection alias isn't valid."}
 	}
 
-	coll, err := app.db.CreateCollection(app.cfg, c.Alias, c.Title, userID, false)
+	coll, err := app.db.CreateCollection(app.cfg, c.Alias, c.Title, userID, aliasGenerated)
 	if err != nil {
 		// TODO: handle this
 		return err

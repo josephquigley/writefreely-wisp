@@ -5,6 +5,8 @@ package writefreely
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,4 +181,42 @@ func httpStatus(err error) int {
 		return he.Status
 	}
 	return 0
+}
+
+func TestNewCollectionAliasRetry(t *testing.T) {
+	app, _ := newTemplateTestApp(t, nil)
+	u, _, _ := createTemplateTestUser(t, app, "newcollretry") // alias "newcollretry" is taken
+	token, err := app.db.GetAccessToken(u.ID)
+	if err != nil {
+		t.Fatalf("access token: %v", err)
+	}
+	post := func(body string) error {
+		r := httptest.NewRequest("POST", "/api/collections", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", token)
+		return newCollection(app, httptest.NewRecorder(), r)
+	}
+	aliasCount := func(like string) (n int) {
+		if err := app.db.QueryRow("SELECT COUNT(*) FROM collections WHERE alias LIKE ?", like).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return
+	}
+
+	t.Run("title-only request whose slug is taken gets a suffixed alias", func(t *testing.T) {
+		inputs, restore := collidingSeam(2)
+		defer restore()
+		assert.NoError(t, post(`{"title":"NewCollRetry"}`))
+		assert.Equal(t, 1, aliasCount("newcollretry-fresh"))
+		assert.Len(t, *inputs, 3)
+	})
+
+	t.Run("explicit alias that is taken is a 409 and not suffixed", func(t *testing.T) {
+		inputs, restore := collidingSeam(0)
+		defer restore()
+		err := post(`{"alias":"newcollretry","title":"Whatever"}`)
+		assert.Equal(t, http.StatusConflict, httpStatus(err))
+		assert.Empty(t, *inputs)
+		assert.Equal(t, 1, aliasCount("newcollretry-%"), "only the generated one from the other subtest")
+	})
 }
