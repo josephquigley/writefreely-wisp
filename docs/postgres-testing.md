@@ -4,12 +4,11 @@ Postgres support is being added alongside MySQL and SQLite. This page is how
 to run the test suite against a real Postgres server, on your machine and in
 CI.
 
-**Status:** the scaffold is in place, the harness is not yet. The variables
-below are set by every runner described here, but nothing in the test code
-reads them yet, so for now `make test-postgres` runs the same unit tests as
-`go test ./...` with a Postgres server standing by. The harness that creates a
-database per test arrives with the Postgres driver; this page will be updated
-when it does.
+**Status:** the harness is in place. Under `WF_TEST_DB_TYPE=postgres`, a
+test that asks for a Postgres database gets its own, created for it and
+dropped when it ends. The Postgres schema itself is still being ported, so
+tests that need it skip with a message saying so (see *Writing a Postgres
+test* below).
 
 ## The short version
 
@@ -40,13 +39,63 @@ local Docker, never with `DOCKER_HOST` or a Docker context pointed at a server.
 | Variable | Meaning |
 |---|---|
 | `WF_TEST_DB_TYPE` | Which database the database-backed tests use. `postgres` selects Postgres. Unset, the tests keep their existing behaviour: MySQL when `TEST_MYSQL` is set, otherwise database-backed tests are skipped. |
-| `WF_TEST_PG_DSN` | A Postgres connection URL, for example `postgres://writefreely:writefreely@127.0.0.1:5432/writefreely?sslmode=disable`. Read only when `WF_TEST_DB_TYPE=postgres`. |
+| `WF_TEST_PG_DSN` | A Postgres connection URL (`postgres://…`; the keyword=value form is not accepted), for example `postgres://writefreely:writefreely@127.0.0.1:5432/writefreely?sslmode=disable`. Read only when `WF_TEST_DB_TYPE=postgres`, and then required: a run that asks for Postgres and cannot reach it exits non-zero before any test runs, rather than passing with everything skipped. |
 
 The role in `WF_TEST_PG_DSN` must be allowed to create and drop databases.
 The harness connects to the database named in the URL only to create a fresh
 database for each test, works in that one, and drops it afterwards, so the
 named database itself is never written to. The official image's
 `POSTGRES_USER` is a superuser, which is enough.
+
+## Writing a Postgres test
+
+The helpers live in `harness_pg_test.go`. Each skips the calling test unless
+`WF_TEST_DB_TYPE=postgres`, so a Postgres test sits in the ordinary suite and
+costs nothing on a run without Postgres.
+
+| Helper | Gives you |
+|---|---|
+| `newPostgresTestDatastore(t testing.TB) *datastore` | A `*datastore` with `driverName` `postgres` over a fresh database with the full schema loaded, as `writefreely db init` would load it. The usual choice. |
+| `newPostgresTestApp(t testing.TB, cfg *config.Config) *App` | The same, wrapped in an `*App` whose `cfg` is yours (`nil` means `config.New()`). Its `Database.Type` is set to `postgres`. Use it for code that takes an `*App`. |
+| `newPostgresTestDB(t testing.TB) *sql.DB` | A fresh, **empty** database, for a test that builds its own tables. |
+| `runPostgresTests() bool` | Whether the run is a Postgres run, for gating a test by hand. |
+
+```go
+func TestCreateUser_Postgres(t *testing.T) {
+	ds := newPostgresTestDatastore(t)
+	// ... exercise ds exactly as the code under test would
+}
+```
+
+Every database is named `wf_test_<16 hex digits>`. It is created from the
+maintenance connection in `WF_TEST_PG_DSN`, opened through the
+`postgres-rebind` driver (so `?` placeholders work, and the session time zone
+is UTC), and dropped with `DROP DATABASE … WITH (FORCE)` in the test's
+cleanup, so a connection the test leaked cannot stop the drop. Tests are
+isolated from one another and need no teardown of their own.
+
+The schema is loaded by `adminInitDatabase`, the same function `db init`
+uses, so these tests exercise the real schema and migrations rather than a
+copy. **Until the Postgres schema is ported, that function panics with "not
+implemented for database driver", and the helpers turn that one panic into a
+skip that names the schema ticket.** Any other schema-load error fails the
+test. `TestPostgresSchemaLoads` is the probe: it skips today and passes once
+the schema loads.
+
+`withTestDB`, the older helper used by MySQL-only tests, also hands out a
+fresh schema-loaded database under Postgres. Those tests are still gated on
+`TEST_MYSQL`, because their SQL is MySQL's; un-gate one only once its queries
+are portable.
+
+If a run is killed hard (`kill -9`, a crashed container), a database can be
+left behind. They are easy to spot and drop by hand:
+
+```sh
+psql "$WF_TEST_PG_DSN" -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'wf\_test\_%'"
+```
+
+`make test-postgres` never leaves any, because the whole server is thrown
+away.
 
 ## Running against a Postgres that stays up
 
