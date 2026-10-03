@@ -14,15 +14,16 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ## [Unreleased]
 
+### Security
+
+- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+
 ### Fixed
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - Successful invite lookups on SQLite no longer log a spurious error.
 - Successful invite lookups on SQLite no longer log a spurious error.
-
-### Security
-
-- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+- Successful invite lookups on SQLite no longer log a spurious error.
 
 ## [0.20.0+wisp] - 2026-09-09
 
