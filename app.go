@@ -494,6 +494,10 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 		return nil, fmt.Errorf("connect to DB: %s", err)
 	}
 
+	if _, err := apper.App().importSettings(context.Background()); err != nil {
+		return nil, fmt.Errorf("import settings from %s: %s", apper.App().configPath(), err)
+	}
+
 	if err := apper.App().loadSettings(context.Background()); err != nil {
 		return nil, fmt.Errorf("load settings: %s", err)
 	}
@@ -784,6 +788,11 @@ func DoConfig(app *App, configSections string) {
 		log.Info("Database already initialized.")
 	}
 
+	if _, err := app.importSettings(context.Background()); err != nil {
+		log.Error("Unable to move settings into the database: %v", err)
+		os.Exit(1)
+	}
+
 	if d.User != nil {
 		u := &User{
 			Username:   d.User.Username,
@@ -862,6 +871,9 @@ func Migrate(apper Apper) error {
 	err := migrations.Migrate(migrations.NewDatastore(apper.App().db.DB, apper.App().db.driverName))
 	if err != nil {
 		return fmt.Errorf("migrate: %s", err)
+	}
+	if _, err := apper.App().importSettings(context.Background()); err != nil {
+		return fmt.Errorf("import settings: %s", err)
 	}
 	return nil
 }

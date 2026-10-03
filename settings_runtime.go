@@ -13,6 +13,7 @@ package writefreely
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/writeas/web-core/log"
 	"github.com/writefreely/go-nodeinfo"
@@ -121,4 +122,73 @@ func (app *App) nodeInfoHandler(discover bool) http.HandlerFunc {
 		}
 		ni.NodeInfo(w, r)
 	})
+}
+
+// settingsImport is what one importSettings run did, for logging and tests.
+type settingsImport struct {
+	Imported bool     // this node moved the settings into the database
+	Drift    []string // DB-bound keys in this node's ini that disagree with the database
+	Stripped []string // keys removed from this node's ini
+	Left     []string // keys still in the ini because it could not be written
+	StripErr error
+}
+
+// importSettings moves this node's settings into the database if no node
+// has yet, then removes the DB-bound keys from its own config.ini.
+//
+// It imports the values the instance was running with (app.cfg as loaded),
+// not the keys as written: a key absent from the file was in force as its
+// zero value, and storing config.New()'s default instead would quietly
+// change the instance on upgrade.
+//
+// It is idempotent and runs at every start and in `db migrate`.
+func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
+	var res settingsImport
+	ok, err := app.db.settingsTableExists(ctx)
+	if err != nil || !ok {
+		return res, err
+	}
+	present, err := config.KeysPresent(app.configPath(), config.DBSettingNames())
+	if err != nil {
+		return res, err
+	}
+	effective := config.SettingsFrom(app.cfg)
+
+	res.Imported, err = app.db.ClaimSettingsImport(ctx, effective)
+	if err != nil {
+		return res, err
+	}
+	if res.Imported {
+		log.Info("Moved %d settings from %s into the database.", len(effective), app.configPath())
+	} else if len(present) > 0 {
+		rows, _, err := app.db.LoadSettings(ctx)
+		if err != nil {
+			return res, err
+		}
+		defs := config.SettingDefaults()
+		for _, name := range present {
+			dbv, ok := rows[name]
+			if !ok {
+				dbv = defs[name]
+			}
+			if effective[name] != dbv {
+				res.Drift = append(res.Drift, name)
+			}
+		}
+		if len(res.Drift) > 0 {
+			log.Error("settings: %s disagrees with the database on %s; the database value is in force.", app.configPath(), strings.Join(res.Drift, ", "))
+		}
+	}
+
+	if len(present) == 0 {
+		return res, nil
+	}
+	res.Stripped, res.StripErr = config.StripKeys(app.configPath(), present)
+	if res.StripErr != nil {
+		res.Left, res.Stripped = res.Stripped, nil
+		log.Error("settings: could not remove %s from %s (%v). They are ignored; delete them by hand.", strings.Join(res.Left, ", "), app.configPath(), res.StripErr)
+	} else {
+		log.Info("Removed %s from %s; they now live in the database.", strings.Join(res.Stripped, ", "), app.configPath())
+	}
+	return res, nil
 }
