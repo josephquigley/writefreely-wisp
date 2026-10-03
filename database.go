@@ -3216,7 +3216,7 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 			if mysqlErr.Number == mySQLErrDuplicateKey {
 				// Duplicate, so just return existing subscriber information
-				log.Info("Duplicate subscriber for email %s, user %d; returning existing subscriber", email, userID)
+				log.Info("Duplicate subscriber for collection %d, user %d; returning existing subscriber", collID, userID)
 				return db.FetchEmailSubscriber(email, userID, collID)
 			}
 		}
