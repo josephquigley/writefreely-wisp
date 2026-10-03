@@ -14,7 +14,8 @@ import (
 // Spencer word boundary "[[:>:]]" with ERROR 3685, so each query must pick its
 // boundary from the server version.
 func TestTaggedPostQueriesOnMySQL(t *testing.T) {
-	if !runMySQLTests() {
+	// MySQL-only: it is about MySQL's two regex engines.
+	if !runAnyMySQLTests() {
 		t.Skip("skipping mysql tests")
 	}
 	withTestDB(t, func(db *sql.DB) {

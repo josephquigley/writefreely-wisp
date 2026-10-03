@@ -11,7 +11,6 @@
 package writefreely
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -29,7 +28,7 @@ import (
 
 const announceTestHost = "https://local.example"
 
-// newAnnounceTestApp builds a real, sqlite-backed App with the instance
+// newAnnounceTestApp builds a real, database-backed App (openAppTestDB) with the instance
 // announce actor turned on, one user, and no collections yet.
 //
 // It is deliberately not single-user: single-user mode resolves every alias
@@ -39,11 +38,6 @@ func newAnnounceTestApp(t *testing.T) *App {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	cfg := config.New()
 	cfg.UseSQLite(true)
@@ -53,13 +47,8 @@ func newAnnounceTestApp(t *testing.T) *App {
 	cfg.App.Federation = true
 	cfg.App.InstanceAnnounce = true
 
-	app := &App{
-		db:  &datastore{DB: db, driverName: driverSQLite},
-		cfg: cfg,
-	}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	openAppTestDB(t, app, "sqlite3", dbPath+"?parseTime=true&cached=shared")
 	if err := app.initFederationAllowlist(); err != nil {
 		t.Fatalf("initFederationAllowlist: %v", err)
 	}

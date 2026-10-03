@@ -83,12 +83,18 @@ func TestValueTypesPostgres(t *testing.T) {
 }
 
 // TestValueTypesMySQL runs the suite on a fresh MySQL database with the
-// real schema, created on the TEST_MYSQL server and dropped afterwards.
+// real schema: from the harness under WF_TEST_DB_TYPE=mysql, otherwise
+// created on the TEST_MYSQL server and dropped afterwards.
 func TestValueTypesMySQL(t *testing.T) {
-	if !runMySQLTests() {
+	if !runAnyMySQLTests() {
 		t.Skip("skipping mysql tests")
 	}
 	runValueTypesSuite(t, func(t *testing.T) *App {
+		if runMySQLHarnessTests() {
+			app := newMySQLTestApp(t, valueTypesConfig())
+			prepareValueTypesApp(t, app)
+			return app
+		}
 		u, _ := uuid.NewV4()
 		name := "wf_vt_" + strings.Replace(u.String(), "-", "", -1)
 		if _, err := testDB.Exec("CREATE DATABASE " + name + " CHARACTER SET utf8mb4"); err != nil {

@@ -6,9 +6,11 @@ CI.
 
 **Status:** the harness is in place. Under `WF_TEST_DB_TYPE=postgres`, a
 test that asks for a Postgres database gets its own, created for it and
-dropped when it ends. The Postgres schema itself is still being ported, so
-tests that need it skip with a message saying so (see *Writing a Postgres
-test* below).
+dropped when it ends, with the real schema loaded. The app-level tests
+(signup, inbox, announce, template rendering and so on) run on Postgres too:
+their setup goes through an engine switch described in
+[database-testing.md](database-testing.md), which also covers MySQL and
+MariaDB (`make test-mysql`).
 
 ## The short version
 
@@ -38,7 +40,7 @@ local Docker, never with `DOCKER_HOST` or a Docker context pointed at a server.
 
 | Variable | Meaning |
 |---|---|
-| `WF_TEST_DB_TYPE` | Which database the database-backed tests use. `postgres` selects Postgres. Unset, the tests keep their existing behaviour: MySQL when `TEST_MYSQL` is set, otherwise database-backed tests are skipped. |
+| `WF_TEST_DB_TYPE` | Which database the database-backed tests use: `sqlite` (the default when unset), `mysql` or `postgres`. Anything else fails the run. See [database-testing.md](database-testing.md). |
 | `WF_TEST_PG_DSN` | A Postgres connection URL (`postgres://…`; the keyword=value form is not accepted), for example `postgres://writefreely:writefreely@127.0.0.1:5432/writefreely?sslmode=disable`. Read only when `WF_TEST_DB_TYPE=postgres`, and then required: a run that asks for Postgres and cannot reach it exits non-zero before any test runs, rather than passing with everything skipped. |
 
 The role in `WF_TEST_PG_DSN` must be allowed to create and drop databases.
@@ -83,9 +85,9 @@ test. `TestPostgresSchemaLoads` is the probe: it skips today and passes once
 the schema loads.
 
 `withTestDB`, the older helper used by MySQL-only tests, also hands out a
-fresh schema-loaded database under Postgres. Those tests are still gated on
-`TEST_MYSQL`, because their SQL is MySQL's; un-gate one only once its queries
-are portable.
+fresh schema-loaded database under Postgres. `TestOAuthDatastore` and
+`TestUpdatePostPinStateUnchanged` run on Postgres; `TestTaggedPostQueriesOnMySQL`
+stays MySQL-only, because it is about MySQL's two regex engines.
 
 If a run is killed hard (`kill -9`, a crashed container), a database can be
 left behind. They are easy to spot and drop by hand:

@@ -36,17 +36,12 @@ import (
 // These tests drive both network calls from the outside, which is what the
 // remoteLookup and newRemoteActor indirections exist for.
 
-// newHandleTestApp builds a real sqlite-backed App with the schema in place
+// newHandleTestApp builds a real database-backed App (openAppTestDB) with the schema in place
 // and nothing in remoteusers.
 func newHandleTestApp(t *testing.T) *App {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	cfg := config.New()
 	cfg.UseSQLite(true)
@@ -54,13 +49,8 @@ func newHandleTestApp(t *testing.T) *App {
 	cfg.App.Host = "https://local.example"
 	cfg.App.SingleUser = true
 
-	app := &App{
-		db:  &datastore{DB: db, driverName: driverSQLite},
-		cfg: cfg,
-	}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	openAppTestDB(t, app, "sqlite3", dbPath+"?parseTime=true&cached=shared")
 	return app
 }
 

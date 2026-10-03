@@ -33,7 +33,7 @@ import (
 
 var initTemplatesOnce sync.Once
 
-// newSignupTestApp builds a real, sqlite-backed App suitable for exercising
+// newSignupTestApp builds a real, database-backed App (openAppTestDB) suitable for exercising
 // the HTTP signup handlers end-to-end. It's intentionally minimal: only the
 // pieces those handlers actually touch (db, cfg, keys, session store, form
 // decoder, and the global page/template caches) are initialized.
@@ -41,12 +41,6 @@ func newSignupTestApp(t *testing.T) *App {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3_with_regex", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
 	cfg := config.New()
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
@@ -62,16 +56,13 @@ func newSignupTestApp(t *testing.T) *App {
 	}
 
 	app := &App{
-		db:   &datastore{DB: db, driverName: driverSQLite},
 		cfg:  cfg,
 		keys: keys,
 	}
 	app.formDecoder = schema.NewDecoder()
 	app.InitSession()
 
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	openAppTestDB(t, app, "sqlite3_with_regex", dbPath+"?parseTime=true&cached=shared")
 
 	var tmplErr error
 	initTemplatesOnce.Do(func() {
