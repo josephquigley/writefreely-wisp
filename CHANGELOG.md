@@ -17,10 +17,15 @@ changes share a bullet. Detailed notes are on the corresponding
 ### Security
 
 - Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+- OAuth login states are strictly single-use, and replayed or unknown states are refused instead of accepted.
 
 ### Fixed
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
+- Re-pinning a post at the position it already holds is no longer refused as forbidden on MySQL and MariaDB.
+- A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
+- Successful invite lookups on SQLite no longer log a spurious error.
+- The Reader's tag filter matches tags literally instead of treating them as regular expressions.
 - Tag pages escape regex characters in the tag, so a tag like `c++` or `a.b` matches only itself.
 
 ## [0.20.0+wisp] - 2026-09-09
