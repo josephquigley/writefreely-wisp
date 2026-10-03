@@ -347,13 +347,22 @@ func cleanImagePath(p string) (string, bool) {
 // redirected to: a redirect would change what remote caches see and expose
 // the bucket.
 func (app *App) uploadsHandler() http.Handler {
+	return uploadsHandlerFor(app.imageStore())
+}
+
+// uploadsHandlerFor is uploadsHandler for a given store. Cache-Control is
+// set only on a response that carries an image: http.FileServer's errors
+// strip it, but the streamed path's http.Error and http.NotFound do not, so
+// setting it up front would have browsers and CDNs keep a missing or failed
+// object for a week, immutable.
+func uploadsHandlerFor(store ImageStore) http.Handler {
 	var h http.Handler
-	if ls, ok := app.imageStore().(*localImageStore); ok {
-		h = http.FileServer(http.Dir(ls.root()))
+	if ls, ok := store.(*localImageStore); ok {
+		h = cacheControl(http.FileServer(http.Dir(ls.root())))
 	} else {
-		h = streamImages(app.imageStore())
+		h = streamImages(store)
 	}
-	return uploadHeaders(cacheControl(http.StripPrefix("/"+uploadsDir+"/", h)))
+	return uploadHeaders(http.StripPrefix("/"+uploadsDir+"/", h))
 }
 
 // streamImages serves images out of store, with Range, conditional requests
@@ -381,6 +390,8 @@ func streamImages(store ImageStore) http.Handler {
 			return
 		}
 		defer img.Close()
+		// Only an image is cached; the errors above must not be.
+		w.Header().Set("Cache-Control", imageCacheControl)
 		// uploadHeaders has already set SVG's type; the rest are set here,
 		// from the extension the server gave the file, never the store's
 		// own idea of it.
