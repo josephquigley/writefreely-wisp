@@ -71,13 +71,12 @@ jobs:
   # harness reads to pick its database; docs/postgres-testing.md describes
   # them, and `make test-postgres` sets the same ones locally.
   #
-  # continue-on-error until the Postgres dialect is complete: until then this
-  # job is expected to fail, and it must not block the other checks. The
-  # release verification ticket removes it to make the job required.
+  # Required: a failure here fails the run. It was continue-on-error while the
+  # dialect work was incomplete; the release verification ticket (WFPG-17)
+  # removed that once the whole suite was seen green on Postgres 18.
   test-postgres:
     name: test-postgres
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       postgres:
         image: postgres:18
@@ -125,7 +124,9 @@ jobs:
   # selects the engine; docs/database-testing.md). `make test-mysql` runs the
   # same thing locally, and with MYSQL_IMAGE=mysql:8.4 against MySQL.
   #
-  # continue-on-error, like test-postgres, until it has been seen green.
+  # continue-on-error until it has been seen green. Known open failures on
+  # MySQL: the case-insensitive collation (TestExactMatch*) and latin1
+  # remoteusers columns, both awaiting a decision.
   test-mysql:
     name: test-mysql
     runs-on: ubuntu-latest
