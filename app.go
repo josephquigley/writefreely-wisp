@@ -145,6 +145,23 @@ func (app *App) Config() *config.Config {
 	return app.cfg
 }
 
+// configAndVersion is Config together with the settings version it belongs
+// to. The version is 0 before settings are in the database. A reload that
+// swaps the snapshot mid-call is noticed (snapshots are never reused) and
+// the read repeated, so the pair always comes from one snapshot.
+func (app *App) configAndVersion() (*config.Config, int64) {
+	for {
+		before := app.settings.Load()
+		cfg := app.Config()
+		if app.settings.Load() == before {
+			if before == nil {
+				return cfg, 0
+			}
+			return cfg, before.version
+		}
+	}
+}
+
 // SetConfig updates the App's Config to the given value.
 func (app *App) SetConfig(cfg *config.Config) {
 	app.cfg = cfg

@@ -167,10 +167,7 @@ func handleViewAdminMonitor(app *App, u *User, w http.ResponseWriter, r *http.Re
 func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
 	// One snapshot, so the values and their version cannot come from
 	// different reloads.
-	cfg, ver := app.Config(), int64(0)
-	if snap := app.settings.Load(); snap != nil {
-		cfg, ver = snap.cfg, snap.version
-	}
+	cfg, ver := app.configAndVersion()
 	p := struct {
 		*UserPage
 		*AdminPage
