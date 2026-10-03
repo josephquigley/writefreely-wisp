@@ -1976,7 +1976,18 @@ func (db *datastore) UpdatePostPinState(pinned bool, postID string, collID, owne
 		return err
 	}
 	if rowsAffected == 0 {
-		return ErrForbiddenCollection
+		// MySQL counts changed rows, not matched ones, so re-pinning a post
+		// at its current position (or unpinning an unpinned one) affects
+		// nothing. Only a post the owner does not have is forbidden.
+		var n int
+		err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE id = ? AND collection_id = ? AND owner_id = ?", postID, collID, ownerID).Scan(&n)
+		if err != nil {
+			log.Error("Unable to check pinned post ownership: %v", err)
+			return err
+		}
+		if n == 0 {
+			return ErrForbiddenCollection
+		}
 	}
 	return nil
 }
@@ -2866,10 +2877,10 @@ func (db *datastore) GetUserInvites(userID int64) (*[]Invite, error) {
 func (db *datastore) GetUserInvite(id string) (*Invite, error) {
 	var i Invite
 	err := db.QueryRow("SELECT id, max_uses, created, expires, inactive FROM userinvites WHERE id = ?", id).Scan(&i.ID, &i.MaxUses, &i.Created, &i.Expires, &i.Inactive)
-	switch {
-	case err == sql.ErrNoRows, db.isIgnorableError(err):
-		return nil, impart.HTTPError{http.StatusNotFound, "Invite doesn't exist."}
-	case err != nil:
+	if err != nil {
+		if err == sql.ErrNoRows || db.isIgnorableError(err) {
+			return nil, impart.HTTPError{http.StatusNotFound, "Invite doesn't exist."}
+		}
 		log.Error("Failed selecting invite: %v", err)
 		return nil, err
 	}
@@ -3132,7 +3143,10 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 			return err
 		}
 
-		res, err := tx.ExecContext(ctx, "UPDATE oauth_client_states SET used = TRUE WHERE state = ?", state)
+		// The used = FALSE condition belongs in the UPDATE, not only in the
+		// SELECT above: two callers can both pass the SELECT, and only the
+		// UPDATE's row count decides which of them consumed the state.
+		res, err := tx.ExecContext(ctx, "UPDATE oauth_client_states SET used = TRUE WHERE state = ? AND used = FALSE", state)
 		if err != nil {
 			return err
 		}
@@ -3146,7 +3160,7 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 		return nil
 	})
 	if err != nil {
-		return "", "", 0, "", nil
+		return "", "", 0, "", err
 	}
 	return provider, clientID, attachUserID.Int64, inviteCode.String, nil
 }
