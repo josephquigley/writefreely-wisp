@@ -15,6 +15,7 @@ package writefreely
 import (
 	"context"
 	"github.com/writefreely/writefreely/config"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -114,5 +115,43 @@ func TestSettingsCLIDefaultMarker(t *testing.T) {
 	row, _ = SettingGet(NewApp(app.cfgFile), "app.site_name")
 	if row.Default || row.Value != "Other" {
 		t.Errorf("saved other: %+v", row)
+	}
+}
+
+// Read-only commands on a fresh install must not claim the import or
+// touch config.ini; they show what config.ini says.
+func TestSettingsCLIReadOnlyDoesNotWrite(t *testing.T) {
+	app := cliTestApp(t)
+	before, err := os.ReadFile(app.cfgFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := SettingsList(NewApp(app.cfgFile))
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("list %v err %v", rows, err)
+	}
+	for _, r := range rows {
+		if r.Imported {
+			t.Fatalf("%s marked imported on a fresh install", r.Name)
+		}
+	}
+	row, err := SettingGet(NewApp(app.cfgFile), "app.site_name")
+	if err != nil || row.Value != "CLI Site" || row.Imported {
+		t.Fatalf("get %+v err %v", row, err)
+	}
+	out, err := SettingsExport(NewApp(app.cfgFile))
+	if err != nil || !strings.Contains(out, "CLI Site") {
+		t.Fatalf("export %q err %v", out, err)
+	}
+	after, _ := os.ReadFile(app.cfgFile)
+	if string(before) != string(after) {
+		t.Errorf("config.ini changed:\n%s", after)
+	}
+	chk := NewApp(app.cfgFile)
+	chk.LoadConfig()
+	connectToDatabase(chk)
+	defer shutdown(chk)
+	if v, err := chk.db.SettingsVersion(context.Background()); err != nil || v != 0 {
+		t.Errorf("version %d err %v", v, err)
 	}
 }
