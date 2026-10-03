@@ -3052,7 +3052,7 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 		return nil
 	})
 	if err != nil {
-		return "", "", 0, "", nil
+		return "", "", 0, "", err
 	}
 	return provider, clientID, attachUserID.Int64, inviteCode.String, nil
 }
