@@ -60,8 +60,10 @@ func (db *datastore) isIgnorableError(err error) bool {
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 			return mysqlErr.Number == mySQLErrCollationMix
 		}
-	case driverPostgres:
-		// MySQL's 1267 (illegal mix of collations) has no Postgres analogue.
+	case driverSQLite, driverPostgres:
+		// MySQL's 1267 (illegal mix of collations) has no analogue on
+		// either. Naming them here keeps a real error on these engines from
+		// also logging a spurious "unrecognized driver" line.
 		return false
 	default:
 		log.Error("isIgnorableError: failed check for unrecognized driver '%s'", db.driverName)
