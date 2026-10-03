@@ -18,6 +18,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - The Reader's tag filter matches tags literally instead of treating them as regular expressions.
+- The Reader's tag filter matches tags literally instead of treating them as regular expressions.
 
 ### Security
 
