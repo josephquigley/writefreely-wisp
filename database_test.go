@@ -8,41 +8,51 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestOAuthDatastore(t *testing.T) {
-	if !runMySQLTests() {
-		t.Skip("skipping mysql tests")
-	}
+// withTestDatastore runs testBody against withTestDB's database, as a
+// datastore for the engine in use: the WF_TEST_DB_TYPE engine under the
+// mysql or postgres harness, and refDriver (the driver these tests always
+// used) on the TEST_MYSQL reference database.
+func withTestDatastore(t *testing.T, refDriver string, testBody func(db *sql.DB, ds *datastore)) {
 	withTestDB(t, func(db *sql.DB) {
-		ctx := context.Background()
-		ds := &datastore{
-			DB:         db,
-			driverName: "",
+		ds := &datastore{DB: db, driverName: refDriver}
+		if engine, _ := testDBEngine(); engine != driverSQLite {
+			ds = newDatastore(db, engine)
 		}
+		testBody(db, ds)
+	})
+}
+
+func TestOAuthDatastore(t *testing.T) {
+	if !runAnyMySQLTests() && !runPostgresTests() {
+		t.Skip("skipping mysql and postgres tests")
+	}
+	withTestDatastore(t, driverMySQL, func(db *sql.DB, ds *datastore) {
+		ctx := context.Background()
 
 		state, err := ds.GenerateOAuthState(ctx, "test", "development", 0, "")
 		assert.NoError(t, err)
 		assert.Len(t, state, 24)
 
-		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM `oauth_client_states` WHERE `state` = ? AND `used` = false", state)
+		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM oauth_client_states WHERE state = ? AND used = false", state)
 
 		_, _, _, _, err = ds.ValidateOAuthState(ctx, state)
 		assert.NoError(t, err)
 
-		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM `oauth_client_states` WHERE `state` = ? AND `used` = true", state)
+		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM oauth_client_states WHERE state = ? AND used = true", state)
 
 		var localUserID int64 = 99
 		var remoteUserID = "100"
 		err = ds.RecordRemoteUserID(ctx, localUserID, remoteUserID, "test", "test", "access_token_a")
 		assert.NoError(t, err)
 
-		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM `oauth_users` WHERE `user_id` = ? AND `remote_user_id` = ? AND access_token = 'access_token_a'", localUserID, remoteUserID)
+		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM oauth_users WHERE user_id = ? AND remote_user_id = ? AND access_token = 'access_token_a'", localUserID, remoteUserID)
 
 		err = ds.RecordRemoteUserID(ctx, localUserID, remoteUserID, "test", "test", "access_token_b")
 		assert.NoError(t, err)
 
-		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM `oauth_users` WHERE `user_id` = ? AND `remote_user_id` = ? AND access_token = 'access_token_b'", localUserID, remoteUserID)
+		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM oauth_users WHERE user_id = ? AND remote_user_id = ? AND access_token = 'access_token_b'", localUserID, remoteUserID)
 
-		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM `oauth_users`")
+		countRows(t, ctx, db, 1, "SELECT COUNT(*) FROM oauth_users")
 
 		foundUserID, err := ds.GetIDForRemoteUser(ctx, remoteUserID, "test", "test")
 		assert.NoError(t, err)
@@ -51,11 +61,10 @@ func TestOAuthDatastore(t *testing.T) {
 }
 
 func TestUpdatePostPinStateUnchanged(t *testing.T) {
-	if !runMySQLTests() {
-		t.Skip("skipping mysql tests")
+	if !runAnyMySQLTests() && !runPostgresTests() {
+		t.Skip("skipping mysql and postgres tests")
 	}
-	withTestDB(t, func(db *sql.DB) {
-		ds := &datastore{DB: db, driverName: ""}
+	withTestDatastore(t, "", func(db *sql.DB, ds *datastore) {
 
 		const postID = "repinsamepos0001"
 		var collID, ownerID int64 = 7, 3

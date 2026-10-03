@@ -15,9 +15,24 @@ import (
 // newTokenTestDB opens a throwaway SQLite database holding only the two
 // tables the access-token lookups read, with one user (id 1, "victim") and,
 // if victimToken is not nil, one token for that user. The accesstokens
-// table matches sqlite.sql, so its token column is TEXT.
+// table matches sqlite.sql, so its token column is TEXT, and the token is
+// stored as TEXT the way older code wrote it. Under WF_TEST_DB_TYPE=mysql or
+// postgres it is a fresh database on that engine with the real schema
+// instead, holding the same user and token.
 func newTokenTestDB(t *testing.T, victimToken []byte) *datastore {
 	t.Helper()
+	if e := engineTestApp(t, nil); e != nil {
+		ds := e.db
+		if _, err := ds.Exec("INSERT INTO users (id, username, password) VALUES (1, 'victim', 'x')"); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+		if victimToken != nil {
+			if _, err := ds.Exec("INSERT INTO accesstokens (token, user_id) VALUES (?, 1)", victimToken); err != nil {
+				t.Fatalf("insert token: %v", err)
+			}
+		}
+		return ds
+	}
 	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "tokens.db")+"?parseTime=true")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -83,9 +98,11 @@ func TestAccessTokenLookupIsExact(t *testing.T) {
 }
 
 // TestAccessTokenRoundTrip checks that a token issued by GetAccessToken is
-// found again by every lookup. GetAccessToken stores the token as a string,
-// which SQLite keeps as TEXT; a lookup that binds the token as []byte sends
-// a BLOB, and SQLite never considers TEXT equal to BLOB.
+// found again by every lookup and then deleted. GetAccessToken now writes the
+// token as bytes; older SQLite databases hold TEXT tokens instead, which
+// TestLegacyTextAccessTokensSQLite covers. On SQLite a TEXT value never
+// equals a BLOB, so a mismatch between the write and the lookups would make
+// every token unusable.
 func TestAccessTokenRoundTrip(t *testing.T) {
 	db := newTokenTestDB(t, nil)
 
@@ -93,14 +110,6 @@ func TestAccessTokenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccessToken: %v", err)
 	}
-	var storedType string
-	if err := db.QueryRow("SELECT typeof(token) FROM accesstokens").Scan(&storedType); err != nil {
-		t.Fatalf("typeof(token): %v", err)
-	}
-	if storedType != "text" {
-		t.Fatalf("GetAccessToken stored the token as %s, want text", storedType)
-	}
-
 	if id := db.GetUserID(tok); id != 1 {
 		t.Errorf("GetUserID: got user %d, want 1", id)
 	}

@@ -667,7 +667,7 @@ func ConnectToDatabase(app *App) error {
 
 	// Ensure the database schema is up-to-date
 	var dbVer int
-	err = app.db.QueryRow("SELECT MAX(version) FROM appmigrations").Scan(&dbVer)
+	err = app.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM appmigrations").Scan(&dbVer)
 	if err != nil {
 		log.Error("Unable to read migrations version: %v", err)
 	} else if dbVer < migrations.CurrentVer() {
@@ -1036,10 +1036,11 @@ func connectToDatabase(app *App) {
 
 	var db *sql.DB
 	var err error
-	if app.cfg.Database.Type == driverMySQL {
+	switch app.cfg.Database.Type {
+	case driverMySQL:
 		db, err = sql.Open(app.cfg.Database.Type, fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=%s&tls=%t", app.cfg.Database.User, app.cfg.Database.Password, app.cfg.Database.Host, app.cfg.Database.Port, app.cfg.Database.Database, url.QueryEscape(time.Local.String()), app.cfg.Database.TLS))
 		db.SetMaxOpenConns(50)
-	} else if app.cfg.Database.Type == driverSQLite {
+	case driverSQLite:
 		if !SQLiteEnabled {
 			log.Error("Invalid database type '%s'. Binary wasn't compiled with SQLite3 support.", app.cfg.Database.Type)
 			os.Exit(1)
@@ -1050,15 +1051,21 @@ func connectToDatabase(app *App) {
 		}
 		db, err = sql.Open("sqlite3_with_regex", app.cfg.Database.FileName+"?parseTime=true&cached=shared")
 		db.SetMaxOpenConns(2)
-	} else {
-		log.Error("Invalid database type '%s'. Only 'mysql' and 'sqlite3' are supported right now.", app.cfg.Database.Type)
+	case driverPostgres:
+		// pgx behind the placeholder-rebinding wrapper; see pgdriver.go.
+		db, err = sql.Open(driverPostgresRebind, postgresDSN(app.cfg.Database))
+		// A conservative default under Postgres' stock max_connections of
+		// 100. WFPG-12 tunes the pool.
+		db.SetMaxOpenConns(20)
+	default:
+		log.Error("Invalid database type '%s'. Only '%s', '%s' and '%s' are supported right now.", app.cfg.Database.Type, driverMySQL, driverSQLite, driverPostgres)
 		os.Exit(1)
 	}
 	if err != nil {
 		log.Error("%s", err)
 		os.Exit(1)
 	}
-	app.db = &datastore{DB: db, driverName: app.cfg.Database.Type}
+	app.db = newDatastore(db, app.cfg.Database.Type)
 }
 
 func shutdown(app *App) {
@@ -1151,43 +1158,82 @@ var schemaSql string
 //go:embed sqlite.sql
 var sqliteSql string
 
+// postgresSql describes the whole schema at migrations.PostgresBaseVersion,
+// not V1 like the other two; see the comment at its top.
+//
+//go:embed postgres.sql
+var postgresSql string
+
+// schemaStatementTarget matches the table or index a schema statement
+// creates. schema.sql and sqlite.sql quote names with backticks;
+// postgres.sql does not quote them.
+var schemaStatementTarget = regexp.MustCompile("(?m)^CREATE (TABLE|(?:UNIQUE )?INDEX) (?:IF NOT EXISTS )?`?([a-z_]+)`?")
+
 func adminInitDatabase(app *App) error {
 	var schema string
-	if app.cfg.Database.Type == driverSQLite {
+	inTx := false
+	switch app.cfg.Database.Type {
+	case driverSQLite:
 		schema = sqliteSql
-	} else {
+	case driverMySQL:
 		schema = schemaSql
+	case driverPostgres:
+		// Postgres DDL is transactional, so the whole schema goes in at once
+		// or not at all, and a failed init leaves an empty database to retry
+		// on.
+		schema = postgresSql
+		inTx = true
+	default:
+		unsupportedDriver("adminInitDatabase", app.cfg.Database.Type)
 	}
 
-	tblReg := regexp.MustCompile("CREATE TABLE (IF NOT EXISTS )?`([a-z_]+)`")
+	var ex migrations.Execer = app.db.DB
+	var tx *sql.Tx
+	if inTx {
+		var err error
+		tx, err = app.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin schema transaction: %v", err)
+		}
+		defer tx.Rollback()
+		ex = tx
+	}
 
 	queries := strings.Split(string(schema), ";\n")
 	for _, q := range queries {
 		if strings.TrimSpace(q) == "" {
 			continue
 		}
-		table := "???"
-		parts := tblReg.FindStringSubmatch(q)
+		kind, name := "table", "???"
+		parts := schemaStatementTarget.FindStringSubmatch(q)
 		if len(parts) >= 3 {
-			table = parts[2]
-			log.Info("Creating table %s...", table)
+			if parts[1] != "TABLE" {
+				kind = "index"
+			}
+			name = parts[2]
+			log.Info("Creating %s %s...", kind, name)
 		} else {
 			log.Info("Creating table ??? (Weird query) No match in: %v", parts)
 		}
-		_, err := app.db.Exec(q)
+		_, err := ex.Exec(q)
 		if err != nil {
 			// Stop at the first failure. Carrying on would let `db init`
 			// report success with tables missing.
-			return fmt.Errorf("create table %s: %v", table, err)
+			return fmt.Errorf("create %s %s: %v", kind, name, err)
 		}
 		log.Info("Created.")
 	}
 
 	// Set up migrations table
 	log.Info("Initializing appmigrations table...")
-	err := migrations.SetInitialMigrations(migrations.NewDatastore(app.db.DB, app.db.driverName))
+	err := migrations.SetInitialMigrationsOn(ex, app.db.driverName)
 	if err != nil {
 		return fmt.Errorf("Unable to set initial migrations: %v", err)
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit schema transaction: %v", err)
+		}
 	}
 
 	log.Info("Running migrations...")

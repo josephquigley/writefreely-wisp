@@ -3,7 +3,6 @@
 package writefreely
 
 import (
-	"database/sql"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -14,22 +13,17 @@ import (
 // TestTaggedPostQueriesMatchTagLiterally runs the tag queries against a real
 // SQLite database, whose regexp() is Go's regexp package. A tag is taken from
 // the request URL; its regex metacharacters must match only themselves.
+// Under WF_TEST_DB_TYPE=postgres the same cases run against Postgres's
+// regular expressions instead.
 func TestTaggedPostQueriesMatchTagLiterally(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3_with_regex", dbPath+"?parseTime=true")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	cfg := config.New()
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.Host = "http://localhost:0"
-	app := &App{db: &datastore{DB: db, driverName: driverSQLite}, cfg: cfg}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	db := openAppTestDB(t, app, "sqlite3_with_regex", dbPath+"?parseTime=true")
 
 	posts := map[string]string{
 		"dotpost": "about #g.x today",

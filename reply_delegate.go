@@ -287,9 +287,11 @@ func replyDelegateState(app *App, c *Collection, resolve bool) (replyDelegateSta
 			return replyDelegateUnreachable, ""
 		}
 	} else if app.db != nil {
-		// The cached-only path. remoteusers stores handles without the
-		// leading '@', the same trimming GetProfilePageFromHandle does.
-		if ru, err := getRemoteUserFromHandle(app, strings.TrimLeft(c.ReplyDelegate, "@")); err == nil && ru != nil {
+		// The cached-only path. remoteusers stores handles lower-cased and
+		// without the leading '@'; getRemoteUserFromHandle normalises the
+		// same way GetProfilePageFromHandle does, so a delegate typed as
+		// @Alice@Social.Example finds the row cached as alice@social.example.
+		if ru, err := getRemoteUserFromHandle(app, c.ReplyDelegate); err == nil && ru != nil {
 			actorIRI = ru.ActorID
 		}
 	}

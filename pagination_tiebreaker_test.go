@@ -78,7 +78,12 @@ func TestPaginationTiebreakerCollectionPosts(t *testing.T) {
 	}
 	// Give every post the same created time, and a language and tag to
 	// filter on.
-	if _, err := app.db.Exec("UPDATE posts SET created = ?, language = 'en', content = content || ' #tied' WHERE collection_id = ?", tiedCreated, coll.ID); err != nil {
+	// || is string concatenation on SQLite and Postgres, but OR on MySQL.
+	appendTag := "content || ' #tied'"
+	if app.db.driverName == driverMySQL {
+		appendTag = "CONCAT(content, ' #tied')"
+	}
+	if _, err := app.db.Exec("UPDATE posts SET created = ?, language = 'en', content = "+appendTag+" WHERE collection_id = ?", tiedCreated, coll.ID); err != nil {
 		t.Fatalf("tie created: %v", err)
 	}
 

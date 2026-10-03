@@ -1189,9 +1189,12 @@ func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 // getRemoteUserFromHandle retrieves the profile page of a remote user
 // from the @user@server.tld handle
 func getRemoteUserFromHandle(app *App, handle string) (*RemoteUser, error) {
+	handle = normalizeRemoteHandle(handle)
 	u := RemoteUser{Handle: handle}
 	var urlVal sql.NullString
-	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE handle = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
+	// LOWER(handle), so that a row cached before handles were normalised is
+	// still found instead of costing a webfinger round trip every time.
+	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE LOWER(handle) = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, ErrRemoteUserNotFound
@@ -1348,7 +1351,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 		// manual SQL.
 		if remoteUser.Inbox == "" {
 			log.Info("Remote user %s inbox empty, fetching", actorIRI)
-			fetched, err := newRemoteActor(app, actorIRI)
+			fetched, err := fetchRemoteActorForStorage(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't re-fetch remote actor %s: %v", actorIRI, err)
 				return nil, nil, err
@@ -1366,8 +1369,18 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 	return actor, remoteUser, nil
 }
 
+// normalizeRemoteHandle is the form a fediverse handle (user@host, without
+// the leading '@') is stored in remoteusers and looked up by. Handles are
+// case-insensitive in practice — webfinger servers answer any case — and
+// MySQL's collation used to match them that way; SQLite and Postgres compare
+// exactly, so a mixed-case handle would miss the cache, cost a webfinger
+// request and rewrite the row on every lookup.
+func normalizeRemoteHandle(handle string) string {
+	return strings.ToLower(strings.TrimLeft(strings.TrimSpace(handle), "@"))
+}
+
 func GetProfileURLFromHandle(app *App, handle string) (string, error) {
-	handle = strings.TrimLeft(handle, "@")
+	handle = sanitizeDBText(normalizeRemoteHandle(handle))
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -1385,7 +1398,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = sanitizeDBText(remoteLookup(handle))
 		// See GetProfilePageFromHandle: an empty webfinger result must not
 		// reach the INSERT below, or the handle is cached against an empty
 		// actor_id and never resolves again.
@@ -1402,7 +1415,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(app, actorIRI)
+			remoteActor, err := fetchRemoteActorForStorage(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
 				return "", err
@@ -1423,7 +1436,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// an authorized-fetch instance, and it disables delivery to that
 		// actor until something replaces it.
 		log.Info("Remote user %s URL or inbox empty, fetching", remoteUser.ActorID)
-		fetchedActor, err := newRemoteActor(app, remoteUser.ActorID)
+		fetchedActor, err := fetchRemoteActorForStorage(app, remoteUser.ActorID)
 		if err != nil {
 			log.Error("Couldn't fetch remote actor: %v", err)
 		} else {
@@ -1481,6 +1494,10 @@ func unmarshalActor(actorResp []byte, actor *activitystreams.Person) error {
 			actor.Context = []interface{}{val}
 		}
 	}(flexActor.Context)
+
+	// Everything above came from another server. Make it storable before
+	// any of it can reach remoteusers or remoteuserkeys.
+	sanitizeRemoteActor(actor)
 
 	return nil
 }
@@ -1568,41 +1585,35 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 		} else {
 			// TODO: use apAddRemoteUser() here, instead!
 			// Add follower locally, since it wasn't found before
-			res, err := t.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
+			followerID, err = app.db.insertReturningID(t, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
 			if err != nil {
-				// if duplicate key, res will be nil and panic on
-				// res.LastInsertId below
 				t.Rollback()
 				log.Error("Couldn't add new remoteuser in DB: %v\n", err)
 				return
 			}
 
-			followerID, err = res.LastInsertId()
+			// Add in key. A key that is already stored is skipped in the
+			// SQL rather than forgiven after the fact: on Postgres a
+			// duplicate-key error aborts the transaction, and the follow
+			// below would then never be stored. public_key is binary
+			// (bytea on Postgres), so the PEM goes in as bytes.
+			_, err = t.Exec(app.db.insertIgnore("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)"), fullActor.PublicKey.ID, followerID, []byte(fullActor.PublicKey.PublicKeyPEM))
 			if err != nil {
 				t.Rollback()
-				log.Error("no lastinsertid for followers, rolling back: %v", err)
+				log.Error("Couldn't add follower keys in DB: %v\n", err)
 				return
-			}
-
-			// Add in key
-			_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
-			if err != nil {
-				if !app.db.isDuplicateKeyErr(err) {
-					t.Rollback()
-					log.Error("Couldn't add follower keys in DB: %v\n", err)
-					return
-				}
 			}
 		}
 
-		// Add follow
-		_, err = t.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", c.ID, followerID)
+		// Add follow. A remote that re-sends its Follow (Mastodon and Mbin
+		// both do) is already a follower; skipping the row in SQL keeps the
+		// transaction alive on Postgres so that the commit succeeds and the
+		// Accept below still goes out.
+		_, err = t.Exec(app.db.insertIgnore("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")"), c.ID, followerID)
 		if err != nil {
-			if !app.db.isDuplicateKeyErr(err) {
-				t.Rollback()
-				log.Error("Couldn't add follower in DB: %v\n", err)
-				return
-			}
+			t.Rollback()
+			log.Error("Couldn't add follower in DB: %v\n", err)
+			return
 		}
 
 		err = t.Commit()

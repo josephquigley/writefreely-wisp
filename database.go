@@ -23,7 +23,6 @@ import (
 
 	"github.com/writeas/monday"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/writeas/web-core/silobridge"
 	wf_db "github.com/writefreely/writefreely/db"
 	"github.com/writefreely/writefreely/parse"
@@ -48,8 +47,12 @@ const (
 	mySQLErrTooManyConns = 1040
 	mySQLErrMaxUserConns = 1203
 
-	driverMySQL  = "mysql"
-	driverSQLite = "sqlite3"
+	// Driver names, as used in the config file's [database] type and in
+	// datastore.driverName. Postgres is opened with sql.Open under
+	// driverPostgresRebind (pgdriver.go), not under this name.
+	driverMySQL    = "mysql"
+	driverSQLite   = "sqlite3"
+	driverPostgres = "postgres"
 )
 
 var (
@@ -168,62 +171,68 @@ type writestore interface {
 type datastore struct {
 	*sql.DB
 	driverName string
+	// dialect holds the driver-specific SQL; see dialect.go. Build a
+	// datastore with newDatastore to set it. When nil it is resolved from
+	// driverName on use.
+	dialect dialect
 
 	useSpencerRegex bool
 }
 
 var _ writestore = &datastore{}
 
-func (db *datastore) now() string {
-	if db.driverName == driverSQLite {
-		return "strftime('%Y-%m-%d %H:%M:%S','now')"
+// dialectOrDefault returns db's dialect, resolving it from driverName for
+// a datastore built as a struct literal (as some tests do). It panics on an
+// unknown driver name.
+func (db *datastore) dialectOrDefault() dialect {
+	if db.dialect != nil {
+		return db.dialect
 	}
-	return "NOW()"
+	return dialectFor(db.driverName)
+}
+
+// The helpers below are thin delegates to the dialect (dialect.go), kept so
+// that existing call sites do not change.
+
+func (db *datastore) now() string {
+	return db.dialectOrDefault().Now()
 }
 
 func (db *datastore) clip(field string, l int) string {
-	if db.driverName == driverSQLite {
-		return fmt.Sprintf("SUBSTR(%s, 1, %d)", field, l)
-	}
-	return fmt.Sprintf("LEFT(%s, %d)", field, l)
+	return db.dialectOrDefault().Clip(field, l)
 }
 
 func (db *datastore) upsert(indexedCols ...string) string {
-	if db.driverName == driverSQLite {
-		// NOTE: SQLite UPSERT syntax only works in v3.24.0 (2018-06-04) or later
-		// Leaving this for whenever we can upgrade and include it in our binary
-		cc := strings.Join(indexedCols, ", ")
-		return "ON CONFLICT(" + cc + ") DO UPDATE SET"
-	}
-	return "ON DUPLICATE KEY UPDATE"
+	return db.dialectOrDefault().Upsert(indexedCols...)
+}
+
+func (db *datastore) insertIgnore(insert string) string {
+	return db.dialectOrDefault().InsertIgnore(insert)
 }
 
 func (db *datastore) dateAdd(l int, unit string) string {
-	if db.driverName == driverSQLite {
-		return fmt.Sprintf("DATETIME('now', '%d %s')", l, unit)
-	}
-	return fmt.Sprintf("DATE_ADD(NOW(), INTERVAL %d %s)", l, unit)
+	return db.dialectOrDefault().DateAdd(l, unit)
 }
 
 func (db *datastore) dateSub(l int, unit string) string {
-	if db.driverName == driverSQLite {
-		return fmt.Sprintf("DATETIME('now', '-%d %s')", l, unit)
-	}
-	return fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d %s)", l, unit)
+	return db.dialectOrDefault().DateSub(l, unit)
+}
+
+// insertReturningID runs an INSERT through q (the datastore itself or a
+// *sql.Tx) and returns the new row's id, on every dialect. See
+// dialect.InsertReturningID for what query may contain.
+func (db *datastore) insertReturningID(q sqlQueryer, query string, args ...interface{}) (int64, error) {
+	return db.dialectOrDefault().InsertReturningID(context.Background(), q, query, args...)
+}
+
+// binaryEquals returns a condition matching the binary column col exactly
+// against b, and its arguments. See dialect.BinaryEquals.
+func (db *datastore) binaryEquals(col string, b []byte) (string, []interface{}) {
+	return db.dialectOrDefault().BinaryEquals(col, b)
 }
 
 func (db *datastore) version() (string, error) {
-	var v string
-	var err error
-	if db.driverName == driverSQLite {
-		err = db.QueryRow("SELECT sqlite_version()").Scan(&v)
-	} else {
-		err = db.QueryRow("SELECT version()").Scan(&v)
-	}
-	if err != nil {
-		return "", err
-	}
-	return v, nil
+	return db.dialectOrDefault().Version(context.Background(), db.DB)
 }
 
 // CreateUser creates a new user in the database from the given User, UPDATING it in the process with the user's ID.
@@ -240,7 +249,14 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 
 	// 1. Add to `users` table
 	// NOTE: Assumes User's Password is already hashed!
-	res, err := t.Exec("INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, u.HashedPass, u.Email)
+	// The bcrypt hash goes into a text column, so it is passed as a string.
+	// The email is ciphertext (see prepareUserEmail) bound for a binary
+	// column, so it is passed as []byte, as UpdateUserEmail does.
+	var encEmail []byte
+	if u.Email.Valid {
+		encEmail = []byte(u.Email.String)
+	}
+	u.ID, err = db.insertReturningID(t, "INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, string(u.HashedPass), encEmail)
 	if err != nil {
 		t.Rollback()
 		if db.isDuplicateKeyErr(err) {
@@ -250,18 +266,16 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 		log.Error("Rolling back users INSERT: %v\n", err)
 		return err
 	}
-	u.ID, err = res.LastInsertId()
-	if err != nil {
-		t.Rollback()
-		log.Error("Rolling back after LastInsertId: %v\n", err)
-		return err
-	}
 
 	// 2. Create user's Collection
 	if collectionTitle == "" {
 		collectionTitle = u.Username
 	}
-	res, err = t.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", u.Username, collectionTitle, collectionDesc, defaultVisibility(cfg), u.ID, 0)
+	// The title can be an OAuth provider's display name and the description
+	// comes from the signup form; neither is bounded before this.
+	collectionTitle = boundedDBText(collectionTitle, collMaxLengthTitle)
+	collectionDesc = boundedDBText(collectionDesc, collMaxLengthDescription)
+	_, err = t.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", u.Username, collectionTitle, collectionDesc, defaultVisibility(cfg), u.ID, 0)
 	if err != nil {
 		t.Rollback()
 		if db.isDuplicateKeyErr(err) {
@@ -271,7 +285,14 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 		return err
 	}
 
-	db.RemoveCollectionRedirect(t, u.Username)
+	// A redirect left behind under this alias would never be followed (a
+	// redirect is consulted only when no collection has the alias), but a
+	// failure here must not be ignored: on Postgres it has already aborted
+	// the transaction, and the Commit below would roll back the signup.
+	if err = db.RemoveCollectionRedirect(t, u.Username); err != nil {
+		t.Rollback()
+		return err
+	}
 
 	err = t.Commit()
 	if err != nil {
@@ -331,8 +352,12 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 		return nil, impart.HTTPError{http.StatusConflict, "Invalid collection name."}
 	}
 
+	// Truncated the same way UpdateCollection does (writefreely#600); on
+	// Postgres an over-long title is an error rather than a truncation.
+	title = boundedDBText(title, collMaxLengthTitle)
+
 	// All good, so create new collection
-	res, err := db.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
+	collID, err := db.insertReturningID(db.DB, "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
 	if err != nil {
 		if db.isDuplicateKeyErr(err) {
 			return nil, impart.HTTPError{http.StatusConflict, "Collection already exists."}
@@ -342,16 +367,12 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	}
 
 	c := &Collection{
+		ID:          collID,
 		Alias:       alias,
 		Title:       title,
 		OwnerID:     userID,
 		PublicOwner: false,
 		Public:      defaultVisibility(cfg) == CollPublic,
-	}
-
-	c.ID, err = res.LastInsertId()
-	if err != nil {
-		log.Error("Couldn't get collection LastInsertId: %v\n", err)
 	}
 
 	return c, nil
@@ -471,7 +492,8 @@ func (db *datastore) GetUserNameFromToken(accessToken string) (string, error) {
 
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", string(t)).Scan(&username, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return "", ErrBadAccessToken
@@ -496,7 +518,8 @@ func (db *datastore) GetUserDataFromToken(accessToken string) (int64, string, er
 	var userID int64
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", string(t)).Scan(&userID, &username, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&userID, &username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return 0, "", ErrBadAccessToken
@@ -535,7 +558,8 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 	}
 
 	var oneTime bool
-	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", string(t)).Scan(&userID, &sudo, &oneTime)
+	tokCond, tokArgs := db.binaryEquals("token", t)
+	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE "+tokCond+" AND (expires IS NULL OR expires > "+db.now()+")", tokArgs...).Scan(&userID, &sudo, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return -1, false
@@ -551,15 +575,12 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 	return
 }
 
-// DeleteToken deletes the given access token.
-//
-// Like the token lookups, it binds the token as a string, because that is
-// how GetTemporaryOneTimeAccessToken inserts it. On SQLite a string is
-// stored as TEXT and a []byte is bound as a BLOB, and SQLite never
-// considers a TEXT value equal to a BLOB, so binding []byte here would
-// match no token at all.
+// DeleteToken deletes the given access token. Like the token lookups, it
+// matches through binaryEquals, which on SQLite also matches tokens that older
+// code stored as TEXT.
 func (db *datastore) DeleteToken(accessToken []byte) error {
-	res, err := db.Exec("DELETE FROM accesstokens WHERE token = ?", string(accessToken))
+	tokCond, tokArgs := db.binaryEquals("token", accessToken)
+	res, err := db.Exec("DELETE FROM accesstokens WHERE "+tokCond, tokArgs...)
 	if err != nil {
 		return err
 	}
@@ -614,7 +635,9 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 		return "", err
 	}
 
-	// Insert UUID to `accesstokens`
+	// Insert UUID to `accesstokens`. The 16 raw bytes go in as []byte: as a
+	// Go string they are text, which Postgres rejects as invalid UTF-8 for
+	// bytea and SQLite stores as TEXT (see dialect.BinaryEquals).
 	binTok := u[:]
 
 	expirationVal := "NULL"
@@ -622,7 +645,7 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 		expirationVal = db.dateAdd(validSecs, "SECOND")
 	}
 
-	_, err = db.Exec("INSERT INTO accesstokens (token, user_id, one_time, expires) VALUES (?, ?, ?, "+expirationVal+")", string(binTok), userID, oneTime)
+	_, err = db.Exec("INSERT INTO accesstokens (token, user_id, one_time, expires) VALUES (?, ?, ?, "+expirationVal+")", binTok, userID, oneTime)
 	if err != nil {
 		log.Error("Couldn't INSERT accesstoken: %v", err)
 		return "", err
@@ -634,7 +657,7 @@ func (db *datastore) GetTemporaryOneTimeAccessToken(userID int64, validSecs int,
 func (db *datastore) CreatePasswordResetToken(userID int64) (string, error) {
 	t := id.Generate62RandomString(32)
 
-	_, err := db.Exec("INSERT INTO password_resets (user_id, token, used, created) VALUES (?, ?, 0, "+db.now()+")", userID, t)
+	_, err := db.Exec("INSERT INTO password_resets (user_id, token, used, created) VALUES (?, ?, FALSE, "+db.now()+")", userID, t)
 	if err != nil {
 		log.Error("Couldn't INSERT password_resets: %v", err)
 		return "", err
@@ -645,7 +668,7 @@ func (db *datastore) CreatePasswordResetToken(userID int64) (string, error) {
 
 func (db *datastore) GetUserFromPasswordReset(token string) int64 {
 	var userID int64
-	err := db.QueryRow("SELECT user_id FROM password_resets WHERE token = ? AND used = 0 AND created > "+db.dateSub(3, "HOUR"), token).Scan(&userID)
+	err := db.QueryRow("SELECT user_id FROM password_resets WHERE token = ? AND used = FALSE AND created > "+db.dateSub(3, "HOUR"), token).Scan(&userID)
 	if err != nil {
 		return 0
 	}
@@ -653,7 +676,7 @@ func (db *datastore) GetUserFromPasswordReset(token string) int64 {
 }
 
 func (db *datastore) ConsumePasswordResetToken(t string) error {
-	_, err := db.Exec("UPDATE password_resets SET used = 1 WHERE token = ?", t)
+	_, err := db.Exec("UPDATE password_resets SET used = TRUE WHERE token = ?", t)
 	if err != nil {
 		log.Error("Couldn't UPDATE password_resets: %v", err)
 		return err
@@ -697,6 +720,8 @@ func (db *datastore) CreateOwnedPost(post *SubmittedPost, accessToken, collAlias
 }
 
 func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Post, error) {
+	post.sanitizeForStorage()
+
 	idLen := postIDLen
 	friendlyID := id.GenerateFriendlyRandomString(idLen)
 
@@ -742,20 +767,13 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 		}
 	}
 
-	created := time.Now()
-	if db.driverName == driverSQLite {
-		// SQLite stores datetimes in UTC, so convert time.Now() to it here
-		created = created.UTC()
-	}
+	created := db.dialectOrDefault().NowForInsert()
 	if post.Created != nil && *post.Created != "" {
+		// Parsed with a literal Z, so already UTC on every engine.
 		created, err = time.Parse("2006-01-02T15:04:05Z", *post.Created)
 		if err != nil {
 			log.Error("Unable to parse Created time '%s': %v", *post.Created, err)
-			created = time.Now()
-			if db.driverName == driverSQLite {
-				// SQLite stores datetimes in UTC, so convert time.Now() to it here
-				created = created.UTC()
-			}
+			created = db.dialectOrDefault().NowForInsert()
 		}
 	}
 
@@ -798,6 +816,8 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 // UpdateOwnedPost updates an existing post with only the given fields in the
 // supplied AuthenticatedPost.
 func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) error {
+	post.SubmittedPost.sanitizeForStorage()
+
 	params := []interface{}{}
 	var queryUpdates, sep, authCondition string
 	if post.Slug != nil && *post.Slug != "" {
@@ -825,7 +845,10 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 		sep = ", "
 		params = append(params, post.IsRTL.Bool)
 	}
-	if post.Font != "" {
+	// text_appearance is varchar(4), so a font that is not one of the known
+	// values is ignored here, as CreatePost already does, rather than sent to
+	// the database.
+	if post.Font != "" && post.isFontValid() {
 		queryUpdates += sep + "text_appearance = ?"
 		sep = ", "
 		params = append(params, post.Font)
@@ -838,7 +861,7 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 		}
 		queryUpdates += sep + "created = ?"
 		sep = ", "
-		params = append(params, createTime)
+		params = append(params, db.dialectOrDefault().TimeArg(createTime))
 	}
 
 	// WHERE parameters...
@@ -913,11 +936,16 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	return c, nil
 }
 
+// GetCollection and GetCollectionForPad trim the alias first. collections.alias
+// is utf8mb4_bin on MySQL, a PAD SPACE collation, so 'blog ' used to match
+// 'blog' there; SQLite and Postgres do not pad, and an alias never ends in a
+// space (aliases are slugs).
 func (db *datastore) GetCollection(alias string) (*Collection, error) {
-	return db.GetCollectionBy("alias = ?", alias)
+	return db.GetCollectionBy("alias = ?", strings.TrimSpace(alias))
 }
 
 func (db *datastore) GetCollectionForPad(alias string) (*Collection, error) {
+	alias = strings.TrimSpace(alias)
 	c := &Collection{Alias: alias}
 
 	row := db.QueryRow("SELECT id, alias, title, description, privacy FROM collections WHERE alias = ?", alias)
@@ -940,6 +968,8 @@ func (db *datastore) GetCollectionByID(id int64) (*Collection, error) {
 }
 
 func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias string) error {
+	c.sanitizeForStorage()
+
 	// Truncate fields correctly, so we don't get "Data too long for column" errors in MySQL (writefreely#600)
 	if c.Title != nil {
 		*c.Title = parse.Truncate(*c.Title, collMaxLengthTitle)
@@ -989,10 +1019,13 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 
 	// Update MathJax value
 	if c.MathJax {
-		if db.driverName == driverSQLite {
+		switch db.driverName {
+		case driverSQLite:
 			_, err = db.Exec("INSERT OR REPLACE INTO collectionattributes (collection_id, attribute, value) VALUES (?, ?, ?)", collID, "render_mathjax", "1")
-		} else {
+		case driverMySQL, driverPostgres:
 			_, err = db.Exec("INSERT INTO collectionattributes (collection_id, attribute, value) VALUES (?, ?, ?) "+db.upsert("collection_id", "attribute")+" value = ?", collID, "render_mathjax", "1", "1")
+		default:
+			unsupportedDriver("UpdateCollection", db.driverName)
 		}
 		if err != nil {
 			log.Error("Unable to insert render_mathjax value: %v", err)
@@ -1172,10 +1205,13 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 			log.Error("Unable to create hash: %s", err)
 			return impart.HTTPError{http.StatusInternalServerError, "Could not create password hash."}
 		}
-		if db.driverName == driverSQLite {
-			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, hashedPass)
-		} else {
-			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, hashedPass, hashedPass)
+		switch db.driverName {
+		case driverSQLite:
+			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, string(hashedPass))
+		case driverMySQL, driverPostgres:
+			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, string(hashedPass), string(hashedPass))
+		default:
+			unsupportedDriver("UpdateCollection", db.driverName)
 		}
 		if err != nil {
 			return err
@@ -1387,7 +1423,7 @@ func (db *datastore) GetPosts(cfg *config.Config, c *Collection, page int, inclu
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	timeCondition := ""
 	if !includeFuture {
@@ -1461,6 +1497,17 @@ func (db *datastore) tagWordBoundary() string {
 	return "\\b"
 }
 
+// postgresTagPattern returns the Postgres regular expression (for the `~`
+// operator) that finds #tag in lowercased post content. Postgres regexes are
+// Henry Spencer's ARE, in which "\b" is a backspace, not a word boundary, so
+// a copy of the MySQL pattern matches nothing and tag pages go silently
+// empty; the ARE word-end escape is "\y". tagRegexpTerm's
+// backslash-before-punctuation escapes mean the literal character in an ARE
+// too, so the escaped tag composes with it unchanged.
+func postgresTagPattern(tag string) string {
+	return "#" + tagRegexpTerm(tag) + `\y`
+}
+
 func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFuture bool) ([]string, error) {
 	collID := c.ID
 
@@ -1476,10 +1523,15 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	}
 	var rows *sql.Rows
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
-	} else {
+	case driverMySQL:
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
+	case driverPostgres:
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) ~ ? "+timeCondition+" ORDER BY created "+order, collID, postgresTagPattern(tag))
+	default:
+		unsupportedDriver("GetAllPostsTaggedIDs", db.driverName)
 	}
 	if err != nil {
 		log.Error("Failed selecting tagged posts: %v", err)
@@ -1529,7 +1581,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	timeCondition := ""
 	if !includeFuture {
@@ -1538,11 +1590,15 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 
 	var rows *sql.Rows
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
-	} else {
-		boundaryRegex := db.tagWordBoundary()
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+boundaryRegex)
+	case driverMySQL:
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
+	case driverPostgres:
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) ~ ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, postgresTagPattern(tag))
+	default:
+		unsupportedDriver("GetPostsTagged", db.driverName)
 	}
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
@@ -1574,9 +1630,17 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	return &posts, nil
 }
 
+// normalizeLangCode is the form a language code from a URL is compared in.
+// posts.language holds whatever a client sent, and MySQL's case-insensitive
+// collation used to match EN against en; SQLite and Postgres do not, so both
+// sides are lower-cased instead.
+func normalizeLangCode(lang string) string {
+	return strings.ToLower(strings.TrimSpace(lang))
+}
+
 func (db *datastore) GetCollLangTotalPosts(collID int64, lang string) (uint64, error) {
 	var articles uint64
-	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND language = ? AND created <= "+db.now(), collID, lang).Scan(&articles)
+	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND LOWER(language) = ? AND created <= "+db.now(), collID, normalizeLangCode(lang)).Scan(&articles)
 	if err != nil && err != sql.ErrNoRows {
 		log.Error("Couldn't get total lang posts count for collection %d: %v", collID, err)
 		return 0, err
@@ -1602,7 +1666,7 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	timeCondition := ""
 	if !includeFuture {
@@ -1611,8 +1675,8 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 
 	rows, err := db.Query(`SELECT `+postCols+`
 FROM posts
-WHERE collection_id = ? AND language = ? `+timeCondition+`
-ORDER BY created `+order+`, id `+order+limitStr, collID, lang)
+WHERE collection_id = ? AND LOWER(language) = ? `+timeCondition+`
+ORDER BY created `+order+`, id `+order+limitStr, collID, normalizeLangCode(lang))
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -2247,7 +2311,7 @@ func (db *datastore) GetAnonymousPosts(u *User, page int) (*[]PublicPost, error)
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	rows, err := db.Query("SELECT id, view_count, title, language, created, updated, content FROM posts WHERE owner_id = ? AND collection_id IS NULL ORDER BY created DESC, id DESC"+limitStr, u.ID)
 	if err != nil {
@@ -2401,16 +2465,18 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 			return ErrInternalGeneral
 		}
 
-		// Keep track of name changes for redirection
-		db.RemoveCollectionRedirect(t, newUsername)
-		_, err = t.Exec("UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
-		if err != nil {
-			log.Error("Unable to update collectionredirects: %v", err)
-		}
-		_, err = t.Exec("INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?)", u.Username, newUsername)
-		if err != nil {
-			log.Error("Unable to add new collectionredirect: %v", err)
-		}
+		// Keep track of name changes for redirection. These statements are
+		// best-effort: a missing or stale redirect only affects old links,
+		// and must never undo the rename itself. Each is fenced in a
+		// savepoint, because on Postgres a failed statement would otherwise
+		// abort the transaction and the Commit below would roll back the
+		// username and alias change while the user is told it succeeded.
+		// Errors are logged by execBestEffort.
+		execBestEffort(t, "redirect_remove", "DELETE FROM collectionredirects WHERE prev_alias = ?", newUsername)
+		execBestEffort(t, "redirect_repoint", "UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
+		// An existing redirect from the old name (left by an earlier owner
+		// of it) is replaced, so the old name now points here.
+		execBestEffort(t, "redirect_add", "INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?) "+db.upsert("prev_alias")+" new_alias = ?", u.Username, newUsername, newUsername)
 
 		err = t.Commit()
 		if err != nil {
@@ -2458,7 +2524,7 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 			errPass = impart.HTTPError{http.StatusInternalServerError, "Could not create password hash."}
 			return errPass
 		}
-		q.SetBytes(hashedPass, "password")
+		q.Set(string(hashedPass), "password")
 	}
 
 	// WHERE values
@@ -2515,7 +2581,7 @@ func (db *datastore) ChangePassphrase(userID int64, sudo bool, curPass string, h
 		return impart.HTTPError{http.StatusUnauthorized, "Incorrect password."}
 	}
 
-	_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", hashedPass, userID)
+	_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", string(hashedPass), userID)
 	if err != nil {
 		log.Error("Could not update passphrase: %v", err)
 		return err
@@ -2854,7 +2920,11 @@ func (db *datastore) GetAPActorKeys(collectionID int64) ([]byte, []byte) {
 }
 
 func (db *datastore) CreateUserInvite(id string, userID int64, maxUses int, expires *time.Time) error {
-	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, 0)", id, userID, maxUses, expires)
+	if expires != nil {
+		e := db.dialectOrDefault().TimeArg(*expires)
+		expires = &e
+	}
+	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, FALSE)", id, userID, maxUses, expires)
 	return err
 }
 
@@ -2974,10 +3044,13 @@ func (db *datastore) GetDynamicContent(id string) (*instanceContent, error) {
 
 func (db *datastore) UpdateDynamicContent(id, title, content, contentType string) error {
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		_, err = db.Exec("INSERT OR REPLACE INTO appcontent (id, title, content, updated, content_type) VALUES (?, ?, ?, "+db.now()+", ?)", id, title, content, contentType)
-	} else {
+	case driverMySQL, driverPostgres:
 		_, err = db.Exec("INSERT INTO appcontent (id, title, content, updated, content_type) VALUES (?, ?, ?, "+db.now()+", ?) "+db.upsert("id")+" title = ?, content = ?, updated = "+db.now(), id, title, content, contentType, title, content)
+	default:
+		unsupportedDriver("UpdateDynamicContent", db.driverName)
 	}
 	if err != nil {
 		log.Error("Unable to INSERT appcontent for '%s': %v", id, err)
@@ -2986,9 +3059,9 @@ func (db *datastore) UpdateDynamicContent(id, title, content, contentType string
 }
 
 func (db *datastore) GetAllUsers(page uint) (*[]User, error) {
-	limitStr := fmt.Sprintf("0, %d", adminUsersPerPage)
+	limitStr := fmt.Sprintf("%d OFFSET 0", adminUsersPerPage)
 	if page > 1 {
-		limitStr = fmt.Sprintf("%d, %d", (page-1)*adminUsersPerPage, adminUsersPerPage)
+		limitStr = fmt.Sprintf("%d OFFSET %d", adminUsersPerPage, (page-1)*adminUsersPerPage)
 	}
 
 	rows, err := db.Query("SELECT id, username, created, status FROM users ORDER BY created DESC, id DESC LIMIT " + limitStr)
@@ -3040,11 +3113,11 @@ func (db *datastore) GetUsersFiltered(f UserFilter) ([]FilteredUser, error) {
 
 	if f.Since != nil {
 		where = append(where, "u.created >= ?")
-		params = append(params, *f.Since)
+		params = append(params, db.dialectOrDefault().TimeArg(*f.Since))
 	}
 	if f.Until != nil {
 		where = append(where, "u.created < ?")
-		params = append(params, *f.Until)
+		params = append(params, db.dialectOrDefault().TimeArg(*f.Until))
 	}
 	if f.NoInvite {
 		where = append(where, "NOT EXISTS (SELECT 1 FROM usersinvited i WHERE i.user_id = u.id)")
@@ -3167,11 +3240,18 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 }
 
 func (db *datastore) RecordRemoteUserID(ctx context.Context, localUserID int64, remoteUserID, provider, clientID, accessToken string) error {
+	if !isStorableOAuthRemoteUserID(remoteUserID) {
+		log.Error("Refusing to record OAuth remote user ID for '%d': not storable (%d bytes)", localUserID, len(remoteUserID))
+		return errOAuthRemoteUserIDUnstorable
+	}
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		_, err = db.ExecContext(ctx, "INSERT OR REPLACE INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?)", localUserID, remoteUserID, provider, clientID, accessToken)
-	} else {
-		_, err = db.ExecContext(ctx, "INSERT INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?) "+db.upsert("user")+" access_token = ?", localUserID, remoteUserID, provider, clientID, accessToken, accessToken)
+	case driverMySQL, driverPostgres:
+		_, err = db.ExecContext(ctx, "INSERT INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?) "+db.upsert("user_id", "provider", "client_id")+" access_token = ?", localUserID, remoteUserID, provider, clientID, accessToken, accessToken)
+	default:
+		unsupportedDriver("RecordRemoteUserID", db.driverName)
 	}
 	if err != nil {
 		log.Error("Unable to INSERT oauth_users for '%d': %v", localUserID, err)
@@ -3225,22 +3305,12 @@ func (db *datastore) GetOauthAccounts(ctx context.Context, userID int64) ([]oaut
 // initialized with the correct schema.
 // Currently, it checks to see if the `users` table exists.
 func (db *datastore) DatabaseInitialized() bool {
-	var dummy string
-	var err error
-	if db.driverName == driverSQLite {
-		err = db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").Scan(&dummy)
-	} else {
-		err = db.QueryRow("SHOW TABLES LIKE 'users'").Scan(&dummy)
-	}
-	switch {
-	case err == sql.ErrNoRows:
-		return false
-	case err != nil:
-		log.Error("Couldn't SHOW TABLES: %v", err)
+	exists, err := db.dialectOrDefault().TableExists(context.Background(), db.DB, "users")
+	if err != nil {
+		log.Error("Couldn't check for the users table: %v", err)
 		return false
 	}
-
-	return true
+	return exists
 }
 
 func (db *datastore) RemoveOauth(ctx context.Context, userID int64, provider string, clientID string, remoteUserID string) error {
@@ -3259,7 +3329,7 @@ func handleFailedPostInsert(err error) error {
 
 // Deprecated: use GetProfileURLFromHandle() instead, which returns user-facing URL instead of actor_id
 func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, error) {
-	handle = strings.TrimLeft(handle, "@")
+	handle = sanitizeDBText(normalizeRemoteHandle(handle))
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -3277,7 +3347,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = sanitizeDBText(remoteLookup(handle))
 		// An empty result means webfinger failed — the peer was down, the
 		// handle does not exist, the response did not parse. Stop here.
 		// Carrying on writes a remoteusers row with an empty actor_id, and
@@ -3297,7 +3367,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(app, actorIRI)
+			remoteActor, err := fetchRemoteActorForStorage(app, actorIRI)
 			// Same reasoning as the empty lookup above: a failed fetch has no
 			// inbox to record, and caching it would poison the handle rather
 			// than leave it to be retried.
@@ -3320,7 +3390,19 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 	return actorIRI, nil
 }
 
+// normalizeSubscriberEmail is the one form an email subscriber's address is
+// stored and looked up in: trimmed and lower-cased. MySQL's case-insensitive
+// collation used to hide the difference between Foo@x and foo@x; SQLite and
+// Postgres compare exactly, so without this the same reader becomes two
+// subscribers and cannot unsubscribe with a differently cased address. The
+// lookups below also compare LOWER(email), so rows written before this
+// normalisation existed are still found.
+func normalizeSubscriberEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 func (db *datastore) AddEmailSubscription(collID, userID int64, email string, confirmed bool) (*EmailSubscriber, error) {
+	email = normalizeSubscriberEmail(email)
 	friendlyChars := "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz"
 	subID := id.GenerateRandomString(friendlyChars, 8)
 	token := id.GenerateRandomString(friendlyChars, 16)
@@ -3335,12 +3417,10 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 
 	_, err := db.Exec("INSERT INTO emailsubscribers (id, collection_id, user_id, email, subscribed, token, confirmed) VALUES (?, ?, ?, ?, "+db.now()+", ?, ?)", subID, collID, userIDVal, emailVal, token, confirmed)
 	if err != nil {
-		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
-			if mysqlErr.Number == mySQLErrDuplicateKey {
-				// Duplicate, so just return existing subscriber information
-				log.Info("Duplicate subscriber for email %s, user %d; returning existing subscriber", email, userID)
-				return db.FetchEmailSubscriber(email, userID, collID)
-			}
+		if db.isDuplicateKeyErr(err) {
+			// Duplicate, so just return existing subscriber information
+			log.Info("Duplicate subscriber for email %s, user %d; returning existing subscriber", email, userID)
+			return db.FetchEmailSubscriber(email, userID, collID)
 		}
 		return nil, err
 	}
@@ -3357,8 +3437,9 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 func (db *datastore) IsEmailSubscriber(email string, userID, collID int64) bool {
 	var dummy int
 	var err error
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID).Scan(&dummy)
+		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID).Scan(&dummy)
 	} else {
 		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID).Scan(&dummy)
 	}
@@ -3374,7 +3455,7 @@ func (db *datastore) IsEmailSubscriber(email string, userID, collID int64) bool 
 func (db *datastore) GetEmailSubscribers(collID int64, reqConfirmed bool) ([]*EmailSubscriber, error) {
 	cond := ""
 	if reqConfirmed {
-		cond = " AND confirmed = 1"
+		cond = " AND confirmed = TRUE"
 	}
 	rows, err := db.Query(`SELECT s.id, collection_id, user_id, s.email, u.email, subscribed, token, confirmed, allow_export
 FROM emailsubscribers s
@@ -3421,8 +3502,9 @@ func (db *datastore) FetchEmailSubscriber(email string, userID, collID int64) (*
 
 	s := &EmailSubscriber{}
 	var row *sql.Row
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID)
+		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID)
 	} else {
 		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID)
 	}
@@ -3452,8 +3534,9 @@ func (db *datastore) DeleteEmailSubscriber(subID, token string) error {
 func (db *datastore) DeleteEmailSubscriberByUser(email string, userID, collID int64) error {
 	var res sql.Result
 	var err error
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		res, err = db.Exec("DELETE FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID)
+		res, err = db.Exec("DELETE FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID)
 	} else {
 		res, err = db.Exec("DELETE FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID)
 	}
@@ -3476,7 +3559,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 	}
 
 	// TODO: ensure all addresses with original name are also confirmed, e.g. matt+fake@write.as and matt@write.as are now confirmed
-	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = 1 WHERE email = ?", email)
+	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = TRUE WHERE LOWER(email) = ?", normalizeSubscriberEmail(email))
 	if err != nil {
 		log.Error("Could not update email subscriber confirmation status: %v", err)
 		return err
@@ -3486,7 +3569,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 
 func (db *datastore) IsSubscriberConfirmed(email string) bool {
 	var dummy int64
-	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND confirmed = 1", email).Scan(&dummy)
+	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND confirmed = TRUE", normalizeSubscriberEmail(email)).Scan(&dummy)
 	switch {
 	case err == sql.ErrNoRows:
 		return false
@@ -3499,13 +3582,9 @@ func (db *datastore) IsSubscriberConfirmed(email string) bool {
 }
 
 func (db *datastore) InsertJob(j *PostJob) error {
-	res, err := db.Exec("INSERT INTO publishjobs (post_id, action, delay) VALUES (?, ?, ?)", j.PostID, j.Action, j.Delay)
+	jobID, err := db.insertReturningID(db.DB, "INSERT INTO publishjobs (post_id, action, delay) VALUES (?, ?, ?)", j.PostID, j.Action, j.Delay)
 	if err != nil {
 		return err
-	}
-	jobID, err := res.LastInsertId()
-	if err != nil {
-		log.Error("[jobs] Couldn't get last insert ID! %s", err)
 	}
 	log.Info("[jobs] Queued %s job #%d for post %s, delayed %d minutes", j.Action, jobID, j.PostID, j.Delay)
 	return nil
@@ -3540,8 +3619,18 @@ func (db *datastore) DeleteJobByPost(postID string) error {
 
 func (db *datastore) GetJobsToRun(action string) ([]*PostJob, error) {
 	timeWhere := "created < DATE_SUB(NOW(), INTERVAL delay MINUTE) AND created > DATE_SUB(NOW(), INTERVAL delay + 5 MINUTE)"
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		timeWhere = "created < DATETIME('now', '-' || delay || ' MINUTE') AND created > DATETIME('now', '-' || (delay+5) || ' MINUTE')"
+	case driverPostgres:
+		// The interval comes from a column, so DateSub (which takes a
+		// constant) cannot build it. make_interval takes an integer number
+		// of minutes; the cast keeps this valid whatever integer type
+		// WFPG-03 gives delay.
+		timeWhere = "created < NOW() - make_interval(mins => CAST(delay AS integer)) AND created > NOW() - make_interval(mins => CAST(delay AS integer) + 5)"
+	case driverMySQL:
+	default:
+		unsupportedDriver("GetJobsToRun", db.driverName)
 	}
 	rows, err := db.Query(`SELECT pj.id, post_id, action, delay
 		FROM publishjobs pj

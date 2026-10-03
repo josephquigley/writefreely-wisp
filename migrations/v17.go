@@ -12,8 +12,14 @@ package migrations
 
 func fixPostSignatureCharset(db *datastore) error {
 	// Only run this migration on MySQL databases
-	if db.driverName != driverMySQL {
+	switch db.driverName {
+	case driverMySQL:
+	case driverSQLite:
 		return nil
+	case driverPostgres:
+		return errBeforePostgresBase("fixPostSignatureCharset")
+	default:
+		unsupportedDriver("fixPostSignatureCharset", db.driverName)
 	}
 
 	t, err := db.Begin()

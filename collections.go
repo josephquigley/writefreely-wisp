@@ -1200,7 +1200,9 @@ func handleViewCollectionTag(app *App, w http.ResponseWriter, r *http.Request) e
 
 func handleViewCollectionLang(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
-	lang := vars["lang"]
+	// The route accepts either case, and the lookup compares lower-cased, so
+	// /lang:EN lists the same posts as /lang:en on every database.
+	lang := normalizeLangCode(vars["lang"])
 
 	cr := &collectionReq{}
 	err := processCollectionRequest(cr, vars, w, r)
@@ -1465,6 +1467,8 @@ func handleWebCollectionUnlock(app *App, w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Trimmed for the PAD SPACE reason given at GetCollection.
+	readReq.Alias = strings.TrimSpace(readReq.Alias)
 	if readReq.Alias == "" {
 		return impart.HTTPError{http.StatusBadRequest, "Need a collection `alias` to read."}
 	}

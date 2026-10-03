@@ -103,7 +103,11 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 	// The row is written first, because its path is what reserves the name:
 	// the unique constraint settles which of two uploads racing for the same
 	// name that day gets it, and the loser tries the next one.
-	img, err := app.createImageRow(u.ID, sum, header.Filename, mime, ext, len(stored))
+	// The client's name for the file is kept for display. It is free text
+	// from the client, so it is made storable and fitted to its column; the
+	// stored path is derived from it separately and is already bounded.
+	filename := boundedDBText(header.Filename, postImageMaxLengthFilename)
+	img, err := app.createImageRow(u.ID, sum, filename, mime, ext, len(stored))
 	if err != nil {
 		return err
 	}

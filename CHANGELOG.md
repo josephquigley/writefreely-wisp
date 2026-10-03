@@ -14,6 +14,14 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ## [Unreleased]
 
+### Added
+
+- PostgreSQL is supported alongside MySQL and SQLite (`type = postgres` under `[database]`), and `writefreely db copy --from sqlite:<path>` moves an existing SQLite database into Postgres, verified before committing.
+
+### Changed
+
+- Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
+
 ### Security
 
 - Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
