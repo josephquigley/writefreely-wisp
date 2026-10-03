@@ -1,5 +1,5 @@
 /*
- * Copyright © 2026 Musing Studio LLC.
+ * Copyright © 2026 Joseph Quigley.
  *
  * This file is part of WriteFreely.
  *
