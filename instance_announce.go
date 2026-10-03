@@ -461,7 +461,7 @@ func (db *datastore) GetPublicPostsToAnnounce(page, perPage int) (*[]announceabl
 		page = 1
 	}
 	rows, err := db.Query(`SELECT p.id, p.created `+announceableCondition+db.now()+`
-ORDER BY p.created DESC
+ORDER BY p.created DESC, p.id DESC
 LIMIT ? OFFSET ?`, perPage, (page-1)*perPage)
 	if err != nil {
 		log.Error("Failed selecting announceable posts: %v", err)

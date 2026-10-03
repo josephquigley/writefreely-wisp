@@ -16,7 +16,6 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -91,7 +90,7 @@ func TestDialectHelpersUnchanged(t *testing.T) {
 
 	lite := &datastore{driverName: driverSQLite}
 	assert.Equal(t, "strftime('%Y-%m-%d %H:%M:%S','now')", lite.now())
-	assert.Equal(t, "SUBSTR(content, 0, 80)", lite.clip("content", 80))
+	assert.Equal(t, "SUBSTR(content, 1, 80)", lite.clip("content", 80))
 	assert.Equal(t, "ON CONFLICT(collection_id, attribute) DO UPDATE SET", lite.upsert("collection_id", "attribute"))
 	assert.Equal(t, "DATETIME('now', '-24 HOUR')", lite.dateAdd(-24, "HOUR"))
 	assert.Equal(t, "DATETIME('now', '-6 MONTH')", lite.dateSub(6, "MONTH"))
@@ -189,20 +188,13 @@ func TestPostgresErrorClassifiers(t *testing.T) {
 	assert.False(t, pg.isIgnorableError(other))
 }
 
-// TestPostgresConnection exercises the driver against a real server. It runs
-// only when WF_TEST_POSTGRES_DSN is set, e.g.
-//
-//	docker run --rm -d --name wf-pg -e POSTGRES_PASSWORD=wf -p 55432:5432 postgres:18
-//	WF_TEST_POSTGRES_DSN='postgres://postgres:wf@localhost:55432/postgres?sslmode=disable&timezone=UTC' go test -run Postgres ./
+// TestPostgresConnection exercises the driver against a real server, in a
+// fresh database from the Postgres test harness (harness_pg_test.go). It runs
+// only under WF_TEST_DB_TYPE=postgres, e.g. `make test-postgres
+// GOTESTFLAGS='-run Postgres -v'`.
 func TestPostgresConnection(t *testing.T) {
-	dsn := os.Getenv("WF_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("WF_TEST_POSTGRES_DSN not set")
-	}
+	sdb := newPostgresTestDB(t)
 	ctx := context.Background()
-	sdb, err := sql.Open(driverPostgresRebind, dsn)
-	require.NoError(t, err)
-	defer sdb.Close()
 	db := newDatastore(sdb, driverPostgres)
 
 	require.NoError(t, db.Ping())

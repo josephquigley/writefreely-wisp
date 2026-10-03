@@ -35,9 +35,26 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// See harness_app_test.go. Asking for MySQL or Postgres and not
+	// reaching it is a failed run, not a skipped one.
+	if err := initTestDBEngine(); err != nil {
+		fmt.Println("test database harness:", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 	if runMySQLTests() {
 		if closeErr := testDB.Close(); closeErr != nil {
+			fmt.Println(closeErr)
+		}
+	}
+	if testPGAdmin != nil {
+		if closeErr := testPGAdmin.Close(); closeErr != nil {
+			fmt.Println(closeErr)
+		}
+	}
+	if testMySQLAdmin != nil {
+		if closeErr := testMySQLAdmin.Close(); closeErr != nil {
 			fmt.Println(closeErr)
 		}
 	}
@@ -78,8 +95,16 @@ func ensureMySQL(db *sql.DB) error {
 	return nil
 }
 
-// withTestDB provides a scoped database connection.
+// withTestDB provides a scoped database connection. Under
+// WF_TEST_DB_TYPE=postgres or mysql the connection is to a fresh wf_test_*
+// database with the schema loaded (engineTestApp), dropped when the test
+// ends; otherwise it is a copy of the MySQL reference database
+// (newTestDatabase).
 func withTestDB(t *testing.T, testBody ScopedTestBody) {
+	if e := engineTestApp(t, nil); e != nil {
+		testBody(e.db.DB)
+		return
+	}
 	db, cleanup, err := newTestDatabase(testDB,
 		os.Getenv("WF_USER"),
 		os.Getenv("WF_PASSWORD"),

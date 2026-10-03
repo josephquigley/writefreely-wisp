@@ -138,6 +138,72 @@ bump-patch:
 test:
 	$(GOTEST) -v ./...
 
+# Run the test suite against a throwaway Postgres in local Docker. See
+# docs/postgres-testing.md for what the variables mean.
+#
+#   make test-postgres
+#   make test-postgres GOTESTFLAGS='-run TestFoo -v'
+#   make test-postgres PG_IMAGE=postgres:18.1
+#
+# The container gets a random loopback port, so it cannot collide with a
+# Postgres already running on 5432, and is removed on every exit path,
+# including a failed test run and Ctrl-C. It is local Docker only; nothing
+# here takes a DOCKER_HOST or a remote context into account, so do not point
+# one at a server you care about.
+PG_IMAGE ?= postgres:18
+GOTESTFLAGS ?=
+test-postgres:
+	@set -eu; \
+	name="wf-test-pg-$$$$"; \
+	cleanup() { echo "test-postgres: removing $$name"; $(DOCKERCMD) rm -f "$$name" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT; trap 'exit 130' INT TERM; \
+	echo "test-postgres: starting $$name ($(PG_IMAGE))"; \
+	$(DOCKERCMD) run -d --rm --name "$$name" \
+		-e POSTGRES_USER=writefreely -e POSTGRES_PASSWORD=writefreely -e POSTGRES_DB=writefreely \
+		-p 127.0.0.1::5432 --tmpfs /var/lib/postgresql \
+		"$(PG_IMAGE)" >/dev/null; \
+	i=0; until $(DOCKERCMD) exec "$$name" pg_isready -q -h 127.0.0.1 -U writefreely -d writefreely; do \
+		i=$$((i+1)); if [ $$i -ge 60 ]; then echo "test-postgres: Postgres did not become ready"; $(DOCKERCMD) logs "$$name"; exit 1; fi; \
+		sleep 1; \
+	done; \
+	port=$$($(DOCKERCMD) port "$$name" 5432/tcp | head -n1 | sed 's/.*://'); \
+	echo "test-postgres: ready on 127.0.0.1:$$port"; \
+	WF_TEST_DB_TYPE=postgres \
+	WF_TEST_PG_DSN="postgres://writefreely:writefreely@127.0.0.1:$$port/writefreely?sslmode=disable" \
+		$(GOCMD) test -count=1 $(GOTESTFLAGS) ./...
+
+# Run the test suite against a throwaway MySQL or MariaDB in local Docker,
+# the twin of test-postgres. See docs/database-testing.md.
+#
+#   make test-mysql
+#   make test-mysql MYSQL_IMAGE=mysql:8.4
+#   make test-mysql GOTESTFLAGS='-tags sqlite -run TestFoo -v'
+#
+# Same guarantees as test-postgres: a random loopback port, removed on every
+# exit path, local Docker only. The tests connect as root, which they need
+# to create and drop a database per test.
+MYSQL_IMAGE ?= mariadb:11
+test-mysql:
+	@set -eu; \
+	name="wf-test-mysql-$$$$"; \
+	cleanup() { echo "test-mysql: removing $$name"; $(DOCKERCMD) rm -f "$$name" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT; trap 'exit 130' INT TERM; \
+	echo "test-mysql: starting $$name ($(MYSQL_IMAGE))"; \
+	$(DOCKERCMD) run -d --rm --name "$$name" \
+		-e MYSQL_ROOT_PASSWORD=writefreely -e MARIADB_ROOT_PASSWORD=writefreely \
+		-p 127.0.0.1::3306 --tmpfs /var/lib/mysql \
+		"$(MYSQL_IMAGE)" >/dev/null; \
+	i=0; until $(DOCKERCMD) exec "$$name" sh -c \
+		'mariadb-admin ping -h 127.0.0.1 -uroot -pwritefreely --silent 2>/dev/null || mysqladmin ping -h 127.0.0.1 -uroot -pwritefreely --silent 2>/dev/null' >/dev/null; do \
+		i=$$((i+1)); if [ $$i -ge 120 ]; then echo "test-mysql: MySQL did not become ready"; $(DOCKERCMD) logs "$$name"; exit 1; fi; \
+		sleep 1; \
+	done; \
+	port=$$($(DOCKERCMD) port "$$name" 3306/tcp | head -n1 | sed 's/.*://'); \
+	echo "test-mysql: ready on 127.0.0.1:$$port"; \
+	WF_TEST_DB_TYPE=mysql \
+	WF_TEST_MYSQL_DSN="root:writefreely@tcp(127.0.0.1:$$port)/" \
+		$(GOCMD) test -count=1 $(GOTESTFLAGS) ./...
+
 run:
 	$(GOINSTALL) -tags='netgo sqlite' ./...
 	$(BINARY_NAME) --debug

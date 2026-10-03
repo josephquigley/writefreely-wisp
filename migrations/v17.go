@@ -16,6 +16,8 @@ func fixPostSignatureCharset(db *datastore) error {
 	case driverMySQL:
 	case driverSQLite:
 		return nil
+	case driverPostgres:
+		return errBeforePostgresBase("fixPostSignatureCharset")
 	default:
 		unsupportedDriver("fixPostSignatureCharset", db.driverName)
 	}

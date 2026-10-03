@@ -667,7 +667,7 @@ func ConnectToDatabase(app *App) error {
 
 	// Ensure the database schema is up-to-date
 	var dbVer int
-	err = app.db.QueryRow("SELECT MAX(version) FROM appmigrations").Scan(&dbVer)
+	err = app.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM appmigrations").Scan(&dbVer)
 	if err != nil {
 		log.Error("Unable to read migrations version: %v", err)
 	} else if dbVer < migrations.CurrentVer() {
@@ -1158,43 +1158,82 @@ var schemaSql string
 //go:embed sqlite.sql
 var sqliteSql string
 
+// postgresSql describes the whole schema at migrations.PostgresBaseVersion,
+// not V1 like the other two; see the comment at its top.
+//
+//go:embed postgres.sql
+var postgresSql string
+
+// schemaStatementTarget matches the table or index a schema statement
+// creates. schema.sql and sqlite.sql quote names with backticks;
+// postgres.sql does not quote them.
+var schemaStatementTarget = regexp.MustCompile("(?m)^CREATE (TABLE|(?:UNIQUE )?INDEX) (?:IF NOT EXISTS )?`?([a-z_]+)`?")
+
 func adminInitDatabase(app *App) error {
 	var schema string
+	inTx := false
 	switch app.cfg.Database.Type {
 	case driverSQLite:
 		schema = sqliteSql
 	case driverMySQL:
 		schema = schemaSql
+	case driverPostgres:
+		// Postgres DDL is transactional, so the whole schema goes in at once
+		// or not at all, and a failed init leaves an empty database to retry
+		// on.
+		schema = postgresSql
+		inTx = true
 	default:
 		unsupportedDriver("adminInitDatabase", app.cfg.Database.Type)
 	}
 
-	tblReg := regexp.MustCompile("CREATE TABLE (IF NOT EXISTS )?`([a-z_]+)`")
+	var ex migrations.Execer = app.db.DB
+	var tx *sql.Tx
+	if inTx {
+		var err error
+		tx, err = app.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin schema transaction: %v", err)
+		}
+		defer tx.Rollback()
+		ex = tx
+	}
 
 	queries := strings.Split(string(schema), ";\n")
 	for _, q := range queries {
 		if strings.TrimSpace(q) == "" {
 			continue
 		}
-		parts := tblReg.FindStringSubmatch(q)
+		kind, name := "table", "???"
+		parts := schemaStatementTarget.FindStringSubmatch(q)
 		if len(parts) >= 3 {
-			log.Info("Creating table %s...", parts[2])
+			if parts[1] != "TABLE" {
+				kind = "index"
+			}
+			name = parts[2]
+			log.Info("Creating %s %s...", kind, name)
 		} else {
 			log.Info("Creating table ??? (Weird query) No match in: %v", parts)
 		}
-		_, err := app.db.Exec(q)
+		_, err := ex.Exec(q)
 		if err != nil {
-			log.Error("%s", err)
-		} else {
-			log.Info("Created.")
+			// Stop at the first failure. Carrying on would let `db init`
+			// report success with tables missing.
+			return fmt.Errorf("create %s %s: %v", kind, name, err)
 		}
+		log.Info("Created.")
 	}
 
 	// Set up migrations table
 	log.Info("Initializing appmigrations table...")
-	err := migrations.SetInitialMigrations(migrations.NewDatastore(app.db.DB, app.db.driverName))
+	err := migrations.SetInitialMigrationsOn(ex, app.db.driverName)
 	if err != nil {
 		return fmt.Errorf("Unable to set initial migrations: %v", err)
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit schema transaction: %v", err)
+		}
 	}
 
 	log.Info("Running migrations...")
