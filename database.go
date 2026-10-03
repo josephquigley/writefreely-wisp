@@ -182,7 +182,7 @@ func (db *datastore) now() string {
 
 func (db *datastore) clip(field string, l int) string {
 	if db.driverName == driverSQLite {
-		return fmt.Sprintf("SUBSTR(%s, 0, %d)", field, l)
+		return fmt.Sprintf("SUBSTR(%s, 1, %d)", field, l)
 	}
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)
 }
@@ -470,7 +470,7 @@ func (db *datastore) GetUserNameFromToken(accessToken string) (string, error) {
 
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token LIKE ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&username, &oneTime)
+	err := db.QueryRow("SELECT username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", string(t)).Scan(&username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return "", ErrBadAccessToken
@@ -495,7 +495,7 @@ func (db *datastore) GetUserDataFromToken(accessToken string) (int64, string, er
 	var userID int64
 	var oneTime bool
 	var username string
-	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token LIKE ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&userID, &username, &oneTime)
+	err := db.QueryRow("SELECT user_id, username, one_time FROM accesstokens LEFT JOIN users ON user_id = id WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", string(t)).Scan(&userID, &username, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return 0, "", ErrBadAccessToken
@@ -534,7 +534,7 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 	}
 
 	var oneTime bool
-	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE token LIKE ? AND (expires IS NULL OR expires > "+db.now()+")", t).Scan(&userID, &sudo, &oneTime)
+	err := db.QueryRow("SELECT user_id, sudo, one_time FROM accesstokens WHERE token = ? AND (expires IS NULL OR expires > "+db.now()+")", string(t)).Scan(&userID, &sudo, &oneTime)
 	switch {
 	case err == sql.ErrNoRows:
 		return -1, false
@@ -550,8 +550,15 @@ func (db *datastore) GetUserIDPrivilege(accessToken string) (userID int64, sudo 
 	return
 }
 
+// DeleteToken deletes the given access token.
+//
+// Like the token lookups, it binds the token as a string, because that is
+// how GetTemporaryOneTimeAccessToken inserts it. On SQLite a string is
+// stored as TEXT and a []byte is bound as a BLOB, and SQLite never
+// considers a TEXT value equal to a BLOB, so binding []byte here would
+// match no token at all.
 func (db *datastore) DeleteToken(accessToken []byte) error {
-	res, err := db.Exec("DELETE FROM accesstokens WHERE token LIKE ?", accessToken)
+	res, err := db.Exec("DELETE FROM accesstokens WHERE token = ?", string(accessToken))
 	if err != nil {
 		return err
 	}
@@ -929,10 +936,6 @@ func (db *datastore) GetCollectionForPad(alias string) (*Collection, error) {
 
 func (db *datastore) GetCollectionByID(id int64) (*Collection, error) {
 	return db.GetCollectionBy("id = ?", id)
-}
-
-func (db *datastore) GetCollectionFromDomain(host string) (*Collection, error) {
-	return db.GetCollectionBy("host = ?", host)
 }
 
 func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias string) error {
