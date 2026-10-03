@@ -63,7 +63,7 @@ func initActivityPub(app *App) {
 	// actor they enabled announces nothing. Same shape as the allowlist's
 	// inert warning: configuration that cannot take effect is reported, not
 	// treated as an error.
-	if app.cfg.App.InstanceAnnounce && !app.cfg.App.Federation {
+	if app.Config().App.InstanceAnnounce && !app.Config().App.Federation {
 		log.Info(instanceAnnounceInertWarning)
 	}
 }
@@ -86,13 +86,13 @@ const instanceAnnounceInertWarning = "WARNING: instance_announce is enabled but 
 // skip it. Building it from config instead keeps it absent from every query
 // that enumerates blogs.
 func newInstanceColl(app *App) *Collection {
-	ur, _ := url.Parse(app.cfg.App.Host)
+	ur, _ := url.Parse(app.Config().App.Host)
 	return &Collection{
 		ID:       0,
 		Alias:    ur.Host,
 		Title:    ur.Host,
 		db:       app.db,
-		hostName: app.cfg.App.Host,
+		hostName: app.Config().App.Host,
 	}
 }
 
@@ -122,10 +122,10 @@ func instanceActorAlias(cfg *config.Config) string {
 // but with an inbox, outbox, followers and following that all 404'd because
 // no blog is named after the host.
 func collectionForAPRequest(app *App, alias string) (*Collection, error) {
-	if alias != "" && alias == instanceActorAlias(app.cfg) {
+	if alias != "" && alias == instanceActorAlias(app.Config()) {
 		return newInstanceColl(app), nil
 	}
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		return app.db.GetCollectionByID(1)
 	}
 	return app.db.GetCollection(alias)
@@ -190,7 +190,7 @@ func handleFetchCollectionActivities(app *App, w http.ResponseWriter, r *http.Re
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	if !c.IsInstanceColl() {
 		if c.IsPrivate() || c.IsProtected() {
@@ -223,7 +223,7 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	if c.IsInstanceColl() {
 		return handleFetchInstanceOutbox(app, w, r, c)
@@ -241,7 +241,7 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 		return ErrCollectionNotFound
 	}
 
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		if alias != c.Alias {
 			return ErrCollectionNotFound
 		}
@@ -263,7 +263,7 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 	ocp := activitystreams.NewOrderedCollectionPage(accountRoot, "outbox", res.TotalPosts, p)
 	ocp.OrderedItems = []interface{}{}
 
-	posts, err := app.db.GetPosts(app.cfg, c, p, false, true, false, "")
+	posts, err := app.db.GetPosts(app.Config(), c, p, false, true, false, "")
 	for _, pp := range *posts {
 		pp.Collection = res
 		o := pp.ActivityObject(app)
@@ -291,7 +291,7 @@ func handleFetchCollectionFollowers(app *App, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// The instance actor has no owner to silence and no visibility of its
 	// own: it is the server, and it is reachable exactly when federation is.
@@ -347,7 +347,7 @@ func handleFetchCollectionFollowing(app *App, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// The instance actor has no owner to silence and no visibility of its
 	// own: it is the server, and it is reachable exactly when federation is.
@@ -398,7 +398,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		// TODO: return Reject?
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// The instance actor has no owner, so there is no user to silence. Every
 	// other check below applies to it unchanged.
@@ -778,7 +778,7 @@ func actorPrivKey(p *activitystreams.Person) (crypto.PrivateKey, error) {
 // allowlist is enforced: no delivery path can reach a host that is not on the
 // list.
 func makeActivityPost(app *App, p *activitystreams.Person, url string, m interface{}) error {
-	hostName := app.cfg.App.Host
+	hostName := app.Config().App.Host
 
 	if !app.inboxAllowed(url) {
 		return fmt.Errorf("refusing to post to %s: not on the federation allowlist", url)
@@ -979,7 +979,7 @@ func deleteFederatedPost(app *App, p *PublicPost, collID int64) error {
 	// and would keep a boost of a post that no longer exists.
 	go undoAnnounceToInstanceFollowers(app, announceablePost{ID: p.ID, Created: p.Created}, collID)
 
-	p.Collection.hostName = app.cfg.App.Host
+	p.Collection.hostName = app.Config().App.Host
 	actor := p.Collection.PersonObject(collID)
 	na := p.ActivityObject(app)
 
@@ -1031,7 +1031,7 @@ func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 	// A private instance does not federate. With a federation allowlist
 	// configured it does, but only to the hosts on that list, which
 	// makeActivityPost enforces.
-	if app.cfg.App.Private && !app.federationAllowlistActive() {
+	if app.Config().App.Private && !app.federationAllowlistActive() {
 		return nil
 	}
 
@@ -1272,7 +1272,7 @@ var fetchActorIRI = resolveIRI
 // makeActivityPost has nowhere to post and fails with "target POST URL is
 // empty". Leaving the actor uncached leaves it retryable, which is what it is.
 func fetchRemoteActor(app *App, actorIRI string) (remoteActorInfo, error) {
-	resp, err := fetchActorIRI(app.cfg.App.Host, actorIRI)
+	resp, err := fetchActorIRI(app.Config().App.Host, actorIRI)
 	if err != nil {
 		return remoteActorInfo{}, err
 	}
@@ -1308,7 +1308,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 			if iErr.Status == http.StatusNotFound {
 				// Fetch remote actor
 				log.Info("Not found; fetching actor %s remotely", actorIRI)
-				actorResp, err := resolveIRI(app.cfg.App.Host, actorIRI)
+				actorResp, err := resolveIRI(app.Config().App.Host, actorIRI)
 				if err != nil {
 					log.Error("Unable to get base actor! %v", err)
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't fetch actor."}
@@ -1323,7 +1323,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't parse actual actor."}
 				}
 				// Fetch the actual actor using the owner field from the publicKey object
-				actualActorResp, err := resolveIRI(app.cfg.App.Host, baseActor.PublicKey.Owner)
+				actualActorResp, err := resolveIRI(app.Config().App.Host, baseActor.PublicKey.Owner)
 				if err != nil {
 					log.Error("Unable to get actual actor! %v", err)
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't fetch actual actor."}

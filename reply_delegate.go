@@ -361,7 +361,7 @@ func handleCheckReplyDelegate(app *App, u *User, w http.ResponseWriter, r *http.
 	if c.OwnerID != u.ID {
 		return ErrCollectionNotFound
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// Check what is in the box, not what is in the database. The owner presses
 	// this button while typing a handle, and answering about the saved value

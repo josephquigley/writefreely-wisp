@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"crypto/tls"
 	"database/sql"
 	_ "embed"
@@ -25,6 +26,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -79,9 +81,11 @@ var (
 
 // App holds data and configuration for an individual WriteFreely instance.
 type App struct {
-	router       *mux.Router
-	shttp        *http.ServeMux
-	db           *datastore
+	router *mux.Router
+	shttp  *http.ServeMux
+	db     *datastore
+	// cfg is the bootstrap configuration as loaded from config.ini. Read
+	// the configuration in force through Config(); see settingsSnapshot.
 	cfg          *config.Config
 	cfgFile      string
 	keys         *key.Keychain
@@ -99,6 +103,16 @@ type App struct {
 
 	timeline *localTimeline
 
+	// settings is the configuration in force: bootstrap values from cfg
+	// with the database settings applied, plus state derived from them.
+	// It is replaced whole, never mutated, so a request keeps one
+	// consistent view. nil until settings are first loaded, and in tests
+	// that build an App by hand; Config() then falls back to cfg.
+	settings atomic.Pointer[settingsSnapshot]
+	// settingsMu serialises reloads, so a burst of requests after a save
+	// reloads once.
+	settingsMu sync.Mutex
+
 	// images is where uploaded images are kept; see imageStore.
 	images     ImageStore
 	imagesErr  error
@@ -115,9 +129,37 @@ func (app *App) Router() *mux.Router {
 	return app.router
 }
 
-// Config returns the App's current configuration.
+// settingsSnapshot is one immutable view of the configuration in force.
+type settingsSnapshot struct {
+	cfg          *config.Config
+	fedAllowlist map[string]bool
+	version      int64
+}
+
+// Config returns the configuration in force. Never mutate what it
+// returns: it is shared by every request running under it.
 func (app *App) Config() *config.Config {
+	if s := app.settings.Load(); s != nil {
+		return s.cfg
+	}
 	return app.cfg
+}
+
+// configAndVersion is Config together with the settings version it belongs
+// to. The version is 0 before settings are in the database. A reload that
+// swaps the snapshot mid-call is noticed (snapshots are never reused) and
+// the read repeated, so the pair always comes from one snapshot.
+func (app *App) configAndVersion() (*config.Config, int64) {
+	for {
+		before := app.settings.Load()
+		cfg := app.Config()
+		if app.settings.Load() == before {
+			if before == nil {
+				return cfg, 0
+			}
+			return cfg, before.version
+		}
+	}
 }
 
 // SetConfig updates the App's Config to the given value.
@@ -254,7 +296,7 @@ func (app *App) ReqLog(r *http.Request, status int, timeSince time.Duration) str
 // handleViewHome shows page at root path. It checks the configuration and
 // authentication state to show the correct page.
 func handleViewHome(app *App, w http.ResponseWriter, r *http.Request) error {
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		// Render blog index
 		return handleViewCollection(app, w, r)
 	}
@@ -265,10 +307,10 @@ func handleViewHome(app *App, w http.ResponseWriter, r *http.Request) error {
 		// Show correct page based on user auth status and configured landing path
 		u := getUserSession(app, r)
 
-		if app.cfg.App.Chorus {
+		if app.Config().App.Chorus {
 			// This instance is focused on reading, so show Reader on home route if not
 			// private or a private-instance user is logged in.
-			if !app.cfg.App.Private || u != nil {
+			if !app.Config().App.Private || u != nil {
 				return viewLocalTimeline(app, w, r)
 			}
 		}
@@ -278,11 +320,11 @@ func handleViewHome(app *App, w http.ResponseWriter, r *http.Request) error {
 			return handleViewPad(app, w, r)
 		}
 
-		if app.cfg.App.Private {
+		if app.Config().App.Private {
 			return viewLogin(app, w, r)
 		}
 
-		if land := app.cfg.App.LandingPath(); land != "/" {
+		if land := app.Config().App.LandingPath(); land != "/" {
 			return impart.HTTPError{http.StatusFound, land}
 		}
 	}
@@ -312,14 +354,14 @@ func handleViewLanding(app *App, w http.ResponseWriter, r *http.Request) error {
 		log.Error("unable to get landing banner: %v", err)
 		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get banner: %v", err)}
 	}
-	p.Banner = template.HTML(applyMarkdown([]byte(banner.Content), "", app.cfg))
+	p.Banner = template.HTML(applyMarkdown([]byte(banner.Content), "", app.Config()))
 
 	content, err := getLandingBody(app)
 	if err != nil {
 		log.Error("unable to get landing content: %v", err)
 		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get content: %v", err)}
 	}
-	p.Content = template.HTML(applyMarkdown([]byte(content.Content), "", app.cfg))
+	p.Content = template.HTML(applyMarkdown([]byte(content.Content), "", app.Config()))
 
 	// Get error messages
 	session, err := app.sessionStore.Get(r, cookieName)
@@ -373,7 +415,7 @@ func handleTemplatedPage(app *App, w http.ResponseWriter, r *http.Request, t *te
 			return err
 		}
 		p.ContentTitle = c.Title.String
-		p.Content = template.HTML(applyMarkdown([]byte(c.Content), "", app.cfg))
+		p.Content = template.HTML(applyMarkdown([]byte(c.Content), "", app.Config()))
 		p.PlainContent = shortPostDescription(stripmd.Strip(c.Content))
 		if !c.Updated.IsZero() {
 			p.Updated = c.Updated.Format("January 2, 2006")
@@ -390,13 +432,13 @@ func handleTemplatedPage(app *App, w http.ResponseWriter, r *http.Request, t *te
 
 func pageForReq(app *App, r *http.Request) page.StaticPage {
 	p := page.StaticPage{
-		AppCfg:  app.cfg.App,
+		AppCfg:  app.Config().App,
 		Path:    r.URL.Path,
 		Version: "v" + editionVersion(),
 	}
 
 	// Use custom style, if file exists
-	if _, err := os.Stat(filepath.Join(app.cfg.Server.StaticParentDir, staticDir, "local", "custom.css")); err == nil {
+	if _, err := os.Stat(filepath.Join(app.Config().Server.StaticParentDir, staticDir, "local", "custom.css")); err == nil {
 		p.CustomCSS = true
 	}
 
@@ -417,13 +459,13 @@ func pageForReq(app *App, r *http.Request) page.StaticPage {
 		if u != nil {
 			p.Username = u.Username
 			p.IsAdmin = u != nil && u.IsAdmin()
-			p.CanInvite = canUserInvite(app.cfg, p.IsAdmin)
+			p.CanInvite = canUserInvite(app.Config(), p.IsAdmin)
 			if p.IsAdmin && app.updates != nil {
 				p.UpdateAvailable = app.updates.AreAvailableNoCheck()
 			}
 		}
 	}
-	p.CanViewReader = !app.cfg.App.Private || u != nil
+	p.CanViewReader = !app.Config().App.Private || u != nil
 
 	return p
 }
@@ -448,6 +490,9 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 
 	apper.LoadConfig()
 
+	// Bootstrap, so every settings snapshot built from it inherits it.
+	apper.App().cfg.Server.Dev = debugging
+
 	// Load templates
 	err := InitTemplates(apper.App().Config())
 	if err != nil {
@@ -471,50 +516,66 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 		return nil, fmt.Errorf("connect to DB: %s", err)
 	}
 
+	if _, err := apper.App().importSettings(context.Background()); err != nil {
+		return nil, fmt.Errorf("import settings from %s: %s", apper.App().configPath(), err)
+	}
+
+	if err := apper.App().loadSettings(context.Background()); err != nil {
+		return nil, fmt.Errorf("load settings: %s", err)
+	}
+
 	initActivityPub(apper.App())
 
 	// Chosen before the routes are, since /uploads/ is served from it.
 	if err := apper.App().initImageStore(); err != nil {
 		return nil, fmt.Errorf("image storage: %s", err)
 	}
-	if st := apper.App().cfg.Storage; st.UsesS3() {
+	if st := apper.App().Config().Storage; st.UsesS3() {
 		log.Info("Uploaded images are kept in S3 bucket %s at %s", st.S3Bucket, st.S3Endpoint)
 	}
 
-	if apper.App().cfg.Email.Enabled() {
+	if apper.App().Config().Email.Enabled() {
 		log.Info("Starting publish jobs queue...")
 		go startPublishJobsQueue(apper.App())
 	} else {
 		log.Info("[jobs] Not starting publish jobs queue: no email provider is configured.")
 	}
 
-	if apper.App().cfg.Uploads.Enabled {
+	if apper.App().Config().Uploads.Enabled {
 		// Fail here rather than at the moment someone uploads: a missing
 		// volume or a directory the process cannot write to is already
-		// true at startup, and an operator is watching now. An object
-		// store that does not answer is the exception: see
-		// checkUploadsAtStartup.
+		// true at startup, and an operator is watching now. Enabling at
+		// runtime makes the same check in saveSettings. An object store that
+		// does not answer is the exception: see checkUploadsAtStartup.
 		if err := apper.App().checkUploadsAtStartup(); err != nil {
 			return nil, fmt.Errorf("uploads are enabled but unusable: %s", err)
 		}
-		log.Info("Starting orphaned image sweep...")
-		go startOrphanImageSweep(apper.App())
 	}
+	// Always started: uploads can be enabled at runtime, and the sweep
+	// skips its turn while they are off.
+	log.Info("Starting orphaned image sweep...")
+	go startOrphanImageSweep(apper.App())
 
-	// Handle local timeline, if enabled
-	if apper.App().cfg.App.LocalTimeline {
-		log.Info("Initializing local timeline...")
-		initLocalTimeline(apper.App())
-	}
+	// Always built: it only fetches when read, and the setting can now be
+	// turned on at runtime on any node. Readers check LocalTimeline.
+	initLocalTimeline(apper.App())
 
 	return apper.App(), nil
 }
 
+// useMiddleware installs the middleware every request passes through. Serve
+// calls it before anything else; TestServeInstallsMiddleware holds it to
+// that, since Serve itself blocks serving.
+func (app *App) useMiddleware(r *mux.Router) {
+	r.Use(app.settingsMiddleware)
+}
+
 func Serve(app *App, r *mux.Router) {
+	app.useMiddleware(r)
+
 	log.Info("Going to serve...")
 
-	isSingleUser = app.cfg.App.SingleUser
-	app.cfg.Server.Dev = debugging
+	isSingleUser = app.Config().App.SingleUser
 
 	// Handle shutdown
 	c := make(chan os.Signal, 2)
@@ -528,23 +589,23 @@ func Serve(app *App, r *mux.Router) {
 	}()
 
 	// Start gopher server
-	if app.cfg.Server.GopherPort > 0 && !app.cfg.App.Private {
+	if app.Config().Server.GopherPort > 0 && !app.Config().App.Private {
 		go initGopher(app)
 	}
 
 	// Start web application server
-	var bindAddress = app.cfg.Server.Bind
+	var bindAddress = app.Config().Server.Bind
 	if bindAddress == "" {
 		bindAddress = "localhost"
 	}
 	var err error
-	if app.cfg.IsSecureStandalone() {
-		if app.cfg.Server.Autocert {
+	if app.Config().IsSecureStandalone() {
+		if app.Config().Server.Autocert {
 			m := &autocert.Manager{
 				Prompt: autocert.AcceptTOS,
-				Cache:  autocert.DirCache(app.cfg.Server.TLSCertPath),
+				Cache:  autocert.DirCache(app.Config().Server.TLSCertPath),
 			}
-			host, err := url.Parse(app.cfg.App.Host)
+			host, err := url.Parse(app.Config().App.Host)
 			if err != nil {
 				log.Error("[WARNING] Unable to parse configured host! %s", err)
 				log.Error(`[WARNING] ALL hosts are allowed, which can open you to an attack where
@@ -578,7 +639,7 @@ requests. We recommend supplying a valid host name.`)
 			go func() {
 				log.Info("Serving redirects on http://%s:80", bindAddress)
 				err = http.ListenAndServe(fmt.Sprintf("%s:80", bindAddress), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					http.Redirect(w, r, app.cfg.App.Host, http.StatusMovedPermanently)
+					http.Redirect(w, r, app.Config().App.Host, http.StatusMovedPermanently)
 				}))
 				log.Error("Unable to start redirect server: %v", err)
 			}()
@@ -586,7 +647,7 @@ requests. We recommend supplying a valid host name.`)
 			log.Info("Serving on https://%s:443", bindAddress)
 			log.Info("Using manual certificates")
 			log.Info("---")
-			err = http.ListenAndServeTLS(fmt.Sprintf("%s:443", bindAddress), app.cfg.Server.TLSCertPath, app.cfg.Server.TLSKeyPath, r)
+			err = http.ListenAndServeTLS(fmt.Sprintf("%s:443", bindAddress), app.Config().Server.TLSCertPath, app.Config().Server.TLSKeyPath, r)
 		}
 	} else {
 		network := "tcp"
@@ -603,7 +664,7 @@ requests. We recommend supplying a valid host name.`)
 				os.Exit(1)
 			}
 		} else {
-			bindAddress = fmt.Sprintf("%s:%d", bindAddress, app.cfg.Server.Port)
+			bindAddress = fmt.Sprintf("%s:%d", bindAddress, app.Config().Server.Port)
 		}
 
 		log.Info("Serving on %s://%s", protocol, bindAddress)
@@ -768,6 +829,15 @@ func DoConfig(app *App, configSections string) {
 		log.Info("Database already initialized.")
 	}
 
+	imp, err := app.importSettings(context.Background())
+	if err != nil {
+		log.Error("Unable to move settings into the database: %v", err)
+		os.Exit(1)
+	}
+	if note := configStartNote(imp); note != "" {
+		log.Info("%s", note)
+	}
+
 	if d.User != nil {
 		u := &User{
 			Username:   d.User.Username,
@@ -777,7 +847,7 @@ func DoConfig(app *App, configSections string) {
 
 		// Create blog
 		log.Info("Creating user %s...\n", u.Username)
-		err = app.db.CreateUser(app.cfg, u, app.cfg.App.SiteName, "")
+		err = app.db.CreateUser(app.Config(), u, app.Config().App.SiteName, "")
 		if err != nil {
 			log.Error("Unable to create user: %s", err)
 			os.Exit(1)
@@ -793,7 +863,7 @@ func GenerateKeyFiles(app *App) error {
 	app.LoadConfig()
 
 	// Create keys dir if it doesn't exist yet
-	fullKeysDir := filepath.Join(app.cfg.Server.KeysParentDir, keysDir)
+	fullKeysDir := filepath.Join(app.Config().Server.KeysParentDir, keysDir)
 	if _, err := os.Stat(fullKeysDir); os.IsNotExist(err) {
 		err = os.Mkdir(fullKeysDir, 0700)
 		if err != nil {
@@ -846,6 +916,9 @@ func Migrate(apper Apper) error {
 	err := migrations.Migrate(migrations.NewDatastore(apper.App().db.DB, apper.App().db.driverName))
 	if err != nil {
 		return fmt.Errorf("migrate: %s", err)
+	}
+	if _, err := apper.App().importSettings(context.Background()); err != nil {
+		return fmt.Errorf("import settings: %s", err)
 	}
 	return nil
 }
@@ -1087,10 +1160,10 @@ func connectToDatabase(app *App) {
 func shutdown(app *App) {
 	log.Info("Closing database connection...")
 	app.db.Close()
-	if strings.HasPrefix(app.cfg.Server.Bind, "/") {
+	if strings.HasPrefix(app.Config().Server.Bind, "/") {
 		// Clean up socket
 		log.Info("Removing socket file...")
-		err := os.Remove(app.cfg.Server.Bind)
+		err := os.Remove(app.Config().Server.Bind)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// Safely ignore, in cases like initializing / migrating DB (see #790)
@@ -1135,8 +1208,8 @@ func CreateUser(apper Apper, username, password string, isAdmin bool) error {
 		usernameDesc += " (originally: " + desiredUsername + ")"
 	}
 
-	if !author.IsValidUsername(apper.App().cfg, username) {
-		return fmt.Errorf("Username %s is invalid, reserved, or shorter than configured minimum length (%d characters).", usernameDesc, apper.App().cfg.App.MinUsernameLen)
+	if !author.IsValidUsername(apper.App().Config(), username) {
+		return fmt.Errorf("Username %s is invalid, reserved, or shorter than configured minimum length (%d characters).", usernameDesc, apper.App().Config().App.MinUsernameLen)
 	}
 
 	if len(password) > maxPassByteLen {
@@ -1188,7 +1261,7 @@ var schemaStatementTarget = regexp.MustCompile("(?m)^CREATE (TABLE|(?:UNIQUE )?I
 func adminInitDatabase(app *App) error {
 	var schema string
 	inTx := false
-	switch app.cfg.Database.Type {
+	switch app.Config().Database.Type {
 	case driverSQLite:
 		schema = sqliteSql
 	case driverMySQL:
@@ -1200,7 +1273,7 @@ func adminInitDatabase(app *App) error {
 		schema = postgresSql
 		inTx = true
 	default:
-		unsupportedDriver("adminInitDatabase", app.cfg.Database.Type)
+		unsupportedDriver("adminInitDatabase", app.Config().Database.Type)
 	}
 
 	var ex migrations.Execer = app.db.DB

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -153,7 +154,7 @@ func handleViewAdminMonitor(app *App, u *User, w http.ResponseWriter, r *http.Re
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
 		SysStatus: sysStatus,
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -164,16 +165,31 @@ func handleViewAdminMonitor(app *App, u *User, w http.ResponseWriter, r *http.Re
 }
 
 func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
+	// One snapshot, so the values and their version cannot come from
+	// different reloads.
+	cfg, ver := app.configAndVersion()
 	p := struct {
 		*UserPage
 		*AdminPage
-		Config config.AppCfg
+		Config  config.AppCfg
+		Uploads config.UploadsCfg
+
+		// SettingsVersion is the version Config and Uploads were read at.
+		// The form sends it back so a save can tell it is stale.
+		SettingsVersion int64
+
+		UpdateChecksSupported bool
 
 		Message, ConfigMessage string
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    cfg.App,
+		Uploads:   cfg.Uploads,
+
+		SettingsVersion: ver,
+
+		UpdateChecksSupported: updateChecksSupported,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -198,7 +214,7 @@ func handleViewAdminUsers(app *App, u *User, w http.ResponseWriter, r *http.Requ
 	}{
 		UserPage:  NewUserPage(app, r, u, "Users", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 	}
 
@@ -248,7 +264,7 @@ func handleViewAdminUser(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		ClearEmail  string
 	}{
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 		Colls:     []inspectedCollection{},
 	}
@@ -280,7 +296,7 @@ func handleViewAdminUser(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		p.LastPost = lp.Format("January 2, 2006, 3:04 PM")
 	}
 
-	colls, err := app.db.GetCollections(p.User, app.cfg.App.Host)
+	colls, err := app.db.GetCollections(p.User, app.Config().App.Host)
 	if err != nil {
 		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get user's collections: %v", err)}
 	}
@@ -289,7 +305,7 @@ func handleViewAdminUser(app *App, u *User, w http.ResponseWriter, r *http.Reque
 			CollectionObj: CollectionObj{Collection: c},
 		}
 
-		if app.cfg.App.Federation {
+		if app.Config().App.Federation {
 			folls, err := app.db.GetAPFollowers(&c)
 			if err == nil {
 				// TODO: handle error here (at least log it)
@@ -415,7 +431,7 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 	}{
 		UserPage:  NewUserPage(app, r, u, "Pages", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 	}
 
@@ -434,7 +450,7 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 		if c.ID == "about" {
 			hasAbout = true
 			if !c.Title.Valid {
-				p.Pages[i].Title = defaultAboutTitle(app.cfg)
+				p.Pages[i].Title = defaultAboutTitle(app.Config())
 			}
 		} else if c.ID == "contact" {
 			hasContact = true
@@ -451,8 +467,8 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 	if !hasAbout {
 		p.Pages = append(p.Pages, &instanceContent{
 			ID:      "about",
-			Title:   defaultAboutTitle(app.cfg),
-			Content: defaultAboutPage(app.cfg),
+			Title:   defaultAboutTitle(app.Config()),
+			Content: defaultAboutPage(app.Config()),
 			Updated: defaultPageUpdatedTime,
 		})
 	}
@@ -467,7 +483,7 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 		p.Pages = append(p.Pages, &instanceContent{
 			ID:      "privacy",
 			Title:   defaultPrivacyTitle(),
-			Content: defaultPrivacyPolicy(app.cfg),
+			Content: defaultPrivacyPolicy(app.Config()),
 			Updated: defaultPageUpdatedTime,
 		})
 	}
@@ -493,7 +509,7 @@ func handleViewAdminPage(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		Content *instanceContent
 	}{
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 	}
 
@@ -570,42 +586,67 @@ func handleAdminUpdateSite(app *App, u *User, w http.ResponseWriter, r *http.Req
 }
 
 func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *http.Request) error {
-	apper.App().cfg.App.SiteName = r.FormValue("site_name")
-	apper.App().cfg.App.SiteDesc = r.FormValue("site_desc")
-	apper.App().cfg.App.Landing = r.FormValue("landing")
-	apper.App().cfg.App.OpenRegistration = r.FormValue("open_registration") == "on"
-	apper.App().cfg.App.OpenDeletion = r.FormValue("open_deletion") == "on"
-	mul, err := strconv.Atoi(r.FormValue("min_username_len"))
-	if err == nil {
-		apper.App().cfg.App.MinUsernameLen = mul
+	check := func(field string) string {
+		if r.FormValue(field) == "on" {
+			return "true"
+		}
+		return "false"
 	}
-	mb, err := strconv.Atoi(r.FormValue("max_blogs"))
-	if err == nil {
-		apper.App().cfg.App.MaxBlogs = mb
+	invites := r.FormValue("user_invites")
+	if invites == "none" {
+		invites = ""
 	}
-	apper.App().cfg.App.Federation = r.FormValue("federation") == "on"
-	apper.App().cfg.App.PublicStats = r.FormValue("public_stats") == "on"
-	apper.App().cfg.App.Monetization = r.FormValue("monetization") == "on"
-	if r.FormValue("private") == "on" || !apper.App().canDisablePrivateMode() {
-		apper.App().cfg.App.Private = true
-	} else {
-		apper.App().cfg.App.Private = false
+	changes := map[string]string{
+		"app.site_name":            r.FormValue("site_name"),
+		"app.site_description":     r.FormValue("site_desc"),
+		"app.landing":              r.FormValue("landing"),
+		"app.open_registration":    check("open_registration"),
+		"app.open_deletion":        check("open_deletion"),
+		"app.min_username_len":     r.FormValue("min_username_len"),
+		"app.max_blogs":            r.FormValue("max_blogs"),
+		"app.federation":           check("federation"),
+		"app.public_stats":         check("public_stats"),
+		"app.monetization":         check("monetization"),
+		"app.private":              check("private"),
+		"app.local_timeline":       check("local_timeline"),
+		"app.user_invites":         invites,
+		"app.default_visibility":   r.FormValue("default_visibility"),
+		"app.theme":                r.FormValue("theme"),
+		"app.editor":               r.FormValue("editor"),
+		"app.disable_js":           check("disable_js"),
+		"app.webfonts":             check("webfonts"),
+		"app.simple_nav":           check("simple_nav"),
+		"app.wf_modesty":           check("wf_modesty"),
+		"app.chorus":               check("chorus"),
+		"app.forest":               check("forest"),
+		"app.disable_drafts":       check("disable_drafts"),
+		"app.notes_only":           check("notes_only"),
+		"app.federation_allowlist": r.FormValue("federation_allowlist"),
+		"app.instance_announce":    check("instance_announce"),
+		"uploads.enabled":          check("uploads_enabled"),
+		"uploads.max_size_mb":      r.FormValue("uploads_max_size_mb"),
 	}
-	apper.App().cfg.App.LocalTimeline = r.FormValue("local_timeline") == "on"
-	if apper.App().cfg.App.LocalTimeline && apper.App().timeline == nil {
-		log.Info("Initializing local timeline...")
-		initLocalTimeline(apper.App())
+
+	if updateChecksSupported {
+		changes["app.update_checks"] = check("update_checks")
 	}
-	apper.App().cfg.App.UserInvites = r.FormValue("user_invites")
-	if apper.App().cfg.App.UserInvites == "none" {
-		apper.App().cfg.App.UserInvites = ""
+
+	// The version the page was rendered from. A form without one (an old
+	// cached page) or with a garbled one is as stale as any other.
+	var expected *int64
+	if v, err := strconv.ParseInt(r.FormValue("settings_version"), 10, 64); err == nil && v >= 0 {
+		expected = &v
 	}
-	apper.App().cfg.App.DefaultVisibility = r.FormValue("default_visibility")
 
 	m := "?cm=Configuration+saved."
-	err = apper.SaveConfig(apper.App().cfg)
+	var err error
+	if expected == nil {
+		err = errSettingsStale
+	} else {
+		err = apper.App().saveSettingsIf(r.Context(), changes, expected)
+	}
 	if err != nil {
-		m = "?cm=" + err.Error()
+		m = "?cm=" + url.QueryEscape(err.Error())
 	}
 	return impart.HTTPError{http.StatusFound, "/admin/settings" + m + "#config"}
 }

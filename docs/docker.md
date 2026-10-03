@@ -13,7 +13,9 @@ a single state directory.
 That state directory is the only thing to back up, and the only mount
 either compose file gives the application. The container's working
 directory is the state directory, so the binary finds `config.ini`
-without a `-c` flag.
+without a `-c` flag. After the first start, only the keys listed in
+[settings.md](settings.md) remain in `config.ini`; everything else is a
+setting kept in the database.
 
 Point uploads there as well. Without `dir` they default to a directory
 inside the asset tree, which ships with the image, so an upgrade would
@@ -21,9 +23,16 @@ discard them:
 
 ```ini
 [uploads]
-enabled = true
 dir = /data/uploads
 ```
+
+Whether uploads are on is a database setting, not a `config.ini` key:
+
+```sh
+docker compose exec app writefreely settings set uploads.enabled true
+```
+
+See [settings.md](settings.md).
 
 The entrypoint generates encryption keys when they are absent, creates
 the schema on a first run and applies pending migrations, then runs the
@@ -264,8 +273,9 @@ configuration references environment variables that are not set:
 That is deliberate. The alternative is passing the literal `${...}` on as a
 credential, which fails much later and much less clearly.
 
-Saving settings from `/admin/settings` leaves references intact, so the UI
-cannot write an expanded secret back into the file.
+A running server never writes `config.ini`, so an expanded secret cannot be
+saved back into the file. Settings changed from `/admin/settings` go to the
+database; see [settings.md](settings.md).
 
 ## Environment variables
 

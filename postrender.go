@@ -361,7 +361,7 @@ func handleRenderMarkdown(app *App, w http.ResponseWriter, r *http.Request) erro
 		body = strings.Replace(body, shortCodeMore, `<a href="/">Read more...</a>`, 1)
 		body = alterShortCodeEmailSubForm(body, "example", "slug", true)
 	}
-	rendered := applyMarkdown([]byte(in.RawBody), in.CollectionURL, app.cfg)
+	rendered := applyMarkdown([]byte(in.RawBody), in.CollectionURL, app.Config())
 	out := struct {
 		Body string `json:"body"`
 	}{

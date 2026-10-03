@@ -32,6 +32,7 @@ select {
 	{{if .ConfigMessage}}<p class="success" style="text-align: center">{{.ConfigMessage}}</p>{{end}}
 
 	<form action="/admin/update/config" method="post">
+		<input type="hidden" name="settings_version" value="{{.SettingsVersion}}" />
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}>
 				Site Title
@@ -157,6 +158,73 @@ select {
 					<p>The minimum number of characters allowed in a username. (Recommended: 2 or more.)</p>
 				</label></div>
 			<div><input type="number" name="min_username_len" id="min_username_len" class="inline" min="1" max="100" value="{{.Config.MinUsernameLen}}"/></div>
+		</div>
+		<div class="features row">
+			<div><label for="theme">Theme<p>Stylesheet name served to every page.</p></label></div>
+			<div><input type="text" name="theme" id="theme" class="inline" value="{{.Config.Theme}}" style="width: 14em;"/></div>
+		</div>
+		<div class="features row">
+			<div><label for="editor">Editor<p>Default editor for new posts. Leave empty for the standard one.</p></label></div>
+			<div><input type="text" name="editor" id="editor" class="inline" value="{{.Config.Editor}}" style="width: 14em;"/></div>
+		</div>
+		<div class="features row">
+			<div><label for="disable_js">Disable JavaScript<p>Serve reader pages without scripts.</p></label></div>
+			<div><input type="checkbox" name="disable_js" id="disable_js" {{if .Config.JSDisabled}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="webfonts">Web Fonts<p>Load the site's web fonts.</p></label></div>
+			<div><input type="checkbox" name="webfonts" id="webfonts" {{if .Config.WebFonts}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="simple_nav">Simple Navigation<p>Show a reduced navigation bar.</p></label></div>
+			<div><input type="checkbox" name="simple_nav" id="simple_nav" {{if .Config.SimpleNav}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="wf_modesty">WriteFreely Modesty<p>Hide "Powered by WriteFreely" links.</p></label></div>
+			<div><input type="checkbox" name="wf_modesty" id="wf_modesty" {{if .Config.WFModesty}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><label for="chorus">Chorus<p>Present the instance as one shared publication.</p></label></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="chorus" id="chorus" {{if .Config.Chorus}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="forest">Forest<p>Hide technical details from writers.</p></label></div>
+			<div><input type="checkbox" name="forest" id="forest" {{if .Config.Forest}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="disable_drafts">Disable Drafts<p>Posts must belong to a blog.</p></label></div>
+			<div><input type="checkbox" name="disable_drafts" id="disable_drafts" {{if .Config.DisableDrafts}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="notes_only">Notes Only<p>Hide blog features; posts are notes.</p></label></div>
+			<div><input type="checkbox" name="notes_only" id="notes_only" {{if .Config.NotesOnly}}checked="checked"{{end}} /></div>
+		</div>
+		{{if .UpdateChecksSupported}}
+		<div class="features row">
+			<div><label for="update_checks">Update Checks<p>Check for new WriteFreely releases.</p></label></div>
+			<div><input type="checkbox" name="update_checks" id="update_checks" {{if .Config.UpdateChecks}}checked="checked"{{end}} /></div>
+		</div>
+		{{end}}
+		<div class="features row">
+			<div><label for="uploads_enabled">Image Uploads<p>Let writers upload images. This node's upload directory must be writable.</p></label></div>
+			<div><input type="checkbox" name="uploads_enabled" id="uploads_enabled" {{if .Uploads.Enabled}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
+			<div><label for="uploads_max_size_mb">Largest Upload (MB)<p>Per file, not per writer.</p></label></div>
+			<div><input type="number" name="uploads_max_size_mb" id="uploads_max_size_mb" class="inline" min="1" value="{{.Uploads.MaxSizeMB}}"/></div>
+		</div>
+		<h3 id="federation-settings">Federation</h3>
+		<div class="features row">
+			<div><label for="federation_allowlist">Federation Allowlist
+					<p>Comma-separated hosts allowed to read this instance over ActivityPub. Requires Private. <strong>Changes who receives what.</strong></p>
+				</label></div>
+			<div><input type="text" name="federation_allowlist" id="federation_allowlist" class="inline" value="{{.Config.FederationAllowlist}}" style="width: 20em;"/></div>
+		</div>
+		<div class="features row">
+			<div><label for="instance_announce">Instance Announce
+					<p>Announce every public post under one instance-wide actor. <strong>Publishes a feed of all public writing.</strong></p>
+				</label></div>
+			<div><input type="checkbox" name="instance_announce" id="instance_announce" {{if .Config.InstanceAnnounce}}checked="checked"{{end}} /></div>
 		</div>
 		<div class="features row">
 			<input type="submit" value="Save Settings" />

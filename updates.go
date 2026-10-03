@@ -154,7 +154,7 @@ func (app *App) InitUpdates() {
 		app.cfg.App.UpdateChecks = false
 		return
 	}
-	if app.cfg.App.UpdateChecks {
+	if app.Config().App.UpdateChecks {
 		app.updates = newUpdatesCache(defaultUpdatesCacheTime)
 	}
 }
