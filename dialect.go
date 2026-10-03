@@ -13,6 +13,7 @@ package writefreely
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,7 +35,9 @@ import (
 //
 //   - A method returns a SQL fragment (Now, Clip, …) or runs a small,
 //     self-contained statement through the sqlQueryer it is given
-//     (Version, InsertReturningID, TableExists). It never holds a connection.
+//     (Version, InsertReturningID, TableExists). It never holds a connection,
+//     with one exception: TryJobLock, whose lock lives on a connection and
+//     which therefore pins one out of the pool until it is released.
 //   - Every implementation must implement every method. If an engine has no
 //     equivalent, return the closest no-op and say so in a comment, or panic
 //     with a message naming the method; never return MySQL SQL by default.
@@ -109,6 +112,19 @@ type dialect interface {
 	// else panics. (MySQL's IGNORE also downgrades some other errors, such
 	// as truncation, to warnings; that is the existing MySQL behaviour.)
 	InsertIgnore(insert string) string
+
+	// TryJobLock takes the cross-process lock called name without waiting,
+	// so that a periodic job runs in at most one app process at a time
+	// against this database. ok is false, with a nil error, when another
+	// process holds it. When ok is true the caller must call unlock exactly
+	// once, when the job is done.
+	//
+	// The lock lives on a connection taken from db and kept out of the pool
+	// until unlock, so the job itself must not need every connection the
+	// pool allows. If the process dies, the server releases the lock with
+	// the connection. A job that cannot take the lock skips its run rather
+	// than waiting for the other process to finish.
+	TryJobLock(ctx context.Context, db *sql.DB, name string) (unlock func(), ok bool, err error)
 }
 
 // sqlQueryer is satisfied by *sql.DB, *sql.Tx and *sql.Conn, so dialect
@@ -213,6 +229,47 @@ func (mysqlDialect) BinaryEquals(col string, b []byte) (string, []interface{}) {
 	return col + " = ?", []interface{}{b}
 }
 
+// TryJobLock on MySQL is GET_LOCK with a zero timeout on a dedicated
+// connection, released with RELEASE_LOCK on that same connection. A
+// GET_LOCK name is global to the server, not to one database, so the name
+// is qualified with DATABASE() and hashed: two installs sharing a server
+// must not block each other, and SHA1's 40 characters fit the 64-character
+// limit whatever the database is called.
+func (mysqlDialect) TryJobLock(ctx context.Context, db *sql.DB, name string) (func(), bool, error) {
+	const lockName = "SHA1(CONCAT(DATABASE(), ':', ?))"
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK("+lockName+", 0)", jobLockName(name)).Scan(&got); err != nil {
+		conn.Close()
+		return nil, false, err
+	}
+	if !got.Valid {
+		conn.Close()
+		return nil, false, fmt.Errorf("GET_LOCK for job lock %q returned NULL", name)
+	}
+	if got.Int64 != 1 {
+		conn.Close()
+		return nil, false, nil
+	}
+	return func() {
+		var released sql.NullInt64
+		err := conn.QueryRowContext(context.Background(), "SELECT RELEASE_LOCK("+lockName+")", jobLockName(name)).Scan(&released)
+		if err != nil || released.Int64 != 1 {
+			// The lock may still be held by this connection. Returning it
+			// to the pool would leave the job locked for as long as the
+			// pool keeps it, so close it instead: the server then
+			// releases the lock.
+			log.Error("[jobs] Unable to release job lock %q (released=%v): %v; discarding its connection", name, released, err)
+			discardConn(conn)
+			return
+		}
+		conn.Close()
+	}, true, nil
+}
+
 // --------------------------------------------------------------- SQLite --
 
 type sqliteDialect struct{}
@@ -281,6 +338,13 @@ func (sqliteDialect) BinaryEquals(col string, b []byte) (string, []interface{}) 
 
 func (sqliteDialect) InsertIgnore(insert string) string {
 	return "INSERT OR IGNORE INTO " + insertIntoRest("sqliteDialect", insert)
+}
+
+// TryJobLock on SQLite always succeeds and holds nothing. A SQLite database
+// is a file on one host, used by one app process, so there is no second
+// process to exclude.
+func (sqliteDialect) TryJobLock(ctx context.Context, db *sql.DB, name string) (func(), bool, error) {
+	return func() {}, true, nil
 }
 
 // ------------------------------------------------------------- Postgres --
@@ -376,6 +440,45 @@ func (postgresDialect) InsertIgnore(insert string) string {
 	return "INSERT INTO " + insertIntoRest("postgresDialect", insert) + " ON CONFLICT DO NOTHING"
 }
 
+// TryJobLock on Postgres is a transaction-level advisory lock,
+// pg_try_advisory_xact_lock, taken in a transaction that stays open until
+// unlock rolls it back. Advisory locks are scoped to the current database,
+// so two installs sharing a server do not block each other.
+//
+// The transaction-level lock is used rather than the session-level
+// pg_try_advisory_lock because its lifetime is the transaction's, and
+// database/sql always ends a transaction before the connection can go back
+// to the pool. A session-level lock outlives anything database/sql tracks:
+// a failed pg_advisory_unlock would return a connection still holding it to
+// the pool, and the job would stay locked for as long as the pool kept that
+// connection. It also keeps working behind a transaction-pooling proxy such
+// as PgBouncer, where a session-level lock can land on a different backend
+// from its unlock. The cost is an idle transaction for the length of a run;
+// it writes nothing, and the job's own queries go through the pool, not
+// through it. If the server ends it early (idle_in_transaction_session_timeout),
+// the lock is released before the run finishes, which only weakens this
+// guard back to having none.
+func (postgresDialect) TryJobLock(ctx context.Context, db *sql.DB, name string) (func(), bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	var got bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock(hashtext(?))", jobLockName(name)).Scan(&got); err != nil {
+		tx.Rollback()
+		return nil, false, err
+	}
+	if !got {
+		tx.Rollback()
+		return nil, false, nil
+	}
+	return func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			log.Error("[jobs] Unable to end the transaction holding job lock %q: %v", name, err)
+		}
+	}, true, nil
+}
+
 // isPostgresErrCode reports whether err is (or wraps) a Postgres error with
 // the given SQLSTATE code.
 func isPostgresErrCode(err error, code string) bool {
@@ -399,6 +502,21 @@ func execLastInsertID(ctx context.Context, q sqlQueryer, query string, args ...i
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// jobLockName qualifies a TryJobLock name, so that it cannot collide with a
+// lock some other software takes on the same database or server.
+func jobLockName(name string) string {
+	return "writefreely:jobs:" + name
+}
+
+// discardConn closes conn without returning its underlying connection to
+// the pool: reporting driver.ErrBadConn from Raw makes database/sql close
+// it. Use it for a connection left in a state the next user must not
+// inherit, such as one that may still hold a lock.
+func discardConn(conn *sql.Conn) {
+	_ = conn.Raw(func(interface{}) error { return driver.ErrBadConn })
+	conn.Close()
 }
 
 // insertIntoRest returns what follows "INSERT INTO " in insert, panicking
