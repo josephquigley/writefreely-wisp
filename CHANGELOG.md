@@ -18,8 +18,6 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
 - OAuth login states are strictly single-use, and replayed or unknown states are refused instead of accepted.
-- OAuth login states are strictly single-use, and replayed or unknown states are refused instead of accepted.
-- OAuth login states are strictly single-use, and replayed or unknown states are refused instead of accepted.
 
 ### Fixed
 
