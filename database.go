@@ -209,7 +209,7 @@ func (db *datastore) dateAdd(l int, unit string) string {
 	case driverMySQL:
 		return fmt.Sprintf("DATE_ADD(NOW(), INTERVAL %d %s)", l, unit)
 	case driverPostgres:
-		return fmt.Sprintf("NOW() + INTERVAL '%d %s')", l, unit)
+		return fmt.Sprintf("(NOW() + INTERVAL '%d %s')", l, unit)
 	}
 
 	panic(INVALID_DRIVER_MSG)
@@ -222,7 +222,7 @@ func (db *datastore) dateSub(l int, unit string) string {
 	case driverMySQL:
 		return fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d %s)", l, unit)
 	case driverPostgres:
-		return fmt.Sprintf("NOW() - INTERVAL '%d %s')", l, unit)
+		return fmt.Sprintf("(NOW() - INTERVAL '%d %s')", l, unit)
 	}
 
 	panic(INVALID_DRIVER_MSG)
