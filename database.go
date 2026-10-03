@@ -673,6 +673,14 @@ func (db *datastore) CreateOwnedPost(post *SubmittedPost, accessToken, collAlias
 	return rp, nil
 }
 
+// maxSlugRetries bounds how many times CreatePost generates a new random slug
+// suffix after a duplicate (collection_id, slug) before giving up.
+const maxSlugRetries = 8
+
+// genSafeUniqueSlug makes a slug unique by adding a random suffix. It is a
+// variable so tests can force collisions.
+var genSafeUniqueSlug = id.GenSafeUniqueSlug
+
 func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Post, error) {
 	idLen := postIDLen
 	friendlyID := id.GenerateFriendlyRandomString(idLen)
@@ -743,16 +751,22 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 	defer stmt.Close()
 	_, err = stmt.Exec(friendlyID, slug, post.Title, post.Content, appearance, post.Language, post.IsRTL, 0, ownerID, ownerCollID, created, 0)
 	if err != nil {
-		if db.isDuplicateKeyErr(err) {
-			// Duplicate entry error; try a new slug
-			// TODO: make this a little more robust
-			slug = sql.NullString{id.GenSafeUniqueSlug(slug.String), true}
-			_, err = stmt.Exec(friendlyID, slug, post.Title, post.Content, appearance, post.Language, post.IsRTL, 0, ownerID, ownerCollID, created, 0)
-			if err != nil {
-				return nil, handleFailedPostInsert(fmt.Errorf("Retried slug generation, still failed: %v", err))
-			}
-		} else {
+		if !db.isDuplicateKeyErr(err) {
 			return nil, handleFailedPostInsert(err)
+		}
+		// Duplicate entry error; try new slugs, each a fresh random suffix on
+		// the original slug. A suffix can collide too, so retry a bounded
+		// number of times rather than once.
+		baseSlug := slug.String
+		for attempt := 0; attempt < maxSlugRetries; attempt++ {
+			slug = sql.NullString{genSafeUniqueSlug(baseSlug), true}
+			_, err = stmt.Exec(friendlyID, slug, post.Title, post.Content, appearance, post.Language, post.IsRTL, 0, ownerID, ownerCollID, created, 0)
+			if err == nil || !db.isDuplicateKeyErr(err) {
+				break
+			}
+		}
+		if err != nil {
+			return nil, handleFailedPostInsert(fmt.Errorf("Retried slug generation, still failed: %v", err))
 		}
 	}
 
