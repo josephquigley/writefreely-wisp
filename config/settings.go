@@ -313,9 +313,11 @@ func ExportINI(rows map[string]string) (string, error) {
 // iniValue renders v so that reading it back gives v. go-ini does the
 // quoting for ordinary values (`;`, `#`, backticks). It leaves a value that
 // starts or ends in a quote character bare, and the reader then strips the
-// quotes, so those are wrapped in triple quotes, which it keeps whole.
+// quotes, so those are wrapped in triple quotes, which it keeps whole. A
+// value ending in a backslash is wrapped too: bare, the reader takes it as a
+// line continuation and swallows the next key.
 func iniValue(key, v string) (string, error) {
-	if v != "" && (strings.ContainsAny(v[:1], `"'`) || strings.ContainsAny(v[len(v)-1:], `"'`)) {
+	if v != "" && (strings.ContainsAny(v[:1], `"'`) || strings.ContainsAny(v[len(v)-1:], `"'\`)) {
 		return `"""` + v + `"""`, nil
 	}
 	f := ini.Empty()

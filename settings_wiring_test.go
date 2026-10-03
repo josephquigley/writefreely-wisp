@@ -119,6 +119,9 @@ func TestExportINIRoundTrip(t *testing.T) {
 		"app.webfonts":         `'x'`,
 		"app.simple_nav":       `a"`,
 		"app.chorus":           "line one\nline two ; x",
+		"app.forest":           `a\`,
+		"app.disable_drafts":   `\`,
+		"app.notes_only":       `x\\`,
 	}
 	vals := config.SettingDefaults()
 	for k, v := range tricky {
