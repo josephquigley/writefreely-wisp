@@ -14,15 +14,16 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ## [Unreleased]
 
+### Security
+
+- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+
 ### Fixed
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
 - A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
-
-### Security
-
-- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+- A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
 
 ## [0.20.0+wisp] - 2026-09-09
 
