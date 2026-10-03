@@ -17,7 +17,7 @@ changes share a bullet. Detailed notes are on the corresponding
 ### Added
 
 - PostgreSQL is supported alongside MySQL and SQLite (`type = postgres` under `[database]`), and `writefreely db copy --from sqlite:<path>` moves an existing SQLite database into Postgres, verified before committing.
-- `writefreely settings list|get|set|export` changes settings without editing a file, and the admin page now covers every setting kept in the database. The admin page refuses a save made from a page older than the current settings.
+- `writefreely settings list|get|set|export` changes settings without editing a file, and the admin page covers every database setting and refuses saves from a page older than the current settings.
 - Uploaded images can be kept in S3-compatible storage such as Garage through a new `[storage]` section, served at unchanged `/uploads/` URLs, and `writefreely images sync --to s3` copies existing images there.
 
 ### Changed
