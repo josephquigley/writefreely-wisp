@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and `db init` stops with an error at the first failed table instead of reporting success.
+- Access tokens match exactly instead of via `LIKE`, closing a wildcard bypass, `db init` stops at the first failed table, and pagination breaks same-second ties by id.
 
 ## [0.20.0+wisp] - 2026-09-09
 
