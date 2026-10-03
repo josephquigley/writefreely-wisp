@@ -10,39 +10,70 @@
 
 package migrations
 
-// supportAppSettings adds the tables that hold community-policy settings,
-// so that every node sharing a database reads the same ones. config.ini
-// keeps only bootstrap values; see config/settings.go for which is which.
+// exactMatchCollations makes MySQL compare tokens, codes and remote IRIs
+// exactly, as SQLite and Postgres already do.
 //
-// app_settings_version holds one row, id 1. Its version is bumped in the
-// same transaction as every write to app_settings, and each node compares
-// it with the version of its cached settings before every request. 0
-// means nothing has been imported or saved yet; the first node to move it
-// to 1 imports its config.ini.
+// schema.sql creates its tables as latin1, whose default collation
+// (latin1_swedish_ci) ignores case, and tables added by later migrations
+// inherit the database's default, which is case-insensitive too on every
+// stock MySQL and MariaDB. So on MySQL alone:
 //
-// typeInt is wide enough for the counter: it moves once per admin save.
-func supportAppSettings(db *datastore) error {
-	t, err := db.Begin()
-	if err != nil {
-		return err
+//   - a token, invite code, OAuth state or subscriber ID matched in any case;
+//   - an OAuth provider's user ID matched another user's that differed only
+//     in case;
+//   - two remote actors whose IRIs differed only in case collided on the
+//     remoteusers unique key, and two image IDs on the post_images key;
+//   - remoteusers could not store any character outside latin1, so an actor
+//     with one in its inbox or profile URL failed to save under strict mode
+//     and was mangled to '?' without it.
+//
+// Each column below keeps its type, nullability and default and gets a
+// binary collation. remoteusers and remoteuserkeys hold IRIs and are
+// converted to utf8mb4 as well. Converting latin1 to utf8mb4 is lossless,
+// and a binary collation is stricter than the case-insensitive one it
+// replaces, so no existing row can collide under a unique key afterwards.
+//
+// Columns that are meant to ignore case keep their collation:
+// emailsubscribers.email (see V19), and posts.slug and the remote handle,
+// which the application normalises itself.
+//
+// MySQL commits each ALTER on its own, so there is no transaction to roll
+// back. Every statement states the column's whole definition and can run
+// again, so a migration that stops part way through is finished by running
+// it again.
+//
+// The utf8mb4 key on remoteusers.actor_id is 1020 bytes, which needs the
+// DYNAMIC row format (the default since MySQL 5.7 and MariaDB 10.2).
+//
+// SQLite and Postgres already compare exactly, and have nothing to change.
+func exactMatchCollations(db *datastore) error {
+	switch db.driverName {
+	case driverSQLite, driverPostgres:
+		return nil
+	case driverMySQL:
+	default:
+		unsupportedDriver("exactMatchCollations", db.driverName)
 	}
+
 	for _, q := range []string{
-		`CREATE TABLE app_settings (
-    name  ` + db.typeVarChar(64) + ` NOT NULL,
-    value ` + db.typeText() + ` NOT NULL,
-    PRIMARY KEY (name)
-)` + db.engine(),
-		`CREATE TABLE app_settings_version (
-    id      ` + db.typeInt() + ` NOT NULL,
-    version ` + db.typeInt() + ` NOT NULL,
-    PRIMARY KEY (id)
-)` + db.engine(),
-		`INSERT INTO app_settings_version (id, version) VALUES (1, 0)`,
+		`ALTER TABLE userinvites MODIFY id CHAR(6) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL`,
+		`ALTER TABLE usersinvited MODIFY invite_id CHAR(6) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL`,
+		`ALTER TABLE posts MODIFY modify_token CHAR(32) CHARACTER SET latin1 COLLATE latin1_bin NULL DEFAULT NULL`,
+		`ALTER TABLE password_resets MODIFY token CHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,
+		`ALTER TABLE emailsubscribers
+			MODIFY id CHAR(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+			MODIFY token CHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,
+		`ALTER TABLE oauth_client_states
+			MODIFY state VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+			MODIFY invite_code CHAR(6) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL DEFAULT NULL`,
+		`ALTER TABLE oauth_users MODIFY remote_user_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,
+		`ALTER TABLE post_images MODIFY id VARCHAR(6) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,
+		`ALTER TABLE remoteusers CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`,
+		`ALTER TABLE remoteuserkeys CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`,
 	} {
-		if _, err = t.Exec(q); err != nil {
-			t.Rollback()
+		if _, err := db.Exec(q); err != nil {
 			return err
 		}
 	}
-	return t.Commit()
+	return nil
 }

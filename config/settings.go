@@ -159,17 +159,24 @@ func DBSettingNames() []string {
 	return names
 }
 
+// iniName is a field's name in config.ini: its ini tag with any options
+// after a comma (as in "type,omitempty") removed.
+func iniName(f reflect.StructField) string {
+	n, _, _ := strings.Cut(f.Tag.Get("ini"), ",")
+	return n
+}
+
 // field finds the struct field that config.ini's name maps to.
 func field(c *Config, name string) (reflect.Value, error) {
 	sec, key := splitSettingName(name)
 	v := reflect.ValueOf(c).Elem()
 	for i := 0; i < v.NumField(); i++ {
-		if v.Type().Field(i).Tag.Get("ini") != sec {
+		if iniName(v.Type().Field(i)) != sec {
 			continue
 		}
 		sv := v.Field(i)
 		for j := 0; j < sv.NumField(); j++ {
-			if sv.Type().Field(j).Tag.Get("ini") == key {
+			if iniName(sv.Type().Field(j)) == key {
 				return sv.Field(j), nil
 			}
 		}

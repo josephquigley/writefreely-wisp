@@ -43,8 +43,8 @@
 | `config/settings_test.go` | create | Registry unit tests, including the "every field classified" test |
 | `config/strip.go` | create | `KeysPresent`, `StripKeys`: atomic removal of keys from `config.ini` |
 | `config/strip_test.go` | create | Strip tests |
-| `migrations/v20.go` | create | `app_settings` and `app_settings_version` tables |
-| `migrations/migrations.go` | modify | Register V20 |
+| `migrations/v21.go` | create | `app_settings` and `app_settings_version` tables |
+| `migrations/migrations.go` | modify | Register V21 |
 | `settings_store.go` | create | Datastore methods: version, load, save, claim-import |
 | `settings_runtime.go` | create | Snapshot type, `loadSettings`, `refreshSettings`, middleware, `importSettings`, `saveSettings` |
 | `settings_cli.go` | create | Exported functions behind `writefreely settings` |
@@ -885,10 +885,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: Migration V20 and the settings datastore
+### Task 3: Migration V21 and the settings datastore
 
 **Files:**
-- Create: `migrations/v20.go`
+- Create: `migrations/v21.go`
 - Modify: `migrations/migrations.go` (the `migrations` slice; add one line after the V18→V19 entry)
 - Create: `settings_store.go`
 - Test: `settings_store_test.go`
@@ -1079,7 +1079,7 @@ Expected: FAIL to compile with `app.db.settingsTableExists undefined`.
 
 - [ ] **Step 3: Write the migration**
 
-`migrations/v20.go`:
+`migrations/v21.go`:
 
 ```go
 /*
@@ -1135,7 +1135,7 @@ func supportAppSettings(db *datastore) error {
 In `migrations/migrations.go`, append to the `migrations` slice after the V18→V19 line:
 
 ```go
-	New("store settings in the database", supportAppSettings),        // V19 -> V20
+	New("store settings in the database", supportAppSettings),        // V21 -> V21
 ```
 
 (run `gofmt -w migrations/migrations.go` to re-align the comments).
@@ -1169,7 +1169,7 @@ import (
 // to prove a mismatch aborts the import. It is the identity otherwise.
 var settingsReadBack = func(m map[string]string) map[string]string { return m }
 
-// settingsTableExists reports whether migration V20 has run. A server
+// settingsTableExists reports whether migration V21 has run. A server
 // started before `db migrate` runs on its config.ini alone.
 func (db *datastore) settingsTableExists(ctx context.Context) (bool, error) {
 	return db.dialectOrDefault().TableExists(ctx, db.DB, "app_settings_version")
@@ -1331,7 +1331,7 @@ Expected: PASS on both. On Postgres the concurrent-claim test runs and reports o
 - [ ] **Step 7: Commit**
 
 ```bash
-git add migrations/v20.go migrations/migrations.go settings_store.go settings_store_test.go
+git add migrations/v21.go migrations/migrations.go settings_store.go settings_store_test.go
 git commit -m "Store settings and their version in the database
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"

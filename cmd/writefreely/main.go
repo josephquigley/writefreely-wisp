@@ -114,6 +114,7 @@ func main() {
 		&cmdConfig,
 		&cmdSettings,
 		&cmdKeys,
+		&cmdImages,
 		&cmdServe,
 	}
 

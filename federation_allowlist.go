@@ -319,7 +319,7 @@ func (app *App) allowlistedKey(keyID string) (*rsa.PublicKey, error) {
 	u.Fragment = ""
 	actorIRI := u.String()
 
-	resp, err := resolveIRI(app.Config().App.Host, actorIRI)
+	resp, err := fetchActorIRI(app.Config().App.Host, actorIRI)
 	if err != nil {
 		app.fedKeys.set(keyID, nil, allowlistKeyErrorTTL)
 		return nil, err

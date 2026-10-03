@@ -22,7 +22,7 @@ import (
 // to prove a mismatch aborts the import. It is the identity otherwise.
 var settingsReadBack = func(m map[string]string) map[string]string { return m }
 
-// settingsTableExists reports whether migration V20 has run. A server
+// settingsTableExists reports whether migration V21 has run. A server
 // started before `db migrate` runs on its config.ini alone.
 func (db *datastore) settingsTableExists(ctx context.Context) (bool, error) {
 	return db.dialectOrDefault().TableExists(ctx, db.DB, "app_settings_version")

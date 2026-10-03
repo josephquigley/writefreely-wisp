@@ -240,6 +240,44 @@ uploads go under the static asset tree, which is fine until an upgrade
 replaces that tree. Which image types are accepted is fixed by the
 decoders compiled in, and is not configurable.
 
+### Keeping images in object storage
+
+Images can live in an S3-compatible store such as Garage or MinIO instead of
+`dir`. Every node pointed at the same bucket then serves the same images,
+which a directory on one machine cannot do:
+
+```ini
+[storage]
+type                 = s3
+s3_endpoint          = http://garage:3900
+s3_region            = garage
+s3_bucket            = blog
+s3_prefix            = uploads
+s3_access_key_id     = ${WF_S3_ACCESS_KEY_ID}
+s3_secret_access_key = ${WF_S3_SECRET_ACCESS_KEY}
+```
+
+Without the section, or with `type = local`, nothing changes. The endpoint's
+scheme decides whether TLS is used. Addressing is path-style, which Garage
+needs; set `s3_virtual_host = true` for a store that wants bucket subdomains.
+The bucket can stay private: images are still served at `/uploads/...` and
+streamed through the app, never redirected to the bucket, so URLs that other
+servers have cached keep working. The server checks at startup that it can
+write to and delete from the bucket, and refuses to start if not.
+
+Existing images are copied in with:
+
+```sh
+writefreely images sync --to s3
+```
+
+It reads `post_images`, copies each file from `dir`, and checks every copy
+against the SHA-256 recorded at upload. It changes nothing in `dir`, and is
+safe to run again: images already in the bucket are left alone, and a damaged
+one is replaced. It reads the bucket from the `[storage]` section, so the order
+is: stop the server, add the section, run the sync, start the server. Nothing
+is uploaded in between, so nothing is missed.
+
 ## Going back to upstream
 
 Installing upstream over this edition mostly works. The `post_images`

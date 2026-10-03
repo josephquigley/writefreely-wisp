@@ -75,7 +75,7 @@ import (
 // dbCopySchemaVersion is the only migration version this command knows how
 // to copy. Source, target and binary must all be at it. A new migration
 // means reviewing this command (its column rules below) and raising it.
-const dbCopySchemaVersion = 20
+const dbCopySchemaVersion = 21
 
 // dbCopyBatchRows is the most rows sent in one INSERT.
 const dbCopyBatchRows = 500
@@ -290,7 +290,7 @@ func copySQLiteToPostgres(ctx context.Context, src, dst *sql.DB, opts DBCopyOpti
 	if err := dbCopyCheckEmpty(ctx, tx, tables); err != nil {
 		return err
 	}
-	// Clear V20's seed row so the source's counter row can take its place.
+	// Clear V21's seed row so the source's counter row can take its place.
 	if _, err := tx.ExecContext(ctx, "DELETE FROM app_settings_version WHERE id = 1 AND version = 0"); err != nil {
 		return fmt.Errorf("clear the settings version seed: %v", dbCopyErr(err))
 	}
@@ -443,7 +443,7 @@ func dbCopyCheckEmpty(ctx context.Context, q dbCopyQuerier, tables []*dbCopyTabl
 	var full []string
 	for _, t := range tables {
 		var exists bool
-		// Migration V20 seeds app_settings_version with (1, 0), so a freshly
+		// Migration V21 seeds app_settings_version with (1, 0), so a freshly
 		// initialised database is not empty there. The seed does not count.
 		where := ""
 		if t.name == "app_settings_version" {

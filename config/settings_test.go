@@ -22,10 +22,10 @@ import (
 func TestEveryFieldClassified(t *testing.T) {
 	ct := reflect.TypeOf(Config{})
 	for i := 0; i < ct.NumField(); i++ {
-		sec := ct.Field(i).Tag.Get("ini")
+		sec := iniName(ct.Field(i))
 		st := ct.Field(i).Type
 		for j := 0; j < st.NumField(); j++ {
-			key := st.Field(j).Tag.Get("ini")
+			key := iniName(st.Field(j))
 			if key == "" || key == "-" {
 				continue
 			}
@@ -163,5 +163,19 @@ func TestSuggestSettings(t *testing.T) {
 	got := SuggestSettings("app.privat")
 	if len(got) == 0 || got[0] != "app.private" {
 		t.Errorf("suggestions %v", got)
+	}
+}
+
+func TestIniNameStripsOptions(t *testing.T) {
+	type s struct {
+		A string `ini:"type,omitempty"`
+		B string `ini:"plain"`
+	}
+	ty := reflect.TypeOf(s{})
+	if got := iniName(ty.Field(0)); got != "type" {
+		t.Errorf("omitempty: %q", got)
+	}
+	if got := iniName(ty.Field(1)); got != "plain" {
+		t.Errorf("plain: %q", got)
 	}
 }

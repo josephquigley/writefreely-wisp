@@ -112,6 +112,11 @@ type App struct {
 	// settingsMu serialises reloads, so a burst of requests after a save
 	// reloads once.
 	settingsMu sync.Mutex
+
+	// images is where uploaded images are kept; see imageStore.
+	images     ImageStore
+	imagesErr  error
+	imagesOnce sync.Once
 }
 
 // DB returns the App's datastore
@@ -503,6 +508,14 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 	}
 
 	initActivityPub(apper.App())
+
+	// Chosen before the routes are, since /uploads/ is served from it.
+	if err := apper.App().initImageStore(); err != nil {
+		return nil, fmt.Errorf("image storage: %s", err)
+	}
+	if st := apper.App().Config().Storage; st.UsesS3() {
+		log.Info("Uploaded images are kept in S3 bucket %s at %s", st.S3Bucket, st.S3Endpoint)
+	}
 
 	if apper.App().Config().Email.Enabled() {
 		log.Info("Starting publish jobs queue...")

@@ -114,7 +114,8 @@ var migrations = []Migration{
 	New("fix post signature character set", fixPostSignatureCharset), // V16 -> V17 (v0.17.0)
 	New("support post images", supportPostImages),                    // V17 -> V18
 	New("case-insensitive subscriber email", subscriberEmailCase),    // V18 -> V19
-	New("store settings in the database", supportAppSettings),        // V19 -> V20
+	New("exact-match collations on MySQL", exactMatchCollations),     // V19 -> V20
+	New("store settings in the database", supportAppSettings),        // V20 -> V21
 }
 
 // CurrentVer returns the current migration version the application is on

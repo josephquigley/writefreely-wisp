@@ -18,6 +18,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - PostgreSQL is supported alongside MySQL and SQLite (`type = postgres` under `[database]`), and `writefreely db copy --from sqlite:<path>` moves an existing SQLite database into Postgres, verified before committing.
 - `writefreely settings list|get|set|export` changes settings without editing a file, and the admin page now covers every setting kept in the database.
+- Uploaded images can be kept in S3-compatible storage such as Garage through a new `[storage]` section, served at unchanged `/uploads/` URLs, and `writefreely images sync --to s3` copies existing images there.
 
 ### Changed
 
@@ -38,6 +39,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - The Reader's tag filter matches tags literally instead of treating them as regular expressions.
 - Tag pages escape regex characters in the tag, work on MySQL 8, and return an error when a tag query fails, on collection tag pages too.
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
+- On MySQL and MariaDB, tokens, invite codes and remote actor addresses now match case-sensitively, and remote actors with non-Latin characters in their URLs save; the upgrade migration may take a while on large instances.
 
 ## [0.20.0+wisp] - 2026-09-09
 
