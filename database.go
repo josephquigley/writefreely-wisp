@@ -206,6 +206,10 @@ func (db *datastore) upsert(indexedCols ...string) string {
 	return db.dialectOrDefault().Upsert(indexedCols...)
 }
 
+func (db *datastore) insertIgnore(insert string) string {
+	return db.dialectOrDefault().InsertIgnore(insert)
+}
+
 func (db *datastore) dateAdd(l int, unit string) string {
 	return db.dialectOrDefault().DateAdd(l, unit)
 }
@@ -277,7 +281,14 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 		return err
 	}
 
-	db.RemoveCollectionRedirect(t, u.Username)
+	// A redirect left behind under this alias would never be followed (a
+	// redirect is consulted only when no collection has the alias), but a
+	// failure here must not be ignored: on Postgres it has already aborted
+	// the transaction, and the Commit below would roll back the signup.
+	if err = db.RemoveCollectionRedirect(t, u.Username); err != nil {
+		t.Rollback()
+		return err
+	}
 
 	err = t.Commit()
 	if err != nil {
@@ -2420,16 +2431,18 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 			return ErrInternalGeneral
 		}
 
-		// Keep track of name changes for redirection
-		db.RemoveCollectionRedirect(t, newUsername)
-		_, err = t.Exec("UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
-		if err != nil {
-			log.Error("Unable to update collectionredirects: %v", err)
-		}
-		_, err = t.Exec("INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?)", u.Username, newUsername)
-		if err != nil {
-			log.Error("Unable to add new collectionredirect: %v", err)
-		}
+		// Keep track of name changes for redirection. These statements are
+		// best-effort: a missing or stale redirect only affects old links,
+		// and must never undo the rename itself. Each is fenced in a
+		// savepoint, because on Postgres a failed statement would otherwise
+		// abort the transaction and the Commit below would roll back the
+		// username and alias change while the user is told it succeeded.
+		// Errors are logged by execBestEffort.
+		execBestEffort(t, "redirect_remove", "DELETE FROM collectionredirects WHERE prev_alias = ?", newUsername)
+		execBestEffort(t, "redirect_repoint", "UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
+		// An existing redirect from the old name (left by an earlier owner
+		// of it) is replaced, so the old name now points here.
+		execBestEffort(t, "redirect_add", "INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?) "+db.upsert("prev_alias")+" new_alias = ?", u.Username, newUsername, newUsername)
 
 		err = t.Commit()
 		if err != nil {
