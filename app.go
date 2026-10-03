@@ -527,13 +527,16 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 	if apper.App().Config().Uploads.Enabled {
 		// Fail here rather than at the moment someone uploads: a missing
 		// volume or a directory the process cannot write to is already
-		// true at startup, and an operator is watching now.
+		// true at startup, and an operator is watching now. Enabling at
+		// runtime makes the same check in saveSettings.
 		if err := apper.App().ensureUploadsWritable(); err != nil {
 			return nil, fmt.Errorf("uploads are enabled but unusable: %s", err)
 		}
-		log.Info("Starting orphaned image sweep...")
-		go startOrphanImageSweep(apper.App())
 	}
+	// Always started: uploads can be enabled at runtime, and the sweep
+	// skips its turn while they are off.
+	log.Info("Starting orphaned image sweep...")
+	go startOrphanImageSweep(apper.App())
 
 	// Always built: it only fetches when read, and the setting can now be
 	// turned on at runtime on any node. Readers check LocalTimeline.

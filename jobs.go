@@ -1,6 +1,7 @@
 package writefreely
 
 import (
+	"context"
 	"time"
 
 	"github.com/writeas/web-core/log"
@@ -29,6 +30,10 @@ func startOrphanImageSweep(app *App) {
 	t := time.NewTicker(1 * time.Hour)
 	for {
 		<-t.C
+		app.refreshSettings(context.Background())
+		if !app.Config().Uploads.Enabled {
+			continue
+		}
 		log.Info("[jobs] Sweeping orphaned image uploads...")
 		sweepOrphanedImages(app)
 	}

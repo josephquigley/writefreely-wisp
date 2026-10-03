@@ -25,6 +25,17 @@ import (
 
 // InitStaticRoutes adds routes for serving static files.
 // TODO: this should just be a func, not method
+// uploadsGate serves next only while uploads are enabled.
+func uploadsGate(app *App, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !app.Config().Uploads.Enabled {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (app *App) InitStaticRoutes(r *mux.Router) {
 	// Handle static files
 	fs := http.FileServer(http.Dir(filepath.Join(app.Config().Server.StaticParentDir, staticDir)))
@@ -36,9 +47,10 @@ func (app *App) InitStaticRoutes(r *mux.Router) {
 	// ever treating one as anything but an image. They are served from
 	// their own root rather than the static one, because the two are only
 	// the same directory when no upload directory is configured.
-	if app.Config().Uploads.Enabled {
-		r.PathPrefix("/" + uploadsDir + "/").Handler(app.uploadsHandler())
-	}
+	//
+	// Registered whatever the setting says, because it can be turned on at
+	// runtime from any node; uploadsGate answers 404 while it is off.
+	r.PathPrefix("/" + uploadsDir + "/").Handler(uploadsGate(app, app.uploadsHandler()))
 
 	r.PathPrefix("/").Handler(fs)
 }
