@@ -1597,7 +1597,7 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 			// duplicate-key error aborts the transaction, and the follow
 			// below would then never be stored. public_key is binary
 			// (bytea on Postgres), so the PEM goes in as bytes.
-			_, err = t.Exec(app.db.insertIgnore("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)"), fullActor.PublicKey.ID, followerID, []byte(fullActor.PublicKey.PublicKeyPEM))
+			_, err = t.Exec(app.db.insertIgnore("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)"), remoteUserKeyID(fullActor), followerID, []byte(fullActor.PublicKey.PublicKeyPEM))
 			if err != nil {
 				t.Rollback()
 				log.Error("Couldn't add follower keys in DB: %v\n", err)
