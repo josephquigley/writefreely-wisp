@@ -177,7 +177,7 @@ func (db *datastore) DetachImageFromPost(imgID string) error {
 }
 
 // DeletePostImage removes the given image's row. The file itself is removed
-// separately, and only once nothing references it.
+// before the row, and only once nothing references it; see deleteImage.
 func (db *datastore) DeletePostImage(imgID string) error {
 	_, err := db.Exec("DELETE FROM post_images WHERE id = ?", imgID)
 	if err != nil {

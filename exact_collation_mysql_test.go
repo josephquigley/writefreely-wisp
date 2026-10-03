@@ -52,6 +52,17 @@ func mysqlColumnCollation(t *testing.T, app *App, table, column string) string {
 	return c
 }
 
+// wideKeyTables are the tables V20 gives a 1020-byte utf8mb4 key
+// (oauth_client_states.state, remoteuserkeys.id, remoteusers.actor_id).
+var wideKeyTables = []string{"oauth_client_states", "remoteusers", "remoteuserkeys"}
+
+func mysqlRowFormat(t *testing.T, app *App, table string) string {
+	t.Helper()
+	var f string
+	require.NoError(t, app.db.QueryRow("SELECT ROW_FORMAT FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", table).Scan(&f), table)
+	return f
+}
+
 func TestMySQLExactMatchCollations(t *testing.T) {
 	app := newMySQLTestApp(t, nil)
 	for _, c := range exactMatchColumns {
@@ -76,11 +87,17 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 		`ALTER TABLE posts MODIFY modify_token CHAR(32) CHARACTER SET latin1 COLLATE latin1_swedish_ci NULL DEFAULT NULL`,
 		`ALTER TABLE password_resets MODIFY token CHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL`,
 		`ALTER TABLE emailsubscribers MODIFY id CHAR(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL, MODIFY token CHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL`,
-		`ALTER TABLE oauth_client_states MODIFY state VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL, MODIFY invite_code CHAR(6) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL`,
+		`ALTER TABLE oauth_client_states MODIFY state VARCHAR(255) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL, MODIFY invite_code CHAR(6) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL`,
 		`ALTER TABLE oauth_users MODIFY remote_user_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL`,
 		`ALTER TABLE post_images MODIFY id VARCHAR(6) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL`,
 		`ALTER TABLE remoteusers CONVERT TO CHARACTER SET latin1 COLLATE latin1_swedish_ci`,
 		`ALTER TABLE remoteuserkeys CONVERT TO CHARACTER SET latin1 COLLATE latin1_swedish_ci`,
+		// What an older install looks like: latin1 keys of 255 bytes in
+		// tables whose row format caps an index prefix at 767 bytes. Widened
+		// to utf8mb4 they are 1020 bytes, which only DYNAMIC can hold.
+		`ALTER TABLE oauth_client_states ROW_FORMAT=COMPACT`,
+		`ALTER TABLE remoteusers ROW_FORMAT=COMPACT`,
+		`ALTER TABLE remoteuserkeys ROW_FORMAT=COMPACT`,
 		// V21 (settings tables) is undone too, so Migrate runs V20 and then
 		// V21 again, as it would on a V19 database.
 		`DROP TABLE app_settings`,
@@ -91,6 +108,9 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 		require.NoError(t, err, q)
 	}
 	require.Equal(t, "latin1_swedish_ci", mysqlColumnCollation(t, app, "remoteusers", "actor_id"))
+	for _, table := range wideKeyTables {
+		require.Equal(t, "Compact", mysqlRowFormat(t, app, table), table)
+	}
 
 	owner := caseInsertUser(t, app, "upgrader")
 	_, err := app.db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES ('BcDfGh', ?, 0, CURRENT_TIMESTAMP, NULL, FALSE)", owner)
@@ -108,6 +128,11 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 
 	for _, c := range exactMatchColumns {
 		assert.Equal(t, c.collation, mysqlColumnCollation(t, app, c.table, c.column), "%s.%s", c.table, c.column)
+	}
+
+	// The three tables that carry a 1020-byte key are DYNAMIC now.
+	for _, table := range wideKeyTables {
+		assert.Equal(t, "Dynamic", mysqlRowFormat(t, app, table), table)
 	}
 
 	// Rows survive, and now match only in their own case.
@@ -142,4 +167,10 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 		require.NoError(t, err, q)
 	}
 	require.NoError(t, migrations.Migrate(migrations.NewDatastore(app.db.DB, driverMySQL)))
+	for _, table := range wideKeyTables {
+		assert.Equal(t, "Dynamic", mysqlRowFormat(t, app, table), table)
+	}
+	for _, c := range exactMatchColumns {
+		assert.Equal(t, c.collation, mysqlColumnCollation(t, app, c.table, c.column), "%s.%s", c.table, c.column)
+	}
 }

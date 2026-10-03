@@ -528,8 +528,9 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 		// Fail here rather than at the moment someone uploads: a missing
 		// volume or a directory the process cannot write to is already
 		// true at startup, and an operator is watching now. Enabling at
-		// runtime makes the same check in saveSettings.
-		if err := apper.App().ensureUploadsWritable(); err != nil {
+		// runtime makes the same check in saveSettings. An object store that
+		// does not answer is the exception: see checkUploadsAtStartup.
+		if err := apper.App().checkUploadsAtStartup(); err != nil {
 			return nil, fmt.Errorf("uploads are enabled but unusable: %s", err)
 		}
 	}

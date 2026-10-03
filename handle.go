@@ -1035,9 +1035,12 @@ func sendRedirect(w http.ResponseWriter, code int, location string) int {
 	return code
 }
 
+// imageCacheControl is how long a browser or CDN may keep an uploaded image.
+const imageCacheControl = "public, max-age=604800, immutable"
+
 func cacheControl(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+		w.Header().Set("Cache-Control", imageCacheControl)
 		next.ServeHTTP(w, r)
 	})
 }
