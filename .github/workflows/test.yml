@@ -20,11 +20,17 @@ name: Tests
 # requests no secrets and only read access to contents. Do not add secrets to
 # this workflow, and reconsider the trigger before accepting pull requests from
 # outside forks.
+#
+# postgres is the integration branch for the Postgres dialect work. Ticket
+# branches merge into it by pull request, and those pull requests need the
+# same checks as ones into develop. Because pull_request_target reads this
+# file from the base branch, the filter has to be on postgres itself before
+# pull requests into postgres run anything at all.
 on:
   pull_request_target:
-    branches: [develop, main]
+    branches: [develop, main, postgres]
   push:
-    branches: [develop, main]
+    branches: [develop, main, postgres]
 
 permissions:
   contents: read
@@ -60,6 +66,58 @@ jobs:
       # database-sqlite.go sits behind a build tag, so it is only compiled here.
       - run: go build -tags sqlite ./...
       - run: go test ./...
+
+  # The suite against a real Postgres. The variables are what the test
+  # harness reads to pick its database; docs/postgres-testing.md describes
+  # them, and `make test-postgres` sets the same ones locally.
+  #
+  # continue-on-error until the Postgres dialect is complete: until then this
+  # job is expected to fail, and it must not block the other checks. The
+  # release verification ticket removes it to make the job required.
+  test-postgres:
+    name: test-postgres
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: writefreely
+          POSTGRES_PASSWORD: writefreely
+          POSTGRES_DB: writefreely
+        ports:
+          - 5432:5432
+        # -h 127.0.0.1 so the check waits for the real server rather than
+        # the image's socket-only first-start one.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U writefreely -d writefreely"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WF_TEST_DB_TYPE: postgres
+      # A throwaway service container on the runner, not a secret.
+      WF_TEST_PG_DSN: postgres://writefreely:writefreely@127.0.0.1:5432/writefreely?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        if: github.event_name == 'pull_request_target'
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -count=1 ./...
 
   lint:
     name: lint
