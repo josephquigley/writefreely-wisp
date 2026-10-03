@@ -311,7 +311,7 @@ func (p *Post) HasTag(tag string) bool {
 	// Regexp looks for tag and has a non-capturing group at the end looking
 	// for the end of the word.
 	// Assisted by: https://stackoverflow.com/a/35192941/1549194
-	hasTag, _ := regexp.MatchString("#"+tag+`(?:[[:punct:]]|\s|\z)`, p.Content)
+	hasTag, _ := regexp.MatchString("#"+regexp.QuoteMeta(tag)+`(?:[[:punct:]]|\s|\z)`, p.Content)
 	return hasTag
 }
 
