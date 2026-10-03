@@ -9,10 +9,13 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/writeas/web-core/auth"
 )
 
 // newTokenTestDB opens a throwaway SQLite database holding only the two
-// tables the access-token lookups read, with one user and one token.
+// tables the access-token lookups read, with one user (id 1, "victim") and,
+// if victimToken is not nil, one token for that user. The accesstokens
+// table matches sqlite.sql, so its token column is TEXT.
 func newTokenTestDB(t *testing.T, victimToken []byte) *datastore {
 	t.Helper()
 	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "tokens.db")+"?parseTime=true")
@@ -32,8 +35,10 @@ func newTokenTestDB(t *testing.T, victimToken []byte) *datastore {
 	if _, err := db.Exec("INSERT INTO users (id, username) VALUES (1, 'victim')"); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
-	if _, err := db.Exec("INSERT INTO accesstokens (token, user_id) VALUES (?, 1)", victimToken); err != nil {
-		t.Fatalf("insert token: %v", err)
+	if victimToken != nil {
+		if _, err := db.Exec("INSERT INTO accesstokens (token, user_id) VALUES (?, 1)", string(victimToken)); err != nil {
+			t.Fatalf("insert token: %v", err)
+		}
 	}
 	return &datastore{DB: db, driverName: driverSQLite}
 }
@@ -74,5 +79,41 @@ func TestAccessTokenLookupIsExact(t *testing.T) {
 	}
 	if err := db.DeleteToken(victim); err != nil {
 		t.Errorf("DeleteToken with the real token: %v", err)
+	}
+}
+
+// TestAccessTokenRoundTrip checks that a token issued by GetAccessToken is
+// found again by every lookup. GetAccessToken stores the token as a string,
+// which SQLite keeps as TEXT; a lookup that binds the token as []byte sends
+// a BLOB, and SQLite never considers TEXT equal to BLOB.
+func TestAccessTokenRoundTrip(t *testing.T) {
+	db := newTokenTestDB(t, nil)
+
+	tok, err := db.GetAccessToken(1)
+	if err != nil {
+		t.Fatalf("GetAccessToken: %v", err)
+	}
+	var storedType string
+	if err := db.QueryRow("SELECT typeof(token) FROM accesstokens").Scan(&storedType); err != nil {
+		t.Fatalf("typeof(token): %v", err)
+	}
+	if storedType != "text" {
+		t.Fatalf("GetAccessToken stored the token as %s, want text", storedType)
+	}
+
+	if id := db.GetUserID(tok); id != 1 {
+		t.Errorf("GetUserID: got user %d, want 1", id)
+	}
+	if name, err := db.GetUserNameFromToken(tok); err != nil || name != "victim" {
+		t.Errorf("GetUserNameFromToken: got %q, %v", name, err)
+	}
+	if id, name, err := db.GetUserDataFromToken(tok); err != nil || id != 1 || name != "victim" {
+		t.Errorf("GetUserDataFromToken: got %d, %q, %v", id, name, err)
+	}
+	if err := db.DeleteToken(auth.GetToken(tok)); err != nil {
+		t.Errorf("DeleteToken: %v", err)
+	}
+	if id := db.GetUserID(tok); id != -1 {
+		t.Errorf("GetUserID after DeleteToken: got user %d, want -1", id)
 	}
 }
