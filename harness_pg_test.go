@@ -231,3 +231,19 @@ func TestPostgresHarness(t *testing.T) {
 		t.Errorf("database %q still exists after its test finished", name)
 	}
 }
+
+// TestPostgresSchemaLoads is the probe for the Postgres schema: it skips,
+// naming WFPG-03, until adminInitDatabase supports Postgres, and from then
+// on proves a full `db init` works against a real server.
+func TestPostgresSchemaLoads(t *testing.T) {
+	ds := newPostgresTestDatastore(t)
+	for _, table := range []string{"users", "collections", "posts", "appmigrations"} {
+		ok, err := ds.dialect.TableExists(context.Background(), ds.DB, table)
+		if err != nil {
+			t.Fatalf("table %s: %v", table, err)
+		}
+		if !ok {
+			t.Errorf("table %s missing after schema load", table)
+		}
+	}
+}
