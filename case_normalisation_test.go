@@ -448,7 +448,7 @@ func TestExactMatchPostImageID(t *testing.T) {
 		owner := caseInsertUser(t, app, "photographer")
 		insert := "INSERT INTO post_images (id, owner_id, sha256, path, filename, mime, size, created) VALUES (?, ?, ?, ?, 'a.png', 'image/png', 1, CURRENT_TIMESTAMP)"
 		// Two IDs differing only in case are two images. On MySQL these
-		// collided on the primary key; SQLite and Postgres keep both.
+		// collided on the primary key until V20 made the key binary.
 		_, err := app.db.Exec(insert, "AbC123", owner, strings.Repeat("a", 64), "u/a.png")
 		require.NoError(t, err)
 		_, err = app.db.Exec(insert, "abc123", owner, strings.Repeat("b", 64), "u/b.png")
