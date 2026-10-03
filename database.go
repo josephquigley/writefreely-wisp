@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1433,6 +1434,33 @@ func (db *datastore) GetPosts(cfg *config.Config, c *Collection, page int, inclu
 	return &posts, nil
 }
 
+// tagRegexpTerm returns tag lowercased, with every regular expression
+// metacharacter in it escaped, so that the tag queries match it literally.
+// The tag comes from the request URL, so without this a reader chooses the
+// pattern: "a.c" would also match "#abc", and "(" makes the query fail.
+//
+// regexp.QuoteMeta puts a backslash only before ASCII punctuation, never
+// before a letter or digit, so it cannot form an escape such as \b or \d. A
+// backslash before punctuation means that character literally in every
+// dialect these queries reach: Go's RE2 (SQLite's regexp() is registered
+// from the regexp package), ICU (MySQL 8.0.4+), Henry Spencer's POSIX ERE
+// (MySQL before 8.0.4) and PCRE (MariaDB). The pattern is bound as a query
+// parameter, so no SQL string escaping is layered on top of it.
+func tagRegexpTerm(tag string) string {
+	return regexp.QuoteMeta(strings.ToLower(tag))
+}
+
+// tagWordBoundary returns the regular expression that ends a tag in the
+// MySQL tag queries. MySQL before 8.0.4 uses Henry Spencer's implementation,
+// which needs "[[:>:]]"; MySQL 8.0.4+ uses ICU, which rejects that with
+// ERROR 3685 and needs "\b" (as does MariaDB's PCRE).
+func (db *datastore) tagWordBoundary() string {
+	if db.useSpencerRegex {
+		return "[[:>:]]"
+	}
+	return "\\b"
+}
+
 func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFuture bool) ([]string, error) {
 	collID := c.ID
 
@@ -1449,9 +1477,9 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	var rows *sql.Rows
 	var err error
 	if db.driverName == driverSQLite {
-		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	} else {
-		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+strings.ToLower(tag)+"[[:>:]]")
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
 	}
 	if err != nil {
 		log.Error("Failed selecting tagged posts: %v", err)
@@ -1465,7 +1493,7 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 		err = rows.Scan(&id)
 		if err != nil {
 			log.Error("Failed scanning row: %v", err)
-			break
+			return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve tagged collection posts."}
 		}
 
 		ids = append(ids, id)
@@ -1473,6 +1501,7 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	err = rows.Err()
 	if err != nil {
 		log.Error("Error after Next() on rows: %v", err)
+		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve tagged collection posts."}
 	}
 
 	return ids, nil
@@ -1510,17 +1539,10 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	var rows *sql.Rows
 	var err error
 	if db.driverName == driverSQLite {
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	} else {
-		var boundaryRegex string
-		if db.useSpencerRegex {
-			// MySQL earlier than 8.0.4, Henry Spencer's regex implementation
-			boundaryRegex = "[[:>:]]"
-		} else {
-			// MySQL 8.0.4+, International Components for Unicode (ICU) syntax
-			boundaryRegex = "\\b"
-		}
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+strings.ToLower(tag)+boundaryRegex)
+		boundaryRegex := db.tagWordBoundary()
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+boundaryRegex)
 	}
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
@@ -1535,7 +1557,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 		err = rows.Scan(&p.ID, &p.Slug, &p.Font, &p.Language, &p.RTL, &p.Privacy, &p.OwnerID, &p.CollectionID, &p.PinnedPosition, &p.Created, &p.Updated, &p.ViewCount, &p.Title, &p.Content)
 		if err != nil {
 			log.Error("Failed scanning row: %v", err)
-			break
+			return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
 		}
 		p.extractData()
 		p.augmentContent(c)
@@ -1546,6 +1568,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	err = rows.Err()
 	if err != nil {
 		log.Error("Error after Next() on rows: %v", err)
+		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
 	}
 
 	return &posts, nil
@@ -1954,7 +1977,18 @@ func (db *datastore) UpdatePostPinState(pinned bool, postID string, collID, owne
 		return err
 	}
 	if rowsAffected == 0 {
-		return ErrForbiddenCollection
+		// MySQL counts changed rows, not matched ones, so re-pinning a post
+		// at its current position (or unpinning an unpinned one) affects
+		// nothing. Only a post the owner does not have is forbidden.
+		var n int
+		err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE id = ? AND collection_id = ? AND owner_id = ?", postID, collID, ownerID).Scan(&n)
+		if err != nil {
+			log.Error("Unable to check pinned post ownership: %v", err)
+			return err
+		}
+		if n == 0 {
+			return ErrForbiddenCollection
+		}
 	}
 	return nil
 }
@@ -2844,10 +2878,10 @@ func (db *datastore) GetUserInvites(userID int64) (*[]Invite, error) {
 func (db *datastore) GetUserInvite(id string) (*Invite, error) {
 	var i Invite
 	err := db.QueryRow("SELECT id, max_uses, created, expires, inactive FROM userinvites WHERE id = ?", id).Scan(&i.ID, &i.MaxUses, &i.Created, &i.Expires, &i.Inactive)
-	switch {
-	case err == sql.ErrNoRows, db.isIgnorableError(err):
-		return nil, impart.HTTPError{http.StatusNotFound, "Invite doesn't exist."}
-	case err != nil:
+	if err != nil {
+		if err == sql.ErrNoRows || db.isIgnorableError(err) {
+			return nil, impart.HTTPError{http.StatusNotFound, "Invite doesn't exist."}
+		}
 		log.Error("Failed selecting invite: %v", err)
 		return nil, err
 	}
@@ -3110,7 +3144,10 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 			return err
 		}
 
-		res, err := tx.ExecContext(ctx, "UPDATE oauth_client_states SET used = TRUE WHERE state = ?", state)
+		// The used = FALSE condition belongs in the UPDATE, not only in the
+		// SELECT above: two callers can both pass the SELECT, and only the
+		// UPDATE's row count decides which of them consumed the state.
+		res, err := tx.ExecContext(ctx, "UPDATE oauth_client_states SET used = TRUE WHERE state = ? AND used = FALSE", state)
 		if err != nil {
 			return err
 		}
@@ -3124,7 +3161,7 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 		return nil
 	})
 	if err != nil {
-		return "", "", 0, "", nil
+		return "", "", 0, "", err
 	}
 	return provider, clientID, attachUserID.Int64, inviteCode.String, nil
 }

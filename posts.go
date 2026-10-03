@@ -311,7 +311,7 @@ func (p *Post) HasTag(tag string) bool {
 	// Regexp looks for tag and has a non-capturing group at the end looking
 	// for the end of the word.
 	// Assisted by: https://stackoverflow.com/a/35192941/1549194
-	hasTag, _ := regexp.MatchString("#"+tag+`(?:[[:punct:]]|\s|\z)`, p.Content)
+	hasTag, _ := regexp.MatchString("#"+regexp.QuoteMeta(tag)+`(?:[[:punct:]]|\s|\z)`, p.Content)
 	return hasTag
 }
 
@@ -953,6 +953,9 @@ func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 				log.Error("No begin: %v", err)
 				return err
 			}
+			// Release the transaction on every early return. After a
+			// successful Commit this is a no-op.
+			defer t.Rollback()
 			res, err = t.Exec("DELETE FROM posts WHERE id = ? AND owner_id = ?", friendlyID, ownerID)
 		}
 	} else {
@@ -977,7 +980,10 @@ func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 		return impart.HTTPError{http.StatusForbidden, "Post not found, or you're not the owner."}
 	}
 	if t != nil {
-		t.Commit()
+		if err = t.Commit(); err != nil {
+			log.Error("Unable to commit post deletion: %v", err)
+			return err
+		}
 	}
 	if coll != nil && app.federationOutboundEnabled() && app.cfg.App.Federation {
 		go deleteFederatedPost(app, pp, collID.Int64)
