@@ -3,7 +3,7 @@
 # prints the variables that point the tests at it:
 #
 #   eval "$(scripts/test-s3-garage.sh)"
-#   go test -count=1 -tags sqlite -run S3 ./...
+#   go test -count=1 -tags sqlite -run 'S3|ImageStore|ImageSync|StreamImages' .
 #   scripts/test-s3-garage.sh stop
 #
 # Local Docker only. The key and secret are generated per run and die with
@@ -62,6 +62,16 @@ key="GK$(openssl rand -hex 12)"
 secret=$(openssl rand -hex 32)
 g key import --yes "$key" "$secret" >/dev/null
 g bucket allow --read --write --owner "$BUCKET" --key "$key" >/dev/null
+
+# The admin commands above talk RPC, not S3. Wait until the S3 API answers
+# too, so a caller that starts testing straight away (CI) does not race it.
+# Any HTTP status will do: anonymous requests are refused, which is an answer.
+i=0
+until curl -s -o /dev/null "http://127.0.0.1:$PORT/"; do
+	i=$((i + 1))
+	[ $i -lt 30 ] || { echo "garage S3 API did not answer" >&2; docker logs "$NAME" >&2; exit 1; }
+	sleep 1
+done
 
 echo "export WF_TEST_S3_ENDPOINT=http://127.0.0.1:$PORT"
 echo "export WF_TEST_S3_REGION=garage"
