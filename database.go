@@ -918,11 +918,16 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	return c, nil
 }
 
+// GetCollection and GetCollectionForPad trim the alias first. collections.alias
+// is utf8mb4_bin on MySQL, a PAD SPACE collation, so 'blog ' used to match
+// 'blog' there; SQLite and Postgres do not pad, and an alias never ends in a
+// space (aliases are slugs).
 func (db *datastore) GetCollection(alias string) (*Collection, error) {
-	return db.GetCollectionBy("alias = ?", alias)
+	return db.GetCollectionBy("alias = ?", strings.TrimSpace(alias))
 }
 
 func (db *datastore) GetCollectionForPad(alias string) (*Collection, error) {
+	alias = strings.TrimSpace(alias)
 	c := &Collection{Alias: alias}
 
 	row := db.QueryRow("SELECT id, alias, title, description, privacy FROM collections WHERE alias = ?", alias)
@@ -1604,9 +1609,17 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	return &posts, nil
 }
 
+// normalizeLangCode is the form a language code from a URL is compared in.
+// posts.language holds whatever a client sent, and MySQL's case-insensitive
+// collation used to match EN against en; SQLite and Postgres do not, so both
+// sides are lower-cased instead.
+func normalizeLangCode(lang string) string {
+	return strings.ToLower(strings.TrimSpace(lang))
+}
+
 func (db *datastore) GetCollLangTotalPosts(collID int64, lang string) (uint64, error) {
 	var articles uint64
-	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND language = ? AND created <= "+db.now(), collID, lang).Scan(&articles)
+	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND LOWER(language) = ? AND created <= "+db.now(), collID, normalizeLangCode(lang)).Scan(&articles)
 	if err != nil && err != sql.ErrNoRows {
 		log.Error("Couldn't get total lang posts count for collection %d: %v", collID, err)
 		return 0, err
@@ -1641,8 +1654,8 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 
 	rows, err := db.Query(`SELECT `+postCols+`
 FROM posts
-WHERE collection_id = ? AND language = ? `+timeCondition+`
-ORDER BY created `+order+`, id `+order+limitStr, collID, lang)
+WHERE collection_id = ? AND LOWER(language) = ? `+timeCondition+`
+ORDER BY created `+order+`, id `+order+limitStr, collID, normalizeLangCode(lang))
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -3291,7 +3304,7 @@ func handleFailedPostInsert(err error) error {
 
 // Deprecated: use GetProfileURLFromHandle() instead, which returns user-facing URL instead of actor_id
 func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, error) {
-	handle = strings.TrimLeft(handle, "@")
+	handle = normalizeRemoteHandle(handle)
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -3352,7 +3365,19 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 	return actorIRI, nil
 }
 
+// normalizeSubscriberEmail is the one form an email subscriber's address is
+// stored and looked up in: trimmed and lower-cased. MySQL's case-insensitive
+// collation used to hide the difference between Foo@x and foo@x; SQLite and
+// Postgres compare exactly, so without this the same reader becomes two
+// subscribers and cannot unsubscribe with a differently cased address. The
+// lookups below also compare LOWER(email), so rows written before this
+// normalisation existed are still found.
+func normalizeSubscriberEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 func (db *datastore) AddEmailSubscription(collID, userID int64, email string, confirmed bool) (*EmailSubscriber, error) {
+	email = normalizeSubscriberEmail(email)
 	friendlyChars := "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz"
 	subID := id.GenerateRandomString(friendlyChars, 8)
 	token := id.GenerateRandomString(friendlyChars, 16)
@@ -3387,8 +3412,9 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 func (db *datastore) IsEmailSubscriber(email string, userID, collID int64) bool {
 	var dummy int
 	var err error
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID).Scan(&dummy)
+		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID).Scan(&dummy)
 	} else {
 		err = db.QueryRow("SELECT 1 FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID).Scan(&dummy)
 	}
@@ -3451,8 +3477,9 @@ func (db *datastore) FetchEmailSubscriber(email string, userID, collID int64) (*
 
 	s := &EmailSubscriber{}
 	var row *sql.Row
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID)
+		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID)
 	} else {
 		row = db.QueryRow("SELECT "+emailSubCols+" FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID)
 	}
@@ -3482,8 +3509,9 @@ func (db *datastore) DeleteEmailSubscriber(subID, token string) error {
 func (db *datastore) DeleteEmailSubscriberByUser(email string, userID, collID int64) error {
 	var res sql.Result
 	var err error
+	email = normalizeSubscriberEmail(email)
 	if email != "" {
-		res, err = db.Exec("DELETE FROM emailsubscribers WHERE email = ? AND collection_id = ?", email, collID)
+		res, err = db.Exec("DELETE FROM emailsubscribers WHERE LOWER(email) = ? AND collection_id = ?", email, collID)
 	} else {
 		res, err = db.Exec("DELETE FROM emailsubscribers WHERE user_id = ? AND collection_id = ?", userID, collID)
 	}
@@ -3506,7 +3534,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 	}
 
 	// TODO: ensure all addresses with original name are also confirmed, e.g. matt+fake@write.as and matt@write.as are now confirmed
-	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = TRUE WHERE email = ?", email)
+	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = TRUE WHERE LOWER(email) = ?", normalizeSubscriberEmail(email))
 	if err != nil {
 		log.Error("Could not update email subscriber confirmation status: %v", err)
 		return err
@@ -3516,7 +3544,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 
 func (db *datastore) IsSubscriberConfirmed(email string) bool {
 	var dummy int64
-	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE email = ? AND confirmed = TRUE", email).Scan(&dummy)
+	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND confirmed = TRUE", normalizeSubscriberEmail(email)).Scan(&dummy)
 	switch {
 	case err == sql.ErrNoRows:
 		return false

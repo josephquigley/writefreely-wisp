@@ -1183,9 +1183,12 @@ func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 // getRemoteUserFromHandle retrieves the profile page of a remote user
 // from the @user@server.tld handle
 func getRemoteUserFromHandle(app *App, handle string) (*RemoteUser, error) {
+	handle = normalizeRemoteHandle(handle)
 	u := RemoteUser{Handle: handle}
 	var urlVal sql.NullString
-	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE handle = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
+	// LOWER(handle), so that a row cached before handles were normalised is
+	// still found instead of costing a webfinger round trip every time.
+	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE LOWER(handle) = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, ErrRemoteUserNotFound
@@ -1360,8 +1363,18 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 	return actor, remoteUser, nil
 }
 
+// normalizeRemoteHandle is the form a fediverse handle (user@host, without
+// the leading '@') is stored in remoteusers and looked up by. Handles are
+// case-insensitive in practice — webfinger servers answer any case — and
+// MySQL's collation used to match them that way; SQLite and Postgres compare
+// exactly, so a mixed-case handle would miss the cache, cost a webfinger
+// request and rewrite the row on every lookup.
+func normalizeRemoteHandle(handle string) string {
+	return strings.ToLower(strings.TrimLeft(strings.TrimSpace(handle), "@"))
+}
+
 func GetProfileURLFromHandle(app *App, handle string) (string, error) {
-	handle = strings.TrimLeft(handle, "@")
+	handle = normalizeRemoteHandle(handle)
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {

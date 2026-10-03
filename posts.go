@@ -732,10 +732,20 @@ func newPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	return response
 }
 
+// normalizePostID is the form a post ID or slug from an API request is looked
+// up in. Both are only ever generated lower-case (id.GenerateFriendlyRandomString
+// draws from [a-z0-9]; slugs go through slug.Make), and MySQL's collation used
+// to forgive a client that upper-cased one. SQLite and Postgres compare
+// exactly, so the API lower-cases at its boundary instead, as the web views
+// already do by redirecting.
+func normalizePostID(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
+}
+
 func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	reqJSON := IsJSON(r)
 	vars := mux.Vars(r)
-	postID := vars["post"]
+	postID := normalizePostID(vars["post"])
 
 	p := AuthenticatedPost{ID: postID}
 	var err error
@@ -871,7 +881,7 @@ func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 
 func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
-	friendlyID := vars["post"]
+	friendlyID := normalizePostID(vars["post"])
 	editToken := r.FormValue("token")
 
 	var ownerID int64
@@ -1029,6 +1039,13 @@ func addPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return ErrBadJSONArray
 	}
+	if claims != nil {
+		for i := range *claims {
+			if (*claims)[i].AnonymousAuthPost != nil {
+				(*claims)[i].ID = normalizePostID((*claims)[i].ID)
+			}
+		}
+	}
 
 	vars := mux.Vars(r)
 	collAlias := vars["alias"]
@@ -1085,6 +1102,9 @@ func dispersePost(app *App, w http.ResponseWriter, r *http.Request) error {
 	err := decoder.Decode(&postIDs)
 	if err != nil {
 		return ErrBadJSONArray
+	}
+	for i := range postIDs {
+		postIDs[i] = normalizePostID(postIDs[i])
 	}
 
 	// Update all given posts
@@ -1157,6 +1177,7 @@ func pinPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	isPinning := r.URL.Path[strings.LastIndex(r.URL.Path, "/"):] == "/pin"
 	res := []PinPostResult{}
 	for _, p := range posts {
+		p.ID = normalizePostID(p.ID)
 		err = app.db.UpdatePostPinState(isPinning, p.ID, coll.ID, userID, p.Position)
 		ppr := PinPostResult{ID: p.ID}
 		if err != nil {
@@ -1188,7 +1209,7 @@ func fetchPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		collID = coll.ID
 	}
 
-	p, err := app.db.GetPost(vars["post"], collID)
+	p, err := app.db.GetPost(normalizePostID(vars["post"]), collID)
 	if err != nil {
 		return err
 	}
@@ -1236,7 +1257,7 @@ func fetchPost(app *App, w http.ResponseWriter, r *http.Request) error {
 
 func fetchPostProperty(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
-	p, err := app.db.GetPostProperty(vars["post"], 0, vars["property"])
+	p, err := app.db.GetPostProperty(normalizePostID(vars["post"]), 0, vars["property"])
 	if err != nil {
 		return err
 	}
