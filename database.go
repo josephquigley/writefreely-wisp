@@ -23,7 +23,6 @@ import (
 
 	"github.com/writeas/monday"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/writeas/web-core/silobridge"
 	wf_db "github.com/writefreely/writefreely/db"
 	"github.com/writefreely/writefreely/parse"
@@ -3343,12 +3342,10 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 
 	_, err := db.Exec("INSERT INTO emailsubscribers (id, collection_id, user_id, email, subscribed, token, confirmed) VALUES (?, ?, ?, ?, "+db.now()+", ?, ?)", subID, collID, userIDVal, emailVal, token, confirmed)
 	if err != nil {
-		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
-			if mysqlErr.Number == mySQLErrDuplicateKey {
-				// Duplicate, so just return existing subscriber information
-				log.Info("Duplicate subscriber for email %s, user %d; returning existing subscriber", email, userID)
-				return db.FetchEmailSubscriber(email, userID, collID)
-			}
+		if db.isDuplicateKeyErr(err) {
+			// Duplicate, so just return existing subscriber information
+			log.Info("Duplicate subscriber for email %s, user %d; returning existing subscriber", email, userID)
+			return db.FetchEmailSubscriber(email, userID, collID)
 		}
 		return nil, err
 	}
