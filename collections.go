@@ -1073,7 +1073,10 @@ func handleViewCollectionTag(app *App, w http.ResponseWriter, r *http.Request) e
 		return impart.HTTPError{http.StatusFound, redirURL}
 	}
 
-	coll.Posts, _ = app.db.GetPostsTagged(app.cfg, c, tag, page, cr.isCollOwner)
+	coll.Posts, err = app.db.GetPostsTagged(app.cfg, c, tag, page, cr.isCollOwner)
+	if err != nil {
+		return err
+	}
 	if coll.Posts != nil && len(*coll.Posts) == 0 {
 		return ErrCollectionPageNotFound
 	}
