@@ -171,12 +171,16 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 		Config  config.AppCfg
 		Uploads config.UploadsCfg
 
+		UpdateChecksSupported bool
+
 		Message, ConfigMessage string
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
 		Config:    app.Config().App,
 		Uploads:   app.Config().Uploads,
+
+		UpdateChecksSupported: updateChecksSupported,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -610,9 +614,12 @@ func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *htt
 		"app.notes_only":           check("notes_only"),
 		"app.federation_allowlist": r.FormValue("federation_allowlist"),
 		"app.instance_announce":    check("instance_announce"),
-		"app.update_checks":        check("update_checks"),
 		"uploads.enabled":          check("uploads_enabled"),
 		"uploads.max_size_mb":      r.FormValue("uploads_max_size_mb"),
+	}
+
+	if updateChecksSupported {
+		changes["app.update_checks"] = check("update_checks")
 	}
 
 	m := "?cm=Configuration+saved."

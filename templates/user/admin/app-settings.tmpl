@@ -198,10 +198,12 @@ select {
 			<div><label for="notes_only">Notes Only<p>Hide blog features; posts are notes.</p></label></div>
 			<div><input type="checkbox" name="notes_only" id="notes_only" {{if .Config.NotesOnly}}checked="checked"{{end}} /></div>
 		</div>
+		{{if .UpdateChecksSupported}}
 		<div class="features row">
 			<div><label for="update_checks">Update Checks<p>Check for new WriteFreely releases.</p></label></div>
 			<div><input type="checkbox" name="update_checks" id="update_checks" {{if .Config.UpdateChecks}}checked="checked"{{end}} /></div>
 		</div>
+		{{end}}
 		<div class="features row">
 			<div><label for="uploads_enabled">Image Uploads<p>Let writers upload images. This node's upload directory must be writable.</p></label></div>
 			<div><input type="checkbox" name="uploads_enabled" id="uploads_enabled" {{if .Uploads.Enabled}}checked="checked"{{end}} /></div>

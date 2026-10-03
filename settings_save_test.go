@@ -107,3 +107,34 @@ func TestAdminUpdateConfigHandler(t *testing.T) {
 		t.Errorf("config after handler: %+v", a.Config().App)
 	}
 }
+
+func TestAdminUpdateConfigSkipsUnsupportedUpdateChecks(t *testing.T) {
+	if updateChecksSupported {
+		t.Skip("update checks are supported in this build")
+	}
+	a := loadedSettingsApp(t)
+	form := url.Values{
+		"site_name":           {"X"},
+		"min_username_len":    {"3"},
+		"max_blogs":           {"2"},
+		"user_invites":        {"none"},
+		"default_visibility":  {"public"},
+		"theme":               {"write"},
+		"update_checks":       {"on"},
+		"uploads_max_size_mb": {"10"},
+	}
+	r := httptest.NewRequest("POST", "/admin/settings", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	err := handleAdminUpdateConfig(a, nil, httptest.NewRecorder(), r)
+	he, ok := err.(impart.HTTPError)
+	if !ok || !strings.Contains(he.Message, "Configuration+saved") {
+		t.Fatalf("handler returned %v", err)
+	}
+	rows, _, _ := a.db.LoadSettings(context.Background())
+	if _, found := rows["app.update_checks"]; found {
+		t.Error("an unsupported update_checks was written")
+	}
+	if rows["app.site_name"] != "X" {
+		t.Error("save did not land")
+	}
+}
