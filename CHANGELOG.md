@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and `db init` stops with an error at the first failed table instead of reporting success.
 
 ## [0.20.0+wisp] - 2026-09-09
 
