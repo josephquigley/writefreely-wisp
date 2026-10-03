@@ -151,7 +151,7 @@ func (app *App) InitUpdates() {
 		// See updateChecksSupported. Forcing the config value off keeps the
 		// admin nav link and the Updates page consistent with the fact that
 		// nothing is being checked, whatever the config file asks for.
-		app.Config().App.UpdateChecks = false
+		app.cfg.App.UpdateChecks = false
 		return
 	}
 	if app.Config().App.UpdateChecks {

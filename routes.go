@@ -79,10 +79,11 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	// webfinger
 	write.HandleFunc(webfinger.WebFingerPath, handler.LogHandlerFuncDiscovery(http.HandlerFunc(wf.Webfinger)))
 	// nodeinfo
+	// The handlers build the service per request, from the settings in
+	// force; only the path (bootstrap-derived) is fixed here.
 	niCfg := nodeInfoConfig(apper.App().db, apper.App().Config())
-	ni := nodeinfo.NewService(*niCfg, nodeInfoResolver{apper.App(), apper.App().db})
-	write.HandleFunc(nodeinfo.NodeInfoPath, handler.LogHandlerFunc(http.HandlerFunc(ni.NodeInfoDiscover)))
-	write.HandleFunc(niCfg.InfoURL, handler.LogHandlerFunc(http.HandlerFunc(ni.NodeInfo)))
+	write.HandleFunc(nodeinfo.NodeInfoPath, handler.LogHandlerFunc(apper.App().nodeInfoHandler(true)))
+	write.HandleFunc(niCfg.InfoURL, handler.LogHandlerFunc(apper.App().nodeInfoHandler(false)))
 
 	// handle mentions
 	write.HandleFunc("/@/{handle}", handler.Web(handleViewMention, UserLevelReader))

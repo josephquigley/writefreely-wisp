@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"crypto/tls"
 	"database/sql"
 	_ "embed"
@@ -493,6 +494,10 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 		return nil, fmt.Errorf("connect to DB: %s", err)
 	}
 
+	if err := apper.App().loadSettings(context.Background()); err != nil {
+		return nil, fmt.Errorf("load settings: %s", err)
+	}
+
 	initActivityPub(apper.App())
 
 	if apper.App().Config().Email.Enabled() {
@@ -521,6 +526,8 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 }
 
 func Serve(app *App, r *mux.Router) {
+	r.Use(app.settingsMiddleware)
+
 	log.Info("Going to serve...")
 
 	isSingleUser = app.Config().App.SingleUser

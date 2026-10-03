@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -1011,7 +1012,16 @@ func (h *Handler) Gopher(f gopherFunc) gopher.HandlerFunc {
 			log.Info("gopher: %s", r.Selector)
 		}()
 
-		err := f(h.app.App(), w, r)
+		app := h.app.App()
+		app.refreshSettings(context.Background())
+		if app.Config().App.Private {
+			// The Gopher server starts only on a public instance; an
+			// instance made private since must stop answering.
+			w.WriteError("This instance is private.")
+			return
+		}
+
+		err := f(app, w, r)
 		if err != nil {
 			log.Error("failed: %s", err)
 			w.WriteError("the page failed for some reason (see logs)")

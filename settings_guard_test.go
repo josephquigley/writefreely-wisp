@@ -29,6 +29,10 @@ var cfgFieldAllowed = map[string]bool{
 	"Initialize": true, "ConnectToDatabase": true, "connectToDatabase": true,
 	"DoConfig": true, "loadSettingsLocked": true, "importSettings": true,
 	"initFederationAllowlist": true,
+	// InitUpdates runs at bootstrap, before settings load, and may only
+	// write the bootstrap config; loadSettingsLocked forces the same value
+	// on every snapshot.
+	"InitUpdates": true,
 }
 
 func TestCfgFieldOnlyReadViaConfig(t *testing.T) {
