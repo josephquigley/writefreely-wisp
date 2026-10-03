@@ -2772,10 +2772,10 @@ func (db *datastore) GetUserInvites(userID int64) (*[]Invite, error) {
 func (db *datastore) GetUserInvite(id string) (*Invite, error) {
 	var i Invite
 	err := db.QueryRow("SELECT id, max_uses, created, expires, inactive FROM userinvites WHERE id = ?", id).Scan(&i.ID, &i.MaxUses, &i.Created, &i.Expires, &i.Inactive)
-	switch {
-	case err == sql.ErrNoRows, db.isIgnorableError(err):
-		return nil, impart.HTTPError{http.StatusNotFound, "Invite doesn't exist."}
-	case err != nil:
+	if err != nil {
+		if err == sql.ErrNoRows || db.isIgnorableError(err) {
+			return nil, impart.HTTPError{http.StatusNotFound, "Invite doesn't exist."}
+		}
 		log.Error("Failed selecting invite: %v", err)
 		return nil, err
 	}
