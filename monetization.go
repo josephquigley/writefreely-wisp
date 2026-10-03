@@ -89,7 +89,7 @@ func handleGetSplitContent(app *App, w http.ResponseWriter, r *http.Request) err
 		collLookupID = coll.Alias
 	}
 
-	p, err := app.db.GetPost(vars["post"], collID)
+	p, err := app.db.GetPost(normalizePostID(vars["post"]), collID)
 	if err != nil {
 		return err
 	}
