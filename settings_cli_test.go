@@ -13,6 +13,8 @@
 package writefreely
 
 import (
+	"context"
+	"github.com/writefreely/writefreely/config"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,5 +75,44 @@ func TestSettingsCLIRefusals(t *testing.T) {
 	}
 	if err := SettingSet(NewApp(app.cfgFile), "app.max_blogs", "lots"); err == nil {
 		t.Error("invalid value accepted")
+	}
+}
+
+func TestSettingsCLIBeforeMigrate(t *testing.T) {
+	app := cliTestApp(t)
+	app.LoadConfig()
+	connectToDatabase(app)
+	for _, tbl := range []string{"app_settings", "app_settings_version"} {
+		if _, err := app.db.ExecContext(context.Background(), "DROP TABLE "+tbl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shutdown(app)
+	_, err := SettingsList(NewApp(app.cfgFile))
+	if err == nil || !strings.Contains(err.Error(), "db migrate") {
+		t.Errorf("list: %v", err)
+	}
+	_, err = SettingGet(NewApp(app.cfgFile), "app.site_name")
+	if err == nil || !strings.Contains(err.Error(), "db migrate") {
+		t.Errorf("get: %v", err)
+	}
+}
+
+func TestSettingsCLIDefaultMarker(t *testing.T) {
+	app := cliTestApp(t)
+	def := config.SettingDefaults()["app.site_name"]
+	if err := SettingSet(NewApp(app.cfgFile), "app.site_name", def); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := SettingGet(NewApp(app.cfgFile), "app.site_name")
+	if !row.Default {
+		t.Errorf("saved default: %+v", row)
+	}
+	if err := SettingSet(NewApp(app.cfgFile), "app.site_name", "Other"); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = SettingGet(NewApp(app.cfgFile), "app.site_name")
+	if row.Default || row.Value != "Other" {
+		t.Errorf("saved other: %+v", row)
 	}
 }

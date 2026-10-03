@@ -12,12 +12,14 @@ package writefreely
 
 import (
 	"context"
+	"errors"
 
 	"github.com/writefreely/writefreely/config"
 )
 
 // SettingRow is one setting as the CLI shows it. Default is true when the
-// database has no row and the value is the built-in default.
+// value in force equals the built-in default, whether or not the database
+// has a row for it.
 type SettingRow struct {
 	Name    string
 	Value   string
@@ -44,16 +46,25 @@ func openSettings(apper Apper) (*App, error) {
 }
 
 func settingRows(app *App) ([]SettingRow, error) {
-	rows, _, err := app.db.LoadSettings(context.Background())
+	ctx := context.Background()
+	ok, err := app.db.settingsTableExists(ctx)
 	if err != nil {
 		return nil, err
 	}
-	cur := app.Config()
+	if !ok {
+		return nil, errors.New("settings are not in the database yet: run `writefreely db migrate`, then try again")
+	}
+	rows, _, err := app.db.LoadSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cur, _ := config.ApplySettings(app.cfg, rows)
+	defs := config.SettingDefaults()
 	var out []SettingRow
 	for _, name := range config.DBSettingNames() {
 		s, _ := config.LookupSetting(name)
-		_, stored := rows[name]
-		out = append(out, SettingRow{Name: name, Value: s.Get(cur), Default: !stored})
+		v := s.Get(cur)
+		out = append(out, SettingRow{Name: name, Value: v, Default: v == defs[name]})
 	}
 	return out, nil
 }

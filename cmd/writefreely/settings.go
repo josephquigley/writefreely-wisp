@@ -16,11 +16,22 @@ import (
 	"text/tabwriter"
 
 	"github.com/urfave/cli/v2"
+	"github.com/writeas/web-core/log"
 	"github.com/writefreely/writefreely"
 )
 
+// infoToStderr sends informational logging to stderr, so that stdout
+// carries only a settings command's data (`settings export > file`).
+func infoToStderr() {
+	log.InfoLog.SetOutput(os.Stderr)
+}
+
 var cmdSettings = cli.Command{
-	Name:  "settings",
+	Name: "settings",
+	Before: func(c *cli.Context) error {
+		infoToStderr()
+		return nil
+	},
 	Usage: "show and change the settings stored in the database",
 	Subcommands: []*cli.Command{
 		{
