@@ -180,10 +180,9 @@ func (sqliteDialect) DriverName() string { return driverSQLite }
 
 func (sqliteDialect) Now() string { return "strftime('%Y-%m-%d %H:%M:%S','now')" }
 
-// Clip carries upstream's off-by-one (SUBSTR is 1-based, so this returns
-// l-1 characters). WFPG-11 owns the fix; do not change it here.
+// SQLite strings are 1-indexed (WFPG-11 defect B).
 func (sqliteDialect) Clip(field string, l int) string {
-	return fmt.Sprintf("SUBSTR(%s, 0, %d)", field, l)
+	return fmt.Sprintf("SUBSTR(%s, 1, %d)", field, l)
 }
 
 func (sqliteDialect) Upsert(indexedCols ...string) string {
