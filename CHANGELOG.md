@@ -26,6 +26,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
 - Successful invite lookups on SQLite no longer log a spurious error.
 - The Reader's tag filter matches tags literally instead of treating them as regular expressions.
+- Tag pages escape regex characters in the tag, so a tag like `c++` or `a.b` matches only itself.
 
 ## [0.20.0+wisp] - 2026-09-09
 
