@@ -765,8 +765,9 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 	}
 
 	created := time.Now()
-	if db.driverName == driverSQLite {
-		// SQLite stores datetimes in UTC, so convert time.Now() to it here
+	if db.driverName == driverSQLite || db.driverName == driverPostgres {
+		// SQLite stores datetimes in UTC, and so does Postgres (see
+		// pgTimeArgs), so convert time.Now() to it here
 		created = created.UTC()
 	}
 	if post.Created != nil && *post.Created != "" {
@@ -774,8 +775,8 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 		if err != nil {
 			log.Error("Unable to parse Created time '%s': %v", *post.Created, err)
 			created = time.Now()
-			if db.driverName == driverSQLite {
-				// SQLite stores datetimes in UTC, so convert time.Now() to it here
+			if db.driverName == driverSQLite || db.driverName == driverPostgres {
+				// SQLite and Postgres store datetimes in UTC, so convert time.Now() to it here
 				created = created.UTC()
 			}
 		}
@@ -3547,15 +3548,56 @@ func (db *datastore) Limit(offset int, size int) string {
 }
 
 func (db *datastore) Query(query string, args ...any) (*sql.Rows, error) {
-	return (*db.DB).Query(db.QueryWrap(query), args...)
+	return (*db.DB).Query(db.QueryWrap(query), db.pgTimeArgs(args)...)
 }
 
 func (db *datastore) QueryRow(query string, args ...any) *sql.Row {
-	return (*db.DB).QueryRow(db.QueryWrap(query), args...)
+	return (*db.DB).QueryRow(db.QueryWrap(query), db.pgTimeArgs(args)...)
 }
 
 func (db *datastore) Exec(query string, args ...any) (sql.Result, error) {
-	return (*db.DB).Exec(db.QueryWrap(query), args...)
+	return (*db.DB).Exec(db.QueryWrap(query), db.pgTimeArgs(args)...)
+}
+
+// pgTimeArgs returns args with every time.Time (or non-nil *time.Time)
+// converted to UTC when the database is Postgres, and args unchanged
+// otherwise.
+//
+// The Postgres schema's time columns are TIMESTAMP without time zone, and the
+// session TimeZone is pinned to UTC (see postgresDSN), so NOW() stores UTC
+// wall-clock times and lib/pq reads every TIMESTAMP back as UTC. lib/pq sends
+// a Go time with its offset, but Postgres discards the offset for a TIMESTAMP
+// and keeps the wall clock, so a value in any other zone would be stored, and
+// read back, shifted by that zone's offset. Statements that bypass these
+// wrappers (prepared statements, transactions) must bind UTC times
+// themselves.
+func (db *datastore) pgTimeArgs(args []any) []any {
+	if db.driverName != driverPostgres {
+		return args
+	}
+	var out []any
+	for i, a := range args {
+		var utc time.Time
+		switch v := a.(type) {
+		case time.Time:
+			utc = v.UTC()
+		case *time.Time:
+			if v == nil {
+				continue
+			}
+			utc = v.UTC()
+		default:
+			continue
+		}
+		if out == nil {
+			out = append([]any(nil), args...)
+		}
+		out[i] = utc
+	}
+	if out == nil {
+		return args
+	}
+	return out
 }
 
 /**

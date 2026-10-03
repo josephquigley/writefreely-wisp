@@ -62,6 +62,9 @@ func TestPostgresDSNRoundTrip(t *testing.T) {
 			if string(got.SSLMode) != "disable" {
 				t.Errorf("sslmode: got %q, want %q (dsn %q)", got.SSLMode, "disable", dsn)
 			}
+			if got.Runtime["timezone"] != "UTC" {
+				t.Errorf("timezone: got %q, want %q (dsn %q)", got.Runtime["timezone"], "UTC", dsn)
+			}
 		})
 	}
 }
