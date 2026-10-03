@@ -19,8 +19,14 @@ import (
 
 func oauthAttach(db *datastore) error {
 	dialect := wf_db.DialectMySQL
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		dialect = wf_db.DialectSQLite
+	case driverMySQL:
+	case driverPostgres:
+		return errBeforePostgresBase("oauthAttach")
+	default:
+		unsupportedDriver("oauthAttach", db.driverName)
 	}
 	return wf_db.RunTransactionWithOptions(context.Background(), db.DB, &sql.TxOptions{}, func(ctx context.Context, tx *sql.Tx) error {
 		builders := []wf_db.SQLBuilder{

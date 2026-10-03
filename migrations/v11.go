@@ -14,7 +14,8 @@ package migrations
  * Widen `oauth_users.access_token`, necessary only for mysql
  */
 func widenOauthAcceesToken(db *datastore) error {
-	if db.driverName == driverMySQL {
+	switch db.driverName {
+	case driverMySQL:
 		t, err := db.Begin()
 		if err != nil {
 			t.Rollback()
@@ -32,6 +33,11 @@ func widenOauthAcceesToken(db *datastore) error {
 			t.Rollback()
 			return err
 		}
+	case driverSQLite:
+	case driverPostgres:
+		return errBeforePostgresBase("widenOauthAcceesToken")
+	default:
+		unsupportedDriver("widenOauthAcceesToken", db.driverName)
 	}
 
 	return nil

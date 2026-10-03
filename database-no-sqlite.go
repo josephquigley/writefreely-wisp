@@ -19,11 +19,14 @@ import (
 )
 
 func (db *datastore) isDuplicateKeyErr(err error) bool {
-	if db.driverName == driverMySQL {
+	switch db.driverName {
+	case driverMySQL:
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 			return mysqlErr.Number == mySQLErrDuplicateKey
 		}
-	} else {
+	case driverPostgres:
+		return isPostgresErrCode(err, pgErrUniqueViolation)
+	default:
 		log.Error("isDuplicateKeyErr: failed check for unrecognized driver '%s'", db.driverName)
 	}
 
@@ -31,11 +34,15 @@ func (db *datastore) isDuplicateKeyErr(err error) bool {
 }
 
 func (db *datastore) isIgnorableError(err error) bool {
-	if db.driverName == driverMySQL {
+	switch db.driverName {
+	case driverMySQL:
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 			return mysqlErr.Number == mySQLErrCollationMix
 		}
-	} else {
+	case driverPostgres:
+		// MySQL's 1267 (illegal mix of collations) has no Postgres analogue.
+		return false
+	default:
 		log.Error("isIgnorableError: failed check for unrecognized driver '%s'", db.driverName)
 	}
 
@@ -43,10 +50,13 @@ func (db *datastore) isIgnorableError(err error) bool {
 }
 
 func (db *datastore) isHighLoadError(err error) bool {
-	if db.driverName == driverMySQL {
+	switch db.driverName {
+	case driverMySQL:
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 			return mysqlErr.Number == mySQLErrMaxUserConns || mysqlErr.Number == mySQLErrTooManyConns
 		}
+	case driverPostgres:
+		return isPostgresErrCode(err, pgErrTooManyConnections)
 	}
 
 	return false

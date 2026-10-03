@@ -58,7 +58,10 @@ type (
 		Dev bool `ini:"-"`
 	}
 
-	// DatabaseCfg holds values that determine how the application connects to a datastore
+	// DatabaseCfg holds values that determine how the application connects to a datastore.
+	// Type is "mysql", "sqlite3" or "postgres". FileName is used only by
+	// sqlite3; the rest only by mysql and postgres, where TLS maps to
+	// Postgres' sslmode=require (true) or sslmode=disable (false).
 	DatabaseCfg struct {
 		Type     string `ini:"type"`
 		FileName string `ini:"filename"`
@@ -296,6 +299,17 @@ func (cfg *Config) UseMySQL(fresh bool) {
 	if fresh {
 		cfg.Database.Host = "localhost"
 		cfg.Database.Port = 3306
+	}
+}
+
+// UsePostgres resets the Config's Database to use default values for a
+// PostgreSQL setup. It uses the same host, port, username, password,
+// database and tls keys as MySQL.
+func (cfg *Config) UsePostgres(fresh bool) {
+	cfg.Database.Type = "postgres"
+	if fresh {
+		cfg.Database.Host = "localhost"
+		cfg.Database.Port = 5432
 	}
 }
 

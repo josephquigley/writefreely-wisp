@@ -541,22 +541,27 @@ func handleAdminUpdateSite(app *App, u *User, w http.ResponseWriter, r *http.Req
 		return impart.HTTPError{http.StatusNotFound, "No such page."}
 	}
 
+	// appcontent.title is varchar(255); content is text. Both are made
+	// storable, and the title fitted to its column.
+	title := boundedDBText(r.FormValue("title"), appContentMaxLengthTitle)
+	content := sanitizeDBText(r.FormValue("content"))
+
 	var err error
 	m := ""
 	if id == "landing" {
 		// Handle special landing page
-		err = app.db.UpdateDynamicContent("landing-banner", "", r.FormValue("banner"), "section")
+		err = app.db.UpdateDynamicContent("landing-banner", "", sanitizeDBText(r.FormValue("banner")), "section")
 		if err != nil {
 			m = "?m=" + err.Error()
 			return impart.HTTPError{http.StatusFound, "/admin/page/" + id + m}
 		}
-		err = app.db.UpdateDynamicContent("landing-body", "", r.FormValue("content"), "section")
+		err = app.db.UpdateDynamicContent("landing-body", "", content, "section")
 	} else if id == "reader" {
 		// Update sections with titles
-		err = app.db.UpdateDynamicContent(id, r.FormValue("title"), r.FormValue("content"), "section")
+		err = app.db.UpdateDynamicContent(id, title, content, "section")
 	} else {
 		// Update page
-		err = app.db.UpdateDynamicContent(id, r.FormValue("title"), r.FormValue("content"), "page")
+		err = app.db.UpdateDynamicContent(id, title, content, "page")
 	}
 	if err != nil {
 		m = "?m=" + err.Error()
