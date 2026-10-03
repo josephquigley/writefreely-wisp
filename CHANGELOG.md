@@ -22,8 +22,6 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
-- Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
-- Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
 
 ## [0.20.0+wisp] - 2026-09-09
 
