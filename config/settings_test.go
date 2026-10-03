@@ -179,3 +179,18 @@ func TestIniNameStripsOptions(t *testing.T) {
 		t.Errorf("plain: %q", got)
 	}
 }
+
+func TestFederationAllowlistSettingValidatesSyntax(t *testing.T) {
+	s, _ := LookupSetting("app.federation_allowlist")
+	var c Config
+	for _, bad := range []string{"*", "a.*.b", "*.*.example.org", "*."} {
+		if err := s.Set(&c, bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	for _, ok := range []string{"", "peer.example, *.example.org", " , "} {
+		if err := s.Set(&c, ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+}

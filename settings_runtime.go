@@ -192,17 +192,23 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 	if err != nil {
 		return res, err
 	}
-	if marked {
-		// config.ini says the settings were moved. If the database holds
-		// none, the claim below would succeed and import whatever the file
-		// still says (nothing, or defaults), turning a restored-from-backup
-		// private instance public without a word.
-		ver, err := app.db.SettingsVersion(ctx)
-		if err != nil {
-			return res, err
-		}
-		if ver == 0 {
+	ver, err := app.db.SettingsVersion(ctx)
+	if err != nil {
+		return res, err
+	}
+	if ver == 0 {
+		// The claim below would succeed. If config.ini says the settings
+		// were moved, it would import whatever the file still says (nothing,
+		// or defaults), turning a restored-from-backup private instance
+		// public without a word.
+		if marked {
 			return res, errors.New(emptyDatabaseRefusal)
+		}
+		// A malformed allowlist stops the import, as it always stopped
+		// startup. Normalising it to the default would drop it, and open a
+		// private instance's federation to every peer.
+		if err := config.ValidateFederationAllowlist(config.ParseFederationAllowlist(app.cfg.App.FederationAllowlist)); err != nil {
+			return res, fmt.Errorf("%s: %v; fix it, then start again", app.configPath(), err)
 		}
 	}
 	effective := app.normalisedSettings()

@@ -32,57 +32,20 @@ import (
 	"github.com/writefreely/writefreely/config"
 )
 
-// parseFederationAllowlist turns a comma-separated list of hostnames into a
-// set. Entries are trimmed and lowercased, and empty entries are dropped, so
-// a value of only whitespace or commas yields an empty set.
-//
-// An entry may be a wildcard of the form "*.example.org", which is kept
-// verbatim: federationAllowed looks a wildcard up by the key it builds from
-// the hostname it is checking, so no separate list is needed. Wildcards are
-// only checked for shape here — validateFederationAllowlist rejects the
-// unusable ones, and does so at startup rather than silently at match time.
+// parseFederationAllowlist and validateFederationAllowlist are the
+// allowlist's syntax rules, which live in package config so the setting can
+// be checked when it is saved. The "requires private" rule is across
+// settings and stays in buildFederationAllowlist.
 func parseFederationAllowlist(s string) map[string]bool {
-	allowed := map[string]bool{}
-	for _, part := range strings.Split(s, ",") {
-		host := strings.ToLower(strings.TrimSpace(part))
-		if host != "" {
-			allowed[host] = true
-		}
-	}
-	return allowed
+	return config.ParseFederationAllowlist(s)
 }
 
 // wildcardPrefix marks an allowlist entry that matches subdomains rather
 // than one exact host.
-const wildcardPrefix = "*."
+const wildcardPrefix = config.WildcardPrefix
 
-// validateFederationAllowlist rejects entries whose "*" cannot be honoured as
-// written. Startup is the only place an operator finds out: a malformed
-// wildcard that survived to match time would simply match nothing, and an
-// allowlist that quietly matches nothing looks exactly like one that is
-// working until the day someone expects it to admit a peer.
-//
-// A bare "*" is refused for the opposite reason. It would parse as an exact
-// host named "*", which no hostname is, so it too matches nothing — but an
-// operator who wrote it plainly meant "everything", and the honest way to say
-// that is to leave the allowlist empty.
 func validateFederationAllowlist(allowed map[string]bool) error {
-	for entry := range allowed {
-		suffix, isWildcard := strings.CutPrefix(entry, wildcardPrefix)
-		if !isWildcard {
-			if strings.Contains(entry, "*") {
-				return fmt.Errorf("federation_allowlist entry %q: a wildcard is only meaningful as a leading %q", entry, wildcardPrefix)
-			}
-			continue
-		}
-		if suffix == "" {
-			return fmt.Errorf("federation_allowlist entry %q has no domain after the wildcard", entry)
-		}
-		if strings.Contains(suffix, "*") {
-			return fmt.Errorf("federation_allowlist entry %q: only one leading wildcard is supported", entry)
-		}
-	}
-	return nil
+	return config.ValidateFederationAllowlist(allowed)
 }
 
 // federationAllowlistInertWarning is logged when a federation allowlist is

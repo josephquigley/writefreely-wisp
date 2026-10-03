@@ -324,3 +324,18 @@ func TestConfigStartNote(t *testing.T) {
 		t.Errorf("note %q", n)
 	}
 }
+
+// A malformed allowlist in the ini must stop the import, as it stopped
+// startup before; storing the default instead would drop the allowlist and
+// open a private instance's federation to every peer.
+func TestImportRefusesMalformedAllowlist(t *testing.T) {
+	a := newSettingsTestApp(t, "[app]\nhost = https://blog.example\nprivate = true\nfederation_allowlist = a.*.b\n")
+	loadINIInto(t, a)
+	ctx := context.Background()
+	if _, err := a.importSettings(ctx); err == nil || !strings.Contains(err.Error(), "federation_allowlist") {
+		t.Fatalf("err %v", err)
+	}
+	if _, ver, _ := a.db.LoadSettings(ctx); ver != 0 {
+		t.Errorf("version %d", ver)
+	}
+}
