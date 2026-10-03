@@ -217,6 +217,9 @@ func buildDBCopyFixture(t *testing.T) *dbCopyFixture {
 	exec("INSERT INTO remoteusers (id, actor_id, inbox, shared_inbox, url, handle) VALUES (7, 'https://remote.example/users/Zed', 'https://remote.example/users/Zed/inbox', 'https://remote.example/inbox', 'https://remote.example/@Zed', 'Zed@Remote.Example')")
 	exec("INSERT INTO remoteusers (id, actor_id, inbox, shared_inbox, url, handle) VALUES (9, 'https://other.example/u/amy', 'https://other.example/u/amy/inbox', '', NULL, NULL)")
 	exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES ('https://remote.example/users/Zed#main-key', 7, ?)", []byte("-----BEGIN PUBLIC KEY-----\nzed\n-----END PUBLIC KEY-----\n"))
+	// V20: a saved setting and its version, so the copy replaces the seed row.
+	exec("INSERT INTO app_settings (name, value) VALUES (?, ?)", "app.site_name", "Fixture")
+	exec("UPDATE app_settings_version SET version = 3 WHERE id = 1")
 	exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, 7, 1700000000)", fx.aliceColl.ID)
 	exec("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, 9, CURRENT_TIMESTAMP)", fx.rtlPost)
 
