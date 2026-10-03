@@ -38,7 +38,6 @@ changes share a bullet. Detailed notes are on the corresponding
 - Tag pages escape regex characters in the tag, work on MySQL 8, and return an error when a tag query fails, on collection tag pages too.
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
 - On MySQL and MariaDB, tokens, invite codes and remote actor addresses now match case-sensitively, and remote actors with non-Latin characters in their URLs save; the upgrade migration may take a while on large instances.
-- Missing or temporarily failing images in S3 storage are no longer cached by browsers and CDNs for a week, so a later `images sync` or a Garage restart takes effect for viewers.
 
 ## [0.20.0+wisp] - 2026-09-09
 
