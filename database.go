@@ -361,7 +361,7 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	}
 
 	// All good, so create new collection
-	res, err := db.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
+	id, err := db.insertID(db.DB, "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
 	if err != nil {
 		if db.isDuplicateKeyErr(err) {
 			return nil, impart.HTTPError{http.StatusConflict, "Collection already exists."}
@@ -371,16 +371,12 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	}
 
 	c := &Collection{
+		ID:          id,
 		Alias:       alias,
 		Title:       title,
 		OwnerID:     userID,
 		PublicOwner: false,
 		Public:      defaultVisibility(cfg) == CollPublic,
-	}
-
-	c.ID, err = res.LastInsertId()
-	if err != nil {
-		log.Error("Couldn't get collection LastInsertId: %v\n", err)
 	}
 
 	return c, nil
@@ -3444,15 +3440,12 @@ func (db *datastore) IsSubscriberConfirmed(email string) bool {
 }
 
 func (db *datastore) InsertJob(j *PostJob) error {
-	res, err := db.Exec("INSERT INTO publishjobs (post_id, action, delay) VALUES (?, ?, ?)", j.PostID, j.Action, j.Delay)
+	var err error
+	j.ID, err = db.insertID(db.DB, "INSERT INTO publishjobs (post_id, action, delay) VALUES (?, ?, ?)", j.PostID, j.Action, j.Delay)
 	if err != nil {
 		return err
 	}
-	jobID, err := res.LastInsertId()
-	if err != nil {
-		log.Error("[jobs] Couldn't get last insert ID! %s", err)
-	}
-	log.Info("[jobs] Queued %s job #%d for post %s, delayed %d minutes", j.Action, jobID, j.PostID, j.Delay)
+	log.Info("[jobs] Queued %s job #%d for post %s, delayed %d minutes", j.Action, j.ID, j.PostID, j.Delay)
 	return nil
 }
 
@@ -3556,6 +3549,25 @@ func (db *datastore) QueryRow(query string, args ...any) *sql.Row {
 
 func (db *datastore) Exec(query string, args ...any) (sql.Result, error) {
 	return (*db.DB).Exec(db.QueryWrap(query), args...)
+}
+
+// insertID runs the given INSERT on q (a *sql.DB or *sql.Tx) and returns the
+// new row's id. lib/pq does not support LastInsertId, so on Postgres the
+// query is run with "RETURNING id" instead.
+func (db *datastore) insertID(q interface {
+	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
+}, query string, args ...any) (int64, error) {
+	var id int64
+	if db.driverName == driverPostgres {
+		err := q.QueryRow(db.QueryWrap(query+" RETURNING id"), args...).Scan(&id)
+		return id, err
+	}
+	res, err := q.Exec(db.QueryWrap(query), args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 /**

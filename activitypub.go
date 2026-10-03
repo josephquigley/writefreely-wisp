@@ -684,19 +684,10 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			} else {
 				// TODO: use apAddRemoteUser() here, instead!
 				// Add follower locally, since it wasn't found before
-				res, err := t.Exec(app.db.QueryWrap("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)"), fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
+				followerID, err = app.db.insertID(t, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
 				if err != nil {
-					// if duplicate key, res will be nil and panic on
-					// res.LastInsertId below
 					t.Rollback()
 					log.Error("Couldn't add new remoteuser in DB: %v\n", err)
-					return
-				}
-
-				followerID, err = res.LastInsertId()
-				if err != nil {
-					t.Rollback()
-					log.Error("no lastinsertid for followers, rolling back: %v", err)
 					return
 				}
 
