@@ -1135,7 +1135,7 @@ func supportAppSettings(db *datastore) error {
 In `migrations/migrations.go`, append to the `migrations` slice after the V18→V19 line:
 
 ```go
-	New("store settings in the database", supportAppSettings),        // V21 -> V21
+	New("store settings in the database", supportAppSettings),        // V20 -> V21
 ```
 
 (run `gofmt -w migrations/migrations.go` to re-align the comments).

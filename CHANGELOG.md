@@ -23,7 +23,7 @@ changes share a bullet. Detailed notes are on the corresponding
 ### Changed
 
 - Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
-- Instance settings now live in the database, so every server sharing it uses the same values; upgrading moves them out of config.ini and removes them from the file, without a backup.
+- Settings now live in the database and leave config.ini on upgrade, which gains a `settings_location` marker; an older binary runs on zero values (a private instance turns public) until `settings export` is pasted back.
 
 ### Security
 

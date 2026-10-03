@@ -128,7 +128,7 @@ found in `config.ini` is ignored, and one warning per key names it.
 
 ### Schema
 
-One migration, appended after the current last one (V21 → V21), for all three
+One migration, appended after the current last one (V20 → V21), for all three
 dialects:
 
 ```sql

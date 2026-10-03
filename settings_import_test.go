@@ -226,3 +226,87 @@ func TestImportNormalisesInvalidZeroValues(t *testing.T) {
 		t.Errorf("drift %v err %v", res.Drift, err)
 	}
 }
+
+func TestImportWritesMarker(t *testing.T) {
+	a := newSettingsTestApp(t, importFixture)
+	loadINIInto(t, a)
+	if _, err := a.importSettings(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := config.HasSettingsMarker(a.cfgFile); err != nil || !ok {
+		t.Errorf("marker after import: %v %v", ok, err)
+	}
+}
+
+// An ini stripped by an earlier build, or rewritten by `config start`,
+// gets the marker on the next start because the database holds settings.
+func TestImportAddsMarkerWhenDBHoldsSettings(t *testing.T) {
+	a := newSettingsTestApp(t, "[app]\nhost = https://blog.example\n")
+	loadINIInto(t, a)
+	ctx := context.Background()
+	a.db.SaveSettings(ctx, map[string]string{"app.site_name": "X"})
+	res, err := a.importSettings(ctx)
+	if err != nil || res.Imported {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if ok, _ := config.HasSettingsMarker(a.cfgFile); !ok {
+		t.Error("marker not added")
+	}
+}
+
+func TestImportRefusesMarkerWithEmptyDatabase(t *testing.T) {
+	a := newSettingsTestApp(t, "settings_location = database\n"+importFixture)
+	loadINIInto(t, a)
+	ctx := context.Background()
+	before, _ := os.ReadFile(a.cfgFile)
+	res, err := a.importSettings(ctx)
+	if err == nil || res.Imported || !strings.Contains(err.Error(), "restored from a backup") {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if _, ver, _ := a.db.LoadSettings(ctx); ver != 0 {
+		t.Errorf("version %d, want 0", ver)
+	}
+	after, _ := os.ReadFile(a.cfgFile)
+	if string(before) != string(after) {
+		t.Error("config.ini was changed by a refused import")
+	}
+}
+
+func TestImportMarkerAbsentVersionZeroImports(t *testing.T) {
+	a := newSettingsTestApp(t, importFixture)
+	loadINIInto(t, a)
+	res, err := a.importSettings(context.Background())
+	if err != nil || !res.Imported {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+}
+
+func TestImportMarkerWithPopulatedDatabaseIsNormal(t *testing.T) {
+	a := newSettingsTestApp(t, "settings_location = database\n[app]\nhost = https://blog.example\n")
+	loadINIInto(t, a)
+	ctx := context.Background()
+	a.db.SaveSettings(ctx, map[string]string{"app.site_name": "X"})
+	res, err := a.importSettings(ctx)
+	if err != nil || res.Imported {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+}
+
+// A read-only ini cannot take the marker; the refusal still applies when
+// it already has one, and a populated database still starts.
+func TestImportReadOnlyINIWithMarker(t *testing.T) {
+	a := newSettingsTestApp(t, "settings_location = database\n[app]\nhost = https://blog.example\nsite_name = Old\n")
+	loadINIInto(t, a)
+	dir := filepath.Dir(a.cfgFile)
+	os.Chmod(dir, 0555)
+	defer os.Chmod(dir, 0755)
+	ctx := context.Background()
+	if _, err := a.importSettings(ctx); err == nil {
+		t.Fatal("empty database accepted with marker on a read-only ini")
+	}
+	a.db.SaveSettings(ctx, map[string]string{"app.site_name": "X"})
+	res, err := a.importSettings(ctx)
+	if err != nil || res.StripErr == nil || len(res.Left) == 0 {
+		t.Errorf("res %+v err %v", res, err)
+	}
+}

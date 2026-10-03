@@ -164,7 +164,10 @@ type settingsImport struct {
 	Stripped []string // keys removed from this node's ini
 	Left     []string // keys still in the ini because it could not be written
 	StripErr error
+	MarkErr  error // the settings_location marker could not be written
 }
+
+const emptyDatabaseRefusal = "config.ini says the settings were moved into the database, but this database holds none (was it restored from a backup taken before the upgrade?). Restore the database, or paste `writefreely settings export` output from a current database into config.ini and delete the settings_location line to import it again."
 
 // importSettings moves this node's settings into the database if no node
 // has yet, then removes the DB-bound keys from its own config.ini.
@@ -184,6 +187,23 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 	present, err := config.KeysPresent(app.configPath(), config.DBSettingNames())
 	if err != nil {
 		return res, err
+	}
+	marked, err := config.HasSettingsMarker(app.configPath())
+	if err != nil {
+		return res, err
+	}
+	if marked {
+		// config.ini says the settings were moved. If the database holds
+		// none, the claim below would succeed and import whatever the file
+		// still says (nothing, or defaults), turning a restored-from-backup
+		// private instance public without a word.
+		ver, err := app.db.SettingsVersion(ctx)
+		if err != nil {
+			return res, err
+		}
+		if ver == 0 {
+			return res, errors.New(emptyDatabaseRefusal)
+		}
 	}
 	effective := app.normalisedSettings()
 
@@ -213,6 +233,13 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 		}
 	}
 
+	// The database holds the settings now, whoever put them there. Say so in
+	// config.ini before removing anything from it, so a crash between the two
+	// leaves a marker and keys, never a bare file.
+	if _, err := config.MarkSettingsInDatabase(app.configPath()); err != nil {
+		res.MarkErr = err
+		log.Error("settings: could not add %s = %s to %s (%v); add it by hand.", config.SettingsLocationKey, config.SettingsLocationValue, app.configPath(), err)
+	}
 	if len(present) == 0 {
 		return res, nil
 	}

@@ -27,7 +27,7 @@ import (
 var cfgFieldAllowed = map[string]bool{
 	"Config": true, "SetConfig": true, "LoadConfig": true, "NewApp": true,
 	"Initialize": true, "ConnectToDatabase": true, "connectToDatabase": true,
-	"DoConfig": true, "loadSettingsLocked": true, "importSettings": true, "normalisedSettings": true, "settingRows": true,
+	"DoConfig": true, "loadSettingsLocked": true, "importSettings": true, "normalisedSettings": true, "effectiveSettings": true,
 	"initFederationAllowlist": true,
 	// InitUpdates runs at bootstrap, before settings load, and may only
 	// write the bootstrap config; loadSettingsLocked forces the same value
