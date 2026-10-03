@@ -76,7 +76,7 @@ func announceTestUserID(t *testing.T, app *App) int64 {
 func newTestCollection(t *testing.T, app *App, alias string, vis collVisibility) int64 {
 	t.Helper()
 	userID := announceTestUserID(t, app)
-	c, err := app.db.CreateCollection(app.cfg, alias, alias, userID, false)
+	c, err := app.db.CreateCollection(app.cfg, alias, alias, userID)
 	if err != nil {
 		t.Fatalf("create collection %s: %v", alias, err)
 	}

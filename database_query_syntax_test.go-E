@@ -153,7 +153,7 @@ func querySyntaxSuite(t *testing.T, db *datastore) {
 
 	var coll *Collection
 	t.Run("CreateCollection returns the new ID", func(t *testing.T) {
-		c, err := db.CreateCollection(cfg, "second", "Second", owner.ID, false)
+		c, err := db.CreateCollection(cfg, "second", "Second", owner.ID)
 		if err != nil {
 			t.Fatalf("CreateCollection: %v", err)
 		}

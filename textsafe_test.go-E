@@ -209,7 +209,7 @@ func exerciseLengthBounds(t *testing.T, app *App, u *User, coll *Collection) {
 	})
 
 	t.Run("create collection truncates title", func(t *testing.T) {
-		c, err := app.db.CreateCollection(app.cfg, "boundscoll", strings.Repeat("c", 300)+"\x00", u.ID, false)
+		c, err := app.db.CreateCollection(app.cfg, "boundscoll", strings.Repeat("c", 300)+"\x00", u.ID)
 		if err != nil {
 			t.Fatalf("CreateCollection: %v", err)
 		}

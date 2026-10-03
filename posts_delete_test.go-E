@@ -59,7 +59,7 @@ func TestDeletePostRollsBackOnFailedDelete(t *testing.T) {
 	if err := app.db.CreateUser(cfg, u, "", ""); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	coll, err := app.db.CreateCollection(cfg, "alice-blog", "alice-blog", u.ID, false)
+	coll, err := app.db.CreateCollection(cfg, "alice-blog", "alice-blog", u.ID)
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}

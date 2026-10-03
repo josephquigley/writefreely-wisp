@@ -231,7 +231,7 @@ func TestPostgresCreateCollectionDuplicate(t *testing.T) {
 	owner := errCodeInsertUser(t, db, "owner")
 	errCodeInsertCollection(t, db, "blog", owner)
 
-	_, err := db.CreateCollection(config.New(), "blog", "Blog", owner, false)
+	_, err := db.CreateCollection(config.New(), "blog", "Blog", owner)
 	assert.Equal(t, http.StatusConflict, errCodeStatus(t, err))
 	assert.Equal(t, "Collection already exists.", err.(impart.HTTPError).Message)
 }
@@ -247,7 +247,7 @@ func TestPostgresCreatePostDuplicateSlug(t *testing.T) {
 	require.Equal(t, "hello-world", first.Slug.String)
 
 	// Same title, same blog: the slug collides, CreatePost regenerates it
-	// and retries. On Postgres this used to be a 500.
+	// and retries once. On Postgres this used to be a 500.
 	second, err := db.CreatePost(owner, coll, &SubmittedPost{Title: &title, Content: &content})
 	require.NoError(t, err)
 	assert.NotEqual(t, first.Slug.String, second.Slug.String)
