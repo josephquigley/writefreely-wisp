@@ -1,5 +1,5 @@
 /*
- * Copyright © 2026 Musing Studio LLC.
+ * Copyright © 2026 Joseph Quigley.
  *
  * This file is part of WriteFreely.
  *
@@ -12,6 +12,7 @@ package writefreely
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -19,14 +20,17 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gosimple/slug"
+	"github.com/writeas/web-core/log"
 )
 
 const (
@@ -210,29 +214,84 @@ func (app *App) uploadsRoot() string {
 	return filepath.Join(app.cfg.Server.StaticParentDir, staticDir, uploadsDir)
 }
 
-// writeUploadedImage stores b at the given uploads-relative path, creating
-// any directories it needs.
+// ImageStore keeps the bytes of uploaded images. Every path is relative to
+// the uploads root and is what post_images.path holds, so the same path names
+// the same image in every store, and /uploads/<path> is its URL in all of them.
+type ImageStore interface {
+	// Put stores b at path, replacing anything already there.
+	Put(ctx context.Context, path string, b []byte, mime string) error
+	// Get opens the image at path. It returns errImageNotFound if there is
+	// none. The caller closes it.
+	Get(ctx context.Context, path string) (*storedImage, error)
+	// Delete removes the image at path. One that is already gone is not an
+	// error.
+	Delete(ctx context.Context, path string) error
+	// Exists reports whether there is an image at path.
+	Exists(ctx context.Context, path string) (bool, error)
+	// Probe checks that the store can be written to, so that a store that
+	// cannot is reported at startup rather than at the first upload.
+	Probe(ctx context.Context) error
+}
+
+// storedImage is an open image: a stream that can seek, which is what lets
+// http.ServeContent answer Range requests from either store.
+type storedImage struct {
+	io.ReadSeekCloser
+	Size    int64
+	ModTime time.Time
+	MIME    string
+}
+
+var errImageNotFound = errors.New("image not found")
+
+// imageStore returns the store uploads go to, choosing it from [storage]
+// the first time it is asked for.
+func (app *App) imageStore() ImageStore {
+	if err := app.initImageStore(); err != nil {
+		// Initialize has already refused to start on this error, so only
+		// an App built some other way gets here. Falling back to the
+		// local directory would put images where no other node can see
+		// them, so every call fails instead.
+		return brokenImageStore{err}
+	}
+	return app.images
+}
+
+// initImageStore picks the image store from the configuration, once. With no
+// [storage] section, or type = local, it is the directory images have always
+// been written to.
+func (app *App) initImageStore() error {
+	app.imagesOnce.Do(func() {
+		if !app.cfg.Storage.UsesS3() {
+			app.images = &localImageStore{root: app.uploadsRoot}
+			return
+		}
+		app.images, app.imagesErr = newS3ImageStore(app.cfg.Storage)
+	})
+	return app.imagesErr
+}
+
+// brokenImageStore stands in for a store that could not be set up.
+type brokenImageStore struct{ err error }
+
+func (b brokenImageStore) Put(context.Context, string, []byte, string) error { return b.err }
+func (b brokenImageStore) Get(context.Context, string) (*storedImage, error) { return nil, b.err }
+func (b brokenImageStore) Delete(context.Context, string) error              { return b.err }
+func (b brokenImageStore) Exists(context.Context, string) (bool, error)      { return false, b.err }
+func (b brokenImageStore) Probe(context.Context) error                       { return b.err }
+
+// writeUploadedImage stores b at the given uploads-relative path.
 func (app *App) writeUploadedImage(relPath string, b []byte) error {
-	full := filepath.Join(app.uploadsRoot(), filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(full, b, 0644)
+	return app.imageStore().Put(context.Background(), relPath, b, mimeForPath(relPath))
 }
 
-// removeUploadedImage deletes the file at the given uploads-relative path. A
-// file that is already gone is not an error.
+// removeUploadedImage deletes the image at the given uploads-relative path.
+// One that is already gone is not an error.
 func (app *App) removeUploadedImage(relPath string) error {
-	full := filepath.Join(app.uploadsRoot(), filepath.FromSlash(relPath))
-	err := os.Remove(full)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
+	return app.imageStore().Delete(context.Background(), relPath)
 }
 
-// ensureUploadsWritable verifies the uploads directory exists and can be
-// written to, creating it if necessary.
+// ensureUploadsWritable verifies the image store can be written to.
 //
 // Without this an instance starts happily and only fails when a writer
 // first drags in an image, with a 507 and a log line nobody is watching.
@@ -240,9 +299,160 @@ func (app *App) removeUploadedImage(relPath string) error {
 // uploads directory is owned by root while the process runs unprivileged,
 // and a deployment that forgot to mount a volume for it -- are both
 // present from the moment the process starts, so they are worth reporting
-// then.
+// then. With S3 the same holds for a wrong endpoint, bucket or key.
 func (app *App) ensureUploadsWritable() error {
-	root := app.uploadsRoot()
+	return app.imageStore().Probe(context.Background())
+}
+
+// mimeForPath returns the type an image is served as, from its extension.
+// Paths are server-derived (see imagePath), so the extension is one this
+// server chose for the bytes it stored.
+func mimeForPath(relPath string) string {
+	ext := strings.ToLower(strings.TrimPrefix(path.Ext(relPath), "."))
+	for _, m := range []string{"image/png", "image/jpeg", "image/gif", svgMIME} {
+		if extForMIME(m) == ext {
+			return m
+		}
+	}
+	if ext == "jpeg" {
+		return "image/jpeg"
+	}
+	return "application/octet-stream"
+}
+
+// cleanImagePath turns the path of a request under /uploads/ into a store
+// path, or reports that it cannot name an image. The local store has
+// http.Dir to refuse a path that climbs out of its root; an object store has
+// nothing like it, so this is that refusal.
+func cleanImagePath(p string) (string, bool) {
+	p = strings.TrimPrefix(p, "/")
+	if p == "" || strings.HasSuffix(p, "/") || strings.Contains(p, "\\") {
+		return "", false
+	}
+	if c := path.Clean("/" + p); c != "/"+p {
+		return "", false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+			return "", false
+		}
+	}
+	return p, true
+}
+
+// uploadsHandler serves /uploads/<path>. The URL is the same whichever store
+// holds the image, because remote instances have cached the ones already
+// published. The local store is served by http.FileServer, exactly as
+// before. Any other store is streamed through this server rather than
+// redirected to: a redirect would change what remote caches see and expose
+// the bucket.
+func (app *App) uploadsHandler() http.Handler {
+	var h http.Handler
+	if ls, ok := app.imageStore().(*localImageStore); ok {
+		h = http.FileServer(http.Dir(ls.root()))
+	} else {
+		h = streamImages(app.imageStore())
+	}
+	return uploadHeaders(cacheControl(http.StripPrefix("/"+uploadsDir+"/", h)))
+}
+
+// streamImages serves images out of store, with Range, conditional requests
+// and Content-Length handled by http.ServeContent.
+func streamImages(store ImageStore) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		p, ok := cleanImagePath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		img, err := store.Get(r.Context(), p)
+		if errors.Is(err, errImageNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Error("Unable to read image %s: %v", p, err)
+			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+			return
+		}
+		defer img.Close()
+		// uploadHeaders has already set SVG's type; the rest are set here,
+		// from the extension the server gave the file, never the store's
+		// own idea of it.
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", mimeForPath(p))
+		}
+		http.ServeContent(w, r, "", img.ModTime, img)
+	})
+}
+
+// localImageStore keeps images in a directory on this node. root is a func
+// because the directory comes from the configuration, which a test may change
+// after the store is made.
+type localImageStore struct {
+	root func() string
+}
+
+func (s *localImageStore) full(relPath string) string {
+	return filepath.Join(s.root(), filepath.FromSlash(relPath))
+}
+
+func (s *localImageStore) Put(_ context.Context, relPath string, b []byte, _ string) error {
+	full := s.full(relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(full, b, 0644)
+}
+
+func (s *localImageStore) Get(_ context.Context, relPath string) (*storedImage, error) {
+	f, err := os.Open(s.full(relPath))
+	if os.IsNotExist(err) {
+		return nil, errImageNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if fi.IsDir() {
+		f.Close()
+		return nil, errImageNotFound
+	}
+	return &storedImage{ReadSeekCloser: f, Size: fi.Size(), ModTime: fi.ModTime(), MIME: mimeForPath(relPath)}, nil
+}
+
+func (s *localImageStore) Delete(_ context.Context, relPath string) error {
+	err := os.Remove(s.full(relPath))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *localImageStore) Exists(_ context.Context, relPath string) (bool, error) {
+	fi, err := os.Stat(s.full(relPath))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !fi.IsDir(), nil
+}
+
+// Probe verifies the uploads directory exists and can be written to,
+// creating it if necessary.
+func (s *localImageStore) Probe(_ context.Context) error {
+	root := s.root()
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return fmt.Errorf("uploads directory %s cannot be created: %s", root, err)
 	}

@@ -253,6 +253,32 @@ type (
 		Dir       string `ini:"dir"`
 	}
 
+	// StorageCfg chooses where uploaded images are kept. With no [storage]
+	// section, or with type empty or "local", they stay on this node's disk
+	// under [uploads] dir, exactly as before the section existed.
+	//
+	// Every key is bootstrap: it names infrastructure and carries
+	// credentials, so it lives in config.ini and never in the database.
+	// Write the credentials as ${VAR} references.
+	StorageCfg struct {
+		Type string `ini:"type,omitempty"`
+
+		// S3Endpoint is a URL, and its scheme decides whether TLS is used:
+		// https://s3.example.org, or http://localhost:3900 for a store on
+		// this machine.
+		S3Endpoint        string `ini:"s3_endpoint,omitempty"`
+		S3Region          string `ini:"s3_region,omitempty"`
+		S3Bucket          string `ini:"s3_bucket,omitempty"`
+		S3Prefix          string `ini:"s3_prefix,omitempty"`
+		S3AccessKeyID     string `ini:"s3_access_key_id,omitempty"`
+		S3SecretAccessKey string `ini:"s3_secret_access_key,omitempty"`
+
+		// Path-style addressing (endpoint/bucket/key) is the default,
+		// because Garage and most other non-AWS stores need it. Set this
+		// for a store that wants bucket.endpoint/key instead.
+		S3VirtualHost bool `ini:"s3_virtual_host,omitempty"`
+	}
+
 	// Config holds the complete configuration for running a writefreely instance
 	Config struct {
 		Server       ServerCfg       `ini:"server"`
@@ -260,6 +286,7 @@ type (
 		App          AppCfg          `ini:"app"`
 		Email        EmailCfg        `ini:"email"`
 		Uploads      UploadsCfg      `ini:"uploads"`
+		Storage      StorageCfg      `ini:"storage"`
 		SlackOauth   SlackOauthCfg   `ini:"oauth.slack"`
 		WriteAsOauth WriteAsOauthCfg `ini:"oauth.writeas"`
 		GitlabOauth  GitlabOauthCfg  `ini:"oauth.gitlab"`
@@ -435,6 +462,10 @@ func Load(fname string) (*Config, error) {
 		if uc.Server.PagesParentDir == "" {
 			uc.Server.PagesParentDir = parentDir
 		}
+	}
+
+	if err := uc.Storage.validate(); err != nil {
+		return nil, err
 	}
 
 	// Do any transformations

@@ -37,9 +37,7 @@ func (app *App) InitStaticRoutes(r *mux.Router) {
 	// their own root rather than the static one, because the two are only
 	// the same directory when no upload directory is configured.
 	if app.cfg.Uploads.Enabled {
-		uploads := http.FileServer(http.Dir(app.uploadsRoot()))
-		uploads = cacheControl(http.StripPrefix("/"+uploadsDir+"/", uploads))
-		r.PathPrefix("/" + uploadsDir + "/").Handler(uploadHeaders(uploads))
+		r.PathPrefix("/" + uploadsDir + "/").Handler(app.uploadsHandler())
 	}
 
 	r.PathPrefix("/").Handler(fs)
