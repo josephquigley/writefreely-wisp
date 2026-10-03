@@ -271,6 +271,10 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 	if collectionTitle == "" {
 		collectionTitle = u.Username
 	}
+	// The title can be an OAuth provider's display name and the description
+	// comes from the signup form; neither is bounded before this.
+	collectionTitle = boundedDBText(collectionTitle, collMaxLengthTitle)
+	collectionDesc = boundedDBText(collectionDesc, collMaxLengthDescription)
 	_, err = t.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", u.Username, collectionTitle, collectionDesc, defaultVisibility(cfg), u.ID, 0)
 	if err != nil {
 		t.Rollback()
@@ -347,6 +351,10 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	if db.PostIDExists(alias) {
 		return nil, impart.HTTPError{http.StatusConflict, "Invalid collection name."}
 	}
+
+	// Truncated the same way UpdateCollection does (writefreely#600); on
+	// Postgres an over-long title is an error rather than a truncation.
+	title = boundedDBText(title, collMaxLengthTitle)
 
 	// All good, so create new collection
 	collID, err := db.insertReturningID(db.DB, "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
@@ -709,6 +717,8 @@ func (db *datastore) CreateOwnedPost(post *SubmittedPost, accessToken, collAlias
 }
 
 func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Post, error) {
+	post.sanitizeForStorage()
+
 	idLen := postIDLen
 	friendlyID := id.GenerateFriendlyRandomString(idLen)
 
@@ -803,6 +813,8 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 // UpdateOwnedPost updates an existing post with only the given fields in the
 // supplied AuthenticatedPost.
 func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) error {
+	post.SubmittedPost.sanitizeForStorage()
+
 	params := []interface{}{}
 	var queryUpdates, sep, authCondition string
 	if post.Slug != nil && *post.Slug != "" {
@@ -830,7 +842,10 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 		sep = ", "
 		params = append(params, post.IsRTL.Bool)
 	}
-	if post.Font != "" {
+	// text_appearance is varchar(4), so a font that is not one of the known
+	// values is ignored here, as CreatePost already does, rather than sent to
+	// the database.
+	if post.Font != "" && post.isFontValid() {
 		queryUpdates += sep + "text_appearance = ?"
 		sep = ", "
 		params = append(params, post.Font)
@@ -950,6 +965,8 @@ func (db *datastore) GetCollectionByID(id int64) (*Collection, error) {
 }
 
 func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias string) error {
+	c.sanitizeForStorage()
+
 	// Truncate fields correctly, so we don't get "Data too long for column" errors in MySQL (writefreely#600)
 	if c.Title != nil {
 		*c.Title = parse.Truncate(*c.Title, collMaxLengthTitle)

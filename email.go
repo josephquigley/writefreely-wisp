@@ -110,6 +110,13 @@ func handleCreateEmailSubscription(app *App, w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// An address too long to be valid, or one that is not valid text, is
+	// refused here rather than reaching emailsubscribers.email, where
+	// Postgres would fail the request with a 500 instead of truncating.
+	if len(ss.Email) > emailMaxLength || !isValidDBText(ss.Email) {
+		return impart.HTTPError{http.StatusBadRequest, "That email address isn't valid."}
+	}
+
 	c, err := app.db.GetCollection(ss.CollAlias)
 	if err != nil {
 		log.Error("getCollection: %s", err)
