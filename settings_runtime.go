@@ -207,7 +207,10 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 		// A malformed allowlist stops the import, as it always stopped
 		// startup. Normalising it to the default would silently drop the
 		// operator's allowlist and cut the instance off from its peers.
-		if err := config.ValidateFederationAllowlist(config.ParseFederationAllowlist(app.cfg.App.FederationAllowlist)); err != nil {
+		// The same goes for an allowlist the registry refuses outright.
+		var scratch config.Config
+		fa, _ := config.LookupSetting("app.federation_allowlist")
+		if err := fa.Set(&scratch, app.cfg.App.FederationAllowlist); err != nil {
 			return res, fmt.Errorf("%s: %v; fix it, then start again", app.configPath(), err)
 		}
 	}

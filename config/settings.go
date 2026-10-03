@@ -12,6 +12,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -200,8 +201,16 @@ func (s Setting) Get(c *Config) string {
 	}
 }
 
+// errEnvRef is why a string setting cannot be exactly ${NAME}: config.ini
+// reads such a value as a reference to an environment variable (see envRef),
+// so an export pasted back would not round-trip.
+var errEnvRef = errors.New("a value of exactly ${NAME} would be read as an environment reference in config.ini")
+
 // Set validates raw and stores it in c. c is unchanged on error.
 func (s Setting) Set(c *Config, raw string) error {
+	if s.Kind == KindString && envRef.MatchString(raw) {
+		return fmt.Errorf("%s: %v", s.Name, errEnvRef)
+	}
 	if s.Validate != nil {
 		if err := s.Validate(raw); err != nil {
 			return fmt.Errorf("%s: %v", s.Name, err)
@@ -292,6 +301,9 @@ func ExportINI(rows map[string]string) (string, error) {
 		v, ok := rows[s.Name]
 		if !ok {
 			continue
+		}
+		if s.Kind == KindString && envRef.MatchString(v) {
+			return "", fmt.Errorf("%s: %v", s.Name, errEnvRef)
 		}
 		sec, key := splitSettingName(s.Name)
 		if sec != section {

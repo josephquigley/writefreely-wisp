@@ -175,3 +175,11 @@ func TestSettingsCLIReadOnlyRefusesMarkerAtVersionZero(t *testing.T) {
 		t.Errorf("export %q: %v", out, err)
 	}
 }
+
+func TestSettingsCLISetRefusesEnvReference(t *testing.T) {
+	app := cliTestApp(t)
+	err := SettingSet(NewApp(app.cfgFile), "app.site_name", "${NAME}")
+	if err == nil || !strings.Contains(err.Error(), "would be read as an environment reference") {
+		t.Errorf("set: %v", err)
+	}
+}

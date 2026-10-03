@@ -194,3 +194,34 @@ func TestFederationAllowlistSettingValidatesSyntax(t *testing.T) {
 		}
 	}
 }
+
+const envRefMessage = "a value of exactly ${NAME} would be read as an environment reference in config.ini"
+
+func TestStringSettingsRefuseEnvReference(t *testing.T) {
+	for _, s := range dbSettings {
+		if s.Kind != KindString {
+			continue
+		}
+		var c Config
+		err := s.Set(&c, "${NAME}")
+		if err == nil || !strings.Contains(err.Error(), envRefMessage) {
+			t.Errorf("%s: %v", s.Name, err)
+		}
+	}
+	site, _ := LookupSetting("app.site_name")
+	var c Config
+	for _, ok := range []string{"${NAME} ", "x${NAME}", "$NAME", "${not-a-name}", "${}"} {
+		if err := site.Set(&c, ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+}
+
+func TestExportINIRefusesEnvReference(t *testing.T) {
+	vals := SettingDefaults()
+	vals["app.site_name"] = "${HOME}"
+	out, err := ExportINI(vals)
+	if err == nil || !strings.Contains(err.Error(), envRefMessage) || out != "" {
+		t.Errorf("out %q err %v", out, err)
+	}
+}

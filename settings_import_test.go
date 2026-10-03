@@ -339,3 +339,32 @@ func TestImportRefusesMalformedAllowlist(t *testing.T) {
 		t.Errorf("version %d", ver)
 	}
 }
+
+// A value that is exactly ${NAME} is invalid like any other: the import
+// stores the default and moves on. The allowlist is the exception; dropping
+// it would cut the instance off from its peers, so it stops the import.
+func TestImportNormalisesEnvReference(t *testing.T) {
+	a := newSettingsTestApp(t, "[app]\nhost = https://blog.example\n")
+	a.cfg.App.SiteName = "${NAME}"
+	ctx := context.Background()
+	if _, err := a.importSettings(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, _ := a.db.LoadSettings(ctx)
+	if rows["app.site_name"] != config.SettingDefaults()["app.site_name"] {
+		t.Errorf("site_name stored as %q", rows["app.site_name"])
+	}
+}
+
+func TestImportRefusesEnvReferenceAllowlist(t *testing.T) {
+	a := newSettingsTestApp(t, "[app]\nhost = https://blog.example\n")
+	a.cfg.App.Private = true
+	a.cfg.App.FederationAllowlist = "${PEERS}"
+	ctx := context.Background()
+	if _, err := a.importSettings(ctx); err == nil || !strings.Contains(err.Error(), "federation_allowlist") {
+		t.Fatalf("err %v", err)
+	}
+	if _, ver, _ := a.db.LoadSettings(ctx); ver != 0 {
+		t.Errorf("version %d", ver)
+	}
+}

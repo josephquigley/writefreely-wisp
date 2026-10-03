@@ -138,3 +138,16 @@ func TestAdminUpdateConfigSkipsUnsupportedUpdateChecks(t *testing.T) {
 		t.Error("save did not land")
 	}
 }
+
+func TestSaveSettingsRefusesEnvReference(t *testing.T) {
+	a := loadedSettingsApp(t)
+	ctx := context.Background()
+	_, before, _ := a.db.LoadSettings(ctx)
+	err := a.saveSettings(ctx, map[string]string{"app.site_name": "${NAME}", "app.max_blogs": "9"})
+	if err == nil || !strings.Contains(err.Error(), "would be read as an environment reference") {
+		t.Fatalf("err %v", err)
+	}
+	if _, after, _ := a.db.LoadSettings(ctx); after != before {
+		t.Error("a refused save wrote something")
+	}
+}
