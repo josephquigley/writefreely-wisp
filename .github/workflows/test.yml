@@ -119,6 +119,37 @@ jobs:
       # -tags sqlite so the app-level tests behind that tag (signup, OAuth
       # state, tokens, tags) are compiled and run against Postgres too.
       - run: go test -count=1 -tags sqlite ./...
+      # WFPG-06 made every Postgres timestamp a UTC instant (the session is
+      # pinned to timezone=UTC and the dialect sends UTC), which only means
+      # something if it holds when the Go process itself is not on UTC. The
+      # runner is, so run the whole suite a second time with the process in
+      # a zone that is never UTC and has daylight saving. The first command
+      # fails the step if Go did not actually pick the zone up (Go reads TZ
+      # and the runner's tzdata itself), so a silently UTC rerun cannot pass
+      # for this one.
+      - name: go test (TZ=America/Detroit)
+        env:
+          TZ: America/Detroit
+        run: |
+          cat > "$RUNNER_TEMP/tzcheck.go" <<'EOF'
+          package main
+
+          import (
+          	"fmt"
+          	"os"
+          	"time"
+          )
+
+          func main() {
+          	name, off := time.Now().Zone()
+          	fmt.Printf("Go process time zone: %s (UTC%+d)\n", name, off/3600)
+          	if off == 0 {
+          		os.Exit(1)
+          	}
+          }
+          EOF
+          go run "$RUNNER_TEMP/tzcheck.go"
+          go test -count=1 -tags sqlite ./...
 
   # The suite against a real MariaDB, through the same harness (WF_TEST_DB_TYPE
   # selects the engine; docs/database-testing.md). `make test-mysql` runs the
