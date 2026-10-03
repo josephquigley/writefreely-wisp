@@ -153,7 +153,7 @@ func handleViewAdminMonitor(app *App, u *User, w http.ResponseWriter, r *http.Re
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
 		SysStatus: sysStatus,
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -173,7 +173,7 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -198,7 +198,7 @@ func handleViewAdminUsers(app *App, u *User, w http.ResponseWriter, r *http.Requ
 	}{
 		UserPage:  NewUserPage(app, r, u, "Users", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 	}
 
@@ -248,7 +248,7 @@ func handleViewAdminUser(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		ClearEmail  string
 	}{
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 		Colls:     []inspectedCollection{},
 	}
@@ -280,7 +280,7 @@ func handleViewAdminUser(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		p.LastPost = lp.Format("January 2, 2006, 3:04 PM")
 	}
 
-	colls, err := app.db.GetCollections(p.User, app.cfg.App.Host)
+	colls, err := app.db.GetCollections(p.User, app.Config().App.Host)
 	if err != nil {
 		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get user's collections: %v", err)}
 	}
@@ -289,7 +289,7 @@ func handleViewAdminUser(app *App, u *User, w http.ResponseWriter, r *http.Reque
 			CollectionObj: CollectionObj{Collection: c},
 		}
 
-		if app.cfg.App.Federation {
+		if app.Config().App.Federation {
 			folls, err := app.db.GetAPFollowers(&c)
 			if err == nil {
 				// TODO: handle error here (at least log it)
@@ -415,7 +415,7 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 	}{
 		UserPage:  NewUserPage(app, r, u, "Pages", nil),
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 	}
 
@@ -434,7 +434,7 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 		if c.ID == "about" {
 			hasAbout = true
 			if !c.Title.Valid {
-				p.Pages[i].Title = defaultAboutTitle(app.cfg)
+				p.Pages[i].Title = defaultAboutTitle(app.Config())
 			}
 		} else if c.ID == "contact" {
 			hasContact = true
@@ -451,8 +451,8 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 	if !hasAbout {
 		p.Pages = append(p.Pages, &instanceContent{
 			ID:      "about",
-			Title:   defaultAboutTitle(app.cfg),
-			Content: defaultAboutPage(app.cfg),
+			Title:   defaultAboutTitle(app.Config()),
+			Content: defaultAboutPage(app.Config()),
 			Updated: defaultPageUpdatedTime,
 		})
 	}
@@ -467,7 +467,7 @@ func handleViewAdminPages(app *App, u *User, w http.ResponseWriter, r *http.Requ
 		p.Pages = append(p.Pages, &instanceContent{
 			ID:      "privacy",
 			Title:   defaultPrivacyTitle(),
-			Content: defaultPrivacyPolicy(app.cfg),
+			Content: defaultPrivacyPolicy(app.Config()),
 			Updated: defaultPageUpdatedTime,
 		})
 	}
@@ -493,7 +493,7 @@ func handleViewAdminPage(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		Content *instanceContent
 	}{
 		AdminPage: NewAdminPage(app),
-		Config:    app.cfg.App,
+		Config:    app.Config().App,
 		Message:   r.FormValue("m"),
 	}
 
@@ -570,40 +570,36 @@ func handleAdminUpdateSite(app *App, u *User, w http.ResponseWriter, r *http.Req
 }
 
 func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *http.Request) error {
-	apper.App().cfg.App.SiteName = r.FormValue("site_name")
-	apper.App().cfg.App.SiteDesc = r.FormValue("site_desc")
-	apper.App().cfg.App.Landing = r.FormValue("landing")
-	apper.App().cfg.App.OpenRegistration = r.FormValue("open_registration") == "on"
-	apper.App().cfg.App.OpenDeletion = r.FormValue("open_deletion") == "on"
+	apper.App().Config().App.SiteName = r.FormValue("site_name")
+	apper.App().Config().App.SiteDesc = r.FormValue("site_desc")
+	apper.App().Config().App.Landing = r.FormValue("landing")
+	apper.App().Config().App.OpenRegistration = r.FormValue("open_registration") == "on"
+	apper.App().Config().App.OpenDeletion = r.FormValue("open_deletion") == "on"
 	mul, err := strconv.Atoi(r.FormValue("min_username_len"))
 	if err == nil {
-		apper.App().cfg.App.MinUsernameLen = mul
+		apper.App().Config().App.MinUsernameLen = mul
 	}
 	mb, err := strconv.Atoi(r.FormValue("max_blogs"))
 	if err == nil {
-		apper.App().cfg.App.MaxBlogs = mb
+		apper.App().Config().App.MaxBlogs = mb
 	}
-	apper.App().cfg.App.Federation = r.FormValue("federation") == "on"
-	apper.App().cfg.App.PublicStats = r.FormValue("public_stats") == "on"
-	apper.App().cfg.App.Monetization = r.FormValue("monetization") == "on"
+	apper.App().Config().App.Federation = r.FormValue("federation") == "on"
+	apper.App().Config().App.PublicStats = r.FormValue("public_stats") == "on"
+	apper.App().Config().App.Monetization = r.FormValue("monetization") == "on"
 	if r.FormValue("private") == "on" || !apper.App().canDisablePrivateMode() {
-		apper.App().cfg.App.Private = true
+		apper.App().Config().App.Private = true
 	} else {
-		apper.App().cfg.App.Private = false
+		apper.App().Config().App.Private = false
 	}
-	apper.App().cfg.App.LocalTimeline = r.FormValue("local_timeline") == "on"
-	if apper.App().cfg.App.LocalTimeline && apper.App().timeline == nil {
-		log.Info("Initializing local timeline...")
-		initLocalTimeline(apper.App())
+	apper.App().Config().App.LocalTimeline = r.FormValue("local_timeline") == "on"
+	apper.App().Config().App.UserInvites = r.FormValue("user_invites")
+	if apper.App().Config().App.UserInvites == "none" {
+		apper.App().Config().App.UserInvites = ""
 	}
-	apper.App().cfg.App.UserInvites = r.FormValue("user_invites")
-	if apper.App().cfg.App.UserInvites == "none" {
-		apper.App().cfg.App.UserInvites = ""
-	}
-	apper.App().cfg.App.DefaultVisibility = r.FormValue("default_visibility")
+	apper.App().Config().App.DefaultVisibility = r.FormValue("default_visibility")
 
 	m := "?cm=Configuration+saved."
-	err = apper.SaveConfig(apper.App().cfg)
+	err = apper.SaveConfig(apper.App().Config())
 	if err != nil {
 		m = "?cm=" + err.Error()
 	}

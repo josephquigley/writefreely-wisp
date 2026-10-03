@@ -88,7 +88,7 @@ type announceablePost struct {
 // postIRI returns the ActivityPub id of a post, which is the same address
 // ActivityObject gives it.
 func postIRI(app *App, postID string) string {
-	return app.cfg.App.Host + "/api/posts/" + postID
+	return app.Config().App.Host + "/api/posts/" + postID
 }
 
 // newAnnounce builds the Announce the instance actor delivers for one post.
@@ -118,10 +118,10 @@ func newAnnounce(app *App, actor *activitystreams.Person, p announceablePost) *a
 // feature is on, federation is on, and the instance is not private without an
 // allowlist — the same gate federatePost applies before it delivers anything.
 func instanceAnnounceEnabled(app *App) bool {
-	if !app.cfg.App.InstanceAnnounce || !app.cfg.App.Federation {
+	if !app.Config().App.InstanceAnnounce || !app.Config().App.Federation {
 		return false
 	}
-	return !app.cfg.App.Private || app.federationAllowlistActive()
+	return !app.Config().App.Private || app.federationAllowlistActive()
 }
 
 // instanceAnnounceEligible reports whether a post in the given collection may
@@ -391,7 +391,7 @@ func handleFetchInstanceOutbox(app *App, w http.ResponseWriter, r *http.Request,
 	// With the feature off the actor has no announces to show. An empty
 	// collection is the honest answer, and a peer reading it learns not to
 	// expect a firehose.
-	if !app.cfg.App.InstanceAnnounce {
+	if !app.Config().App.InstanceAnnounce {
 		return impart.RenderActivityJSON(w, activitystreams.NewOrderedCollection(accountRoot, "outbox", 0), http.StatusOK)
 	}
 

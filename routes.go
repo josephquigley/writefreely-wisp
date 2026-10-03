@@ -27,7 +27,7 @@ import (
 // TODO: this should just be a func, not method
 func (app *App) InitStaticRoutes(r *mux.Router) {
 	// Handle static files
-	fs := http.FileServer(http.Dir(filepath.Join(app.cfg.Server.StaticParentDir, staticDir)))
+	fs := http.FileServer(http.Dir(filepath.Join(app.Config().Server.StaticParentDir, staticDir)))
 	fs = cacheControl(fs)
 	app.shttp = http.NewServeMux()
 	app.shttp.Handle("/", fs)
@@ -36,7 +36,7 @@ func (app *App) InitStaticRoutes(r *mux.Router) {
 	// ever treating one as anything but an image. They are served from
 	// their own root rather than the static one, because the two are only
 	// the same directory when no upload directory is configured.
-	if app.cfg.Uploads.Enabled {
+	if app.Config().Uploads.Enabled {
 		uploads := http.FileServer(http.Dir(app.uploadsRoot()))
 		uploads = cacheControl(http.StripPrefix("/"+uploadsDir+"/", uploads))
 		r.PathPrefix("/" + uploadsDir + "/").Handler(uploadHeaders(uploads))
@@ -51,8 +51,8 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	handler := NewWFHandler(apper)
 
 	// Set up routes
-	hostSubroute := apper.App().cfg.App.Host[strings.Index(apper.App().cfg.App.Host, "://")+3:]
-	if apper.App().cfg.App.SingleUser {
+	hostSubroute := apper.App().Config().App.Host[strings.Index(apper.App().Config().App.Host, "://")+3:]
+	if apper.App().Config().App.SingleUser {
 		hostSubroute = "{domain}"
 	} else {
 		if strings.HasPrefix(hostSubroute, "localhost") {
@@ -60,7 +60,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 		}
 	}
 
-	if apper.App().cfg.App.SingleUser {
+	if apper.App().Config().App.SingleUser {
 		log.Info("Adding %s routes (single user)...", hostSubroute)
 	} else {
 		log.Info("Adding %s routes (multi-user)...", hostSubroute)
@@ -70,7 +70,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	write := r.PathPrefix("/").Subrouter()
 
 	// Federation endpoint configurations
-	wf := webfinger.Default(wfResolver{apper.App().db, apper.App().cfg})
+	wf := webfinger.Default(wfResolver{apper.App().db, apper.App()})
 	wf.NoTLSHandler = nil
 
 	// Federation endpoints
@@ -79,8 +79,8 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	// webfinger
 	write.HandleFunc(webfinger.WebFingerPath, handler.LogHandlerFuncDiscovery(http.HandlerFunc(wf.Webfinger)))
 	// nodeinfo
-	niCfg := nodeInfoConfig(apper.App().db, apper.App().cfg)
-	ni := nodeinfo.NewService(*niCfg, nodeInfoResolver{apper.App().cfg, apper.App().db})
+	niCfg := nodeInfoConfig(apper.App().db, apper.App().Config())
+	ni := nodeinfo.NewService(*niCfg, nodeInfoResolver{apper.App(), apper.App().db})
 	write.HandleFunc(nodeinfo.NodeInfoPath, handler.LogHandlerFunc(http.HandlerFunc(ni.NodeInfoDiscover)))
 	write.HandleFunc(niCfg.InfoURL, handler.LogHandlerFunc(http.HandlerFunc(ni.NodeInfo)))
 
@@ -210,7 +210,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	RouteRead(handler, UserLevelReader, write.PathPrefix("/read").Subrouter())
 
 	draftEditPrefix := ""
-	if apper.App().cfg.App.SingleUser {
+	if apper.App().Config().App.SingleUser {
 		draftEditPrefix = "/d"
 		write.Path("/me/new").Handler(csrfProtect(apper.App(), handler.Web(handleViewPad, UserLevelUser))).Methods("GET")
 	} else {
@@ -221,7 +221,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	write.Path(draftEditPrefix + "/{action}/edit").Handler(csrfProtect(apper.App(), handler.Web(handleViewPad, UserLevelUser))).Methods("GET")
 	write.HandleFunc(draftEditPrefix+"/{action}/meta", handler.Web(handleViewMeta, UserLevelUser)).Methods("GET")
 	// Collections
-	if apper.App().cfg.App.SingleUser {
+	if apper.App().Config().App.SingleUser {
 		RouteCollections(handler, write.PathPrefix("/").Subrouter())
 	} else {
 		write.HandleFunc("/{prefix:[@~$!\\-+]}{collection}", handler.Web(handleViewCollection, UserLevelReader))
@@ -240,7 +240,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 // receives: behind a proxy that terminates TLS the configured host is
 // https even though the proxied request arrives as http.
 func (app *App) servesPlaintextHTTP() bool {
-	return strings.HasPrefix(strings.ToLower(app.cfg.App.Host), "http://")
+	return strings.HasPrefix(strings.ToLower(app.Config().App.Host), "http://")
 }
 
 // csrfOptions returns the CSRF cookie options for this instance. A Secure

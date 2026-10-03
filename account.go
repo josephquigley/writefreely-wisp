@@ -67,7 +67,7 @@ func NewUserPage(app *App, r *http.Request, u *User, title string, flashes []str
 	up.Flashes = flashes
 	up.Path = r.URL.Path
 	up.IsAdmin = u.IsAdmin()
-	up.CanInvite = canUserInvite(app.cfg, up.IsAdmin)
+	up.CanInvite = canUserInvite(app.Config(), up.IsAdmin)
 	return up
 }
 
@@ -92,7 +92,7 @@ func apiSignup(app *App, w http.ResponseWriter, r *http.Request) error {
 }
 
 func signup(app *App, w http.ResponseWriter, r *http.Request) (*AuthUser, error) {
-	if app.cfg.App.DisablePasswordAuth {
+	if app.Config().App.DisablePasswordAuth {
 		err := ErrDisabledPasswordAuth
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func signupWithRegistration(app *App, signup userRegistration, w http.ResponseWr
 	reqJSON := IsJSON(r)
 
 	// Signup checks are enforced here to keep them from being bypassed on different endpoints.
-	if app.cfg.App.DisablePasswordAuth {
+	if app.Config().App.DisablePasswordAuth {
 		return nil, ErrDisabledPasswordAuth
 	}
 	// Closed registration requires a valid, active invite code.
@@ -159,7 +159,7 @@ func signupWithRegistration(app *App, signup userRegistration, w http.ResponseWr
 		desiredUsername = signup.Alias
 		signup.Alias = getSlug(signup.Alias, "")
 	}
-	if !author.IsValidUsername(app.cfg, signup.Alias) {
+	if !author.IsValidUsername(app.Config(), signup.Alias) {
 		// Ensure the username is syntactically correct.
 		return nil, impart.HTTPError{http.StatusPreconditionFailed, "Username is reserved or isn't valid. It must be at least 3 characters long, and can only include letters, numbers, and hyphens."}
 	}
@@ -180,7 +180,7 @@ func signupWithRegistration(app *App, signup userRegistration, w http.ResponseWr
 	}
 
 	// Create actual user
-	if err := app.db.CreateUser(app.cfg, u, desiredUsername, signup.Description); err != nil {
+	if err := app.db.CreateUser(app.Config(), u, desiredUsername, signup.Description); err != nil {
 		return nil, err
 	}
 
@@ -344,7 +344,7 @@ func viewLogin(app *App, w http.ResponseWriter, r *http.Request) error {
 		To:            r.FormValue("to"),
 		Message:       template.HTML(""),
 		Flashes:       []template.HTML{},
-		EmailEnabled:  app.cfg.Email.Enabled(),
+		EmailEnabled:  app.Config().Email.Enabled(),
 		LoginUsername: getTempInfo(app, "login-user", r, w),
 	}
 
@@ -409,7 +409,7 @@ func login(app *App, w http.ResponseWriter, r *http.Request) error {
 
 	redirectTo := r.FormValue("to")
 	if redirectTo == "" {
-		if app.cfg.App.SingleUser {
+		if app.Config().App.SingleUser {
 			redirectTo = "/me/new"
 		} else {
 			redirectTo = "/"
@@ -420,7 +420,7 @@ func login(app *App, w http.ResponseWriter, r *http.Request) error {
 	var err error
 	var signin userCredentials
 
-	if app.cfg.App.DisablePasswordAuth {
+	if app.Config().App.DisablePasswordAuth {
 		err := ErrDisabledPasswordAuth
 		return err
 	}
@@ -486,7 +486,7 @@ func login(app *App, w http.ResponseWriter, r *http.Request) error {
 
 		// Prevent excessive login attempts on the same account
 		// Skip this check in dev environment
-		if !app.cfg.Server.Dev {
+		if !app.Config().Server.Dev {
 			now := time.Now()
 			attemptExp, att := loginAttemptUsers.LoadOrStore(signin.Alias, now.Add(loginAttemptExpiration))
 			if att {
@@ -586,7 +586,7 @@ func getVerboseAuthUser(app *App, token string, u *User, verbose bool) *AuthUser
 		if err != nil {
 			log.Error("Login: Unable to get user posts: %v", err)
 		}
-		colls, err := app.db.GetCollections(u, app.cfg.App.Host)
+		colls, err := app.db.GetCollections(u, app.Config().App.Host)
 		if err != nil {
 			log.Error("Login: Unable to get user collections: %v", err)
 		}
@@ -663,7 +663,7 @@ func viewExportPosts(app *App, w http.ResponseWriter, r *http.Request) ([]byte, 
 
 	// Export as CSV
 	if strings.HasSuffix(r.URL.Path, ".csv") {
-		data = exportPostsCSV(app.cfg.App.Host, u, posts)
+		data = exportPostsCSV(app.Config().App.Host, u, posts)
 		return data, filename, err
 	}
 	if strings.HasSuffix(r.URL.Path, ".zip") {
@@ -776,7 +776,7 @@ func viewMyCollectionsAPI(app *App, u *User, w http.ResponseWriter, r *http.Requ
 		return ErrBadRequestedType
 	}
 
-	p, err := app.db.GetCollections(u, app.cfg.App.Host)
+	p, err := app.db.GetCollections(u, app.Config().App.Host)
 	if err != nil {
 		return err
 	}
@@ -799,7 +799,7 @@ func viewArticles(app *App, u *User, w http.ResponseWriter, r *http.Request) err
 		log.Error("unable to fetch flashes: %v", err)
 	}
 
-	c, err := app.db.GetPublishableCollections(u, app.cfg.App.Host)
+	c, err := app.db.GetPublishableCollections(u, app.Config().App.Host)
 	if err != nil {
 		log.Error("unable to fetch collections: %v", err)
 	}
@@ -831,7 +831,7 @@ func viewArticles(app *App, u *User, w http.ResponseWriter, r *http.Request) err
 }
 
 func viewCollections(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	c, err := app.db.GetCollections(u, app.cfg.App.Host)
+	c, err := app.db.GetCollections(u, app.Config().App.Host)
 	if err != nil {
 		log.Error("unable to fetch collections: %v", err)
 		return fmt.Errorf("No collections")
@@ -862,7 +862,7 @@ func viewCollections(app *App, u *User, w http.ResponseWriter, r *http.Request) 
 		UserPage:         NewUserPage(app, r, u, u.Username+"'s Blogs", f),
 		Collections:      c,
 		UsedCollections:  int(uc),
-		NewBlogsDisabled: !app.cfg.App.CanCreateBlogs(uc),
+		NewBlogsDisabled: !app.Config().App.CanCreateBlogs(uc),
 		Silenced:         silenced,
 	}
 	d.UserPage.SetMessaging(u)
@@ -877,7 +877,7 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 	if c.OwnerID != u.ID {
 		return ErrCollectionNotFound
 	}
@@ -910,7 +910,7 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 		UserPage:   NewUserPage(app, r, u, "Edit "+c.DisplayTitle(), flashes),
 		Collection: c,
 		Silenced:   silenced,
-		EmailCfg:   app.cfg.Email,
+		EmailCfg:   app.Config().Email,
 
 		ReplyDelegateStatus:  string(delegateStatus),
 		ReplyDelegateMessage: replyDelegateStatusMessage(delegateStatus, c.ReplyDelegate, collectionFediverseHandle(c)),
@@ -1065,7 +1065,7 @@ func viewStats(app *App, u *User, w http.ResponseWriter, r *http.Request) error 
 		if c.OwnerID != u.ID {
 			return ErrCollectionNotFound
 		}
-		c.hostName = app.cfg.App.Host
+		c.hostName = app.Config().App.Host
 	}
 
 	topPosts, err := app.db.GetTopPosts(u, alias, c.hostName)
@@ -1102,11 +1102,11 @@ func viewStats(app *App, u *User, w http.ResponseWriter, r *http.Request) error 
 		VisitsBlog:   alias,
 		Collection:   c,
 		TopPosts:     topPosts,
-		EmailEnabled: app.cfg.Email.Enabled(),
+		EmailEnabled: app.Config().Email.Enabled(),
 		Silenced:     silenced,
 	}
 	obj.UserPage.CollAlias = c.Alias
-	if app.cfg.App.Federation {
+	if app.Config().App.Federation {
 		folls, err := app.db.GetAPFollowers(c)
 		if err != nil {
 			return err
@@ -1155,12 +1155,12 @@ func handleViewSubscribers(app *App, u *User, w http.ResponseWriter, r *http.Req
 		Collection: CollectionNav{
 			Collection: c,
 			Path:       r.URL.Path,
-			SingleUser: app.cfg.App.SingleUser,
+			SingleUser: app.Config().App.SingleUser,
 		},
 		Silenced:          u.IsSilenced(),
 		Filter:            filter,
-		FederationEnabled: app.cfg.App.Federation,
-		CanEmailSub:       app.cfg.Email.Enabled(),
+		FederationEnabled: app.Config().App.Federation,
+		CanEmailSub:       app.Config().Email.Enabled(),
 		EmailSubsEnabled:  c.EmailSubsEnabled(),
 	}
 
@@ -1319,7 +1319,7 @@ func viewResetPassword(app *App, w http.ResponseWriter, r *http.Request) error {
 	}{
 		StaticPage:   pageForReq(app, r),
 		Flashes:      f,
-		EmailEnabled: app.cfg.Email.Enabled(),
+		EmailEnabled: app.Config().Email.Enabled(),
 		CSRFField:    csrf.TemplateField(r),
 		Token:        token,
 		IsResetting:  resetting,
@@ -1351,7 +1351,7 @@ func doAutomatedPasswordChange(app *App, userID int64, newPass string) error {
 func handleResetPasswordInit(app *App, w http.ResponseWriter, r *http.Request) error {
 	returnLoc := impart.HTTPError{http.StatusFound, "/reset"}
 
-	if !app.cfg.Email.Enabled() {
+	if !app.Config().Email.Enabled() {
 		// Email isn't configured, so there's nothing to do; send back to the reset form, where they'll get an explanation
 		return returnLoc
 	}
@@ -1374,7 +1374,7 @@ func handleResetPasswordInit(app *App, w http.ResponseWriter, r *http.Request) e
 		return returnLoc
 	}
 	if u.Email.String == "" {
-		err := impart.HTTPError{http.StatusPreconditionFailed, "User doesn't have an email address. Please contact us (" + app.cfg.App.Host + "/contact) to reset your password."}
+		err := impart.HTTPError{http.StatusPreconditionFailed, "User doesn't have an email address. Please contact us (" + app.Config().App.Host + "/contact) to reset your password."}
 		addSessionFlash(app, w, r, err.Message, nil)
 		return returnLoc
 	}
@@ -1408,14 +1408,14 @@ func handleResetPasswordInit(app *App, w http.ResponseWriter, r *http.Request) e
 
 func emailPasswordReset(app *App, toEmail, token string) error {
 	// Send email
-	mlr, err := mailer.New(app.cfg.Email)
+	mlr, err := mailer.New(app.Config().Email)
 	if err != nil {
 		return err
 	}
 	footerPara := "Didn't request this password reset? Your account is still safe, and you can safely ignore this email."
 
-	plainMsg := fmt.Sprintf("We received a request to reset your password on %s. Please click the following link to continue (or copy and paste it into your browser): %s/reset?t=%s\n\n%s", app.cfg.App.SiteName, app.cfg.App.Host, token, footerPara)
-	m, err := mlr.NewMessage(mailer.FormatAddress(app.cfg.App.SiteName, "noreply-password@"+app.cfg.Email.Domain), "Reset Your "+app.cfg.App.SiteName+" Password", plainMsg, fmt.Sprintf("<%s>", toEmail))
+	plainMsg := fmt.Sprintf("We received a request to reset your password on %s. Please click the following link to continue (or copy and paste it into your browser): %s/reset?t=%s\n\n%s", app.Config().App.SiteName, app.Config().App.Host, token, footerPara)
+	m, err := mlr.NewMessage(mailer.FormatAddress(app.Config().App.SiteName, "noreply-password@"+app.Config().Email.Domain), "Reset Your "+app.Config().App.SiteName+" Password", plainMsg, fmt.Sprintf("<%s>", toEmail))
 	if err != nil {
 		return err
 	}
@@ -1429,12 +1429,12 @@ func emailPasswordReset(app *App, toEmail, token string) error {
         <p style="font-size: 0.86em;margin:1em auto">%s</p>
         </div>
 	</body>
-</html>`, app.cfg.App.Host, app.cfg.App.SiteName, app.cfg.App.SiteName, app.cfg.App.Host, token, footerPara))
+</html>`, app.Config().App.Host, app.Config().App.SiteName, app.Config().App.SiteName, app.Config().App.Host, token, footerPara))
 	return mlr.Send(m)
 }
 
 func loginViaEmail(app *App, alias, redirectTo string) error {
-	if !app.cfg.Email.Enabled() {
+	if !app.Config().Email.Enabled() {
 		return fmt.Errorf("EMAIL ISN'T CONFIGURED on this server")
 	}
 
@@ -1459,15 +1459,15 @@ func loginViaEmail(app *App, alias, redirectTo string) error {
 	}
 
 	// Send email
-	mlr, err := mailer.New(app.cfg.Email)
+	mlr, err := mailer.New(app.Config().Email)
 	if err != nil {
 		return err
 	}
 	toEmail := u.EmailClear(app.keys)
 	footerPara := "This link will only work once and expires in 15 minutes. Didn't ask us to log in? You can safely ignore this email."
 
-	plainMsg := fmt.Sprintf("Log in to %s here: %s/login?to=%s&with=%s\n\n%s", app.cfg.App.SiteName, app.cfg.App.Host, redirectTo, t, footerPara)
-	m, err := mlr.NewMessage(mailer.FormatAddress(app.cfg.App.SiteName, "noreply-login@"+app.cfg.Email.Domain), "Log in to "+app.cfg.App.SiteName, plainMsg, fmt.Sprintf("<%s>", toEmail))
+	plainMsg := fmt.Sprintf("Log in to %s here: %s/login?to=%s&with=%s\n\n%s", app.Config().App.SiteName, app.Config().App.Host, redirectTo, t, footerPara)
+	m, err := mlr.NewMessage(mailer.FormatAddress(app.Config().App.SiteName, "noreply-login@"+app.Config().Email.Domain), "Log in to "+app.Config().App.SiteName, plainMsg, fmt.Sprintf("<%s>", toEmail))
 	if err != nil {
 		return err
 	}
@@ -1481,7 +1481,7 @@ func loginViaEmail(app *App, alias, redirectTo string) error {
         <p style="font-size: 0.86em;color:#666;text-align:center;max-width:35em;margin:1em auto">%s</p>
         </div>
 	</body>
-</html>`, app.cfg.App.Host, app.cfg.App.SiteName, app.cfg.App.Host, redirectTo, t, app.cfg.App.SiteName, footerPara))
+</html>`, app.Config().App.Host, app.Config().App.SiteName, app.Config().App.Host, redirectTo, t, app.Config().App.SiteName, footerPara))
 	return mlr.Send(m)
 }
 
@@ -1524,7 +1524,7 @@ func getTempInfo(app *App, key string, r *http.Request, w http.ResponseWriter) s
 }
 
 func handleUserDelete(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	if !app.cfg.App.OpenDeletion {
+	if !app.Config().App.OpenDeletion {
 		return impart.HTTPError{http.StatusForbidden, "Open account deletion is disabled on this instance."}
 	}
 

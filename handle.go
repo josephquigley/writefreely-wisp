@@ -171,7 +171,7 @@ func (h *Handler) User(f userHandlerFunc) http.HandlerFunc {
 				status = impErr.Status
 				if impErr == ErrUserNotFound {
 					log.Info("Logged-in user not found. Logging out.")
-					sendRedirect(w, http.StatusFound, "/me/logout?to="+h.app.App().cfg.App.LandingPath())
+					sendRedirect(w, http.StatusFound, "/me/logout?to="+h.app.App().Config().App.LandingPath())
 					// Reset err so handleHTTPError does nothing
 					err = nil
 				}
@@ -429,21 +429,21 @@ func (h *Handler) WebErrors(f handlerFunc, ul UserLevelFunc) http.HandlerFunc {
 
 			var session *sessions.Session
 			var err error
-			if ul(h.app.App().cfg) != UserLevelNoneType {
+			if ul(h.app.App().Config()) != UserLevelNoneType {
 				session, err = h.sessionStore.Get(r, cookieName)
-				if err != nil && (ul(h.app.App().cfg) == UserLevelNoneRequiredType || ul(h.app.App().cfg) == UserLevelUserType) {
+				if err != nil && (ul(h.app.App().Config()) == UserLevelNoneRequiredType || ul(h.app.App().Config()) == UserLevelUserType) {
 					// Cookie is required, but we can ignore this error
-					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().cfg), err)
+					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().Config()), err)
 				}
 
 				_, gotUser := session.Values[cookieUserVal].(*User)
-				if ul(h.app.App().cfg) == UserLevelNoneRequiredType && gotUser {
+				if ul(h.app.App().Config()) == UserLevelNoneRequiredType && gotUser {
 					to := correctPageFromLoginAttempt(r)
 					log.Info("Handler: Required NO user, but got one. Redirecting to %s", to)
 					err := impart.HTTPError{http.StatusFound, to}
 					status = err.Status
 					return err
-				} else if ul(h.app.App().cfg) == UserLevelUserType && !gotUser {
+				} else if ul(h.app.App().Config()) == UserLevelUserType && !gotUser {
 					log.Info("Handler: Required a user, but DIDN'T get one. Sending not logged in.")
 					err := ErrNotLoggedIn
 					status = err.Status
@@ -519,21 +519,21 @@ func (h *Handler) Web(f handlerFunc, ul UserLevelFunc) http.HandlerFunc {
 				log.Info("%s", h.app.ReqLog(r, status, time.Since(start)))
 			}()
 
-			if ul(h.app.App().cfg) != UserLevelNoneType {
+			if ul(h.app.App().Config()) != UserLevelNoneType {
 				session, err := h.sessionStore.Get(r, cookieName)
-				if err != nil && (ul(h.app.App().cfg) == UserLevelNoneRequiredType || ul(h.app.App().cfg) == UserLevelUserType) {
+				if err != nil && (ul(h.app.App().Config()) == UserLevelNoneRequiredType || ul(h.app.App().Config()) == UserLevelUserType) {
 					// Cookie is required, but we can ignore this error
-					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().cfg), err)
+					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().Config()), err)
 				}
 
 				_, gotUser := session.Values[cookieUserVal].(*User)
-				if ul(h.app.App().cfg) == UserLevelNoneRequiredType && gotUser {
+				if ul(h.app.App().Config()) == UserLevelNoneRequiredType && gotUser {
 					to := correctPageFromLoginAttempt(r)
 					log.Info("Handler: Required NO user, but got one. Redirecting to %s", to)
 					err := impart.HTTPError{http.StatusFound, to}
 					status = err.Status
 					return err
-				} else if ul(h.app.App().cfg) == UserLevelUserType && !gotUser {
+				} else if ul(h.app.App().Config()) == UserLevelUserType && !gotUser {
 					log.Info("Handler: Required a user, but DIDN'T get one. Sending not logged in.")
 					err := ErrNotLoggedIn
 					status = err.Status
@@ -661,7 +661,7 @@ func (h *Handler) OAuth(f handlerFunc) http.HandlerFunc {
 // federation allowlist, and returns nil when the instance is not private.
 func (h *Handler) requirePrivateModeAccess(r *http.Request) error {
 	app := h.app.App()
-	if !app.cfg.App.Private {
+	if !app.Config().App.Private {
 		return nil
 	}
 
@@ -782,21 +782,21 @@ func (h *Handler) Redirect(url string, ul UserLevelFunc) http.HandlerFunc {
 			start := time.Now()
 
 			var status int
-			if ul(h.app.App().cfg) != UserLevelNoneType {
+			if ul(h.app.App().Config()) != UserLevelNoneType {
 				session, err := h.sessionStore.Get(r, cookieName)
-				if err != nil && (ul(h.app.App().cfg) == UserLevelNoneRequiredType || ul(h.app.App().cfg) == UserLevelUserType) {
+				if err != nil && (ul(h.app.App().Config()) == UserLevelNoneRequiredType || ul(h.app.App().Config()) == UserLevelUserType) {
 					// Cookie is required, but we can ignore this error
-					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().cfg), err)
+					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().Config()), err)
 				}
 
 				_, gotUser := session.Values[cookieUserVal].(*User)
-				if ul(h.app.App().cfg) == UserLevelNoneRequiredType && gotUser {
+				if ul(h.app.App().Config()) == UserLevelNoneRequiredType && gotUser {
 					to := correctPageFromLoginAttempt(r)
 					log.Info("Handler: Required NO user, but got one. Redirecting to %s", to)
 					err := impart.HTTPError{http.StatusFound, to}
 					status = err.Status
 					return err
-				} else if ul(h.app.App().cfg) == UserLevelUserType && !gotUser {
+				} else if ul(h.app.App().Config()) == UserLevelUserType && !gotUser {
 					log.Info("Handler: Required a user, but DIDN'T get one. Sending not logged in.")
 					err := ErrNotLoggedIn
 					status = err.Status

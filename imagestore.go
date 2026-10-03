@@ -204,10 +204,10 @@ func imageSlug(filename string) string {
 
 // uploadsRoot returns the directory uploaded images are written to.
 func (app *App) uploadsRoot() string {
-	if dir := strings.TrimSpace(app.cfg.Uploads.Dir); dir != "" {
+	if dir := strings.TrimSpace(app.Config().Uploads.Dir); dir != "" {
 		return dir
 	}
-	return filepath.Join(app.cfg.Server.StaticParentDir, staticDir, uploadsDir)
+	return filepath.Join(app.Config().Server.StaticParentDir, staticDir, uploadsDir)
 }
 
 // writeUploadedImage stores b at the given uploads-relative path, creating

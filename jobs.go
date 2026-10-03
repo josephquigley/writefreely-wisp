@@ -70,7 +70,7 @@ func runJobs(app *App, jobs []*PostJob, reqColl bool) error {
 			log.Info("[job #%d] Unable to get collection: %s", j.ID, err)
 			continue
 		}
-		coll.hostName = app.cfg.App.Host
+		coll.hostName = app.Config().App.Host
 		coll.ForPublic()
 		p.Collection = &CollectionObj{Collection: *coll}
 		err = emailPost(app, p, p.Collection.ID)

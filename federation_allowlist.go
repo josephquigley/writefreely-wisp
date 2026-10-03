@@ -29,6 +29,7 @@ import (
 	"github.com/writeas/web-core/activitypub"
 	"github.com/writeas/web-core/activitystreams"
 	"github.com/writeas/web-core/log"
+	"github.com/writefreely/writefreely/config"
 )
 
 // parseFederationAllowlist turns a comma-separated list of hostnames into a
@@ -99,20 +100,39 @@ const federationAllowlistInertWarning = "WARNING: federation_allowlist is config
 // warning rather than failing startup. That differs from the private-mode
 // case above, where booting anyway would be dangerous rather than inert.
 func (app *App) initFederationAllowlist() error {
-	app.fedAllowlist = parseFederationAllowlist(app.cfg.App.FederationAllowlist)
-	if err := validateFederationAllowlist(app.fedAllowlist); err != nil {
+	allow, err := buildFederationAllowlist(app.cfg)
+	if err != nil {
 		return err
 	}
-	if len(app.fedAllowlist) > 0 && !app.cfg.App.Private {
-		return fmt.Errorf("federation_allowlist requires private = true: refusing to run an allowlist on a public instance")
-	}
-	if len(app.fedAllowlist) > 0 && !app.cfg.App.Federation {
-		log.Info(federationAllowlistInertWarning)
-	}
+	app.fedAllowlist = allow
 	if app.fedKeys == nil {
 		app.fedKeys = newKeyCache()
 	}
 	return nil
+}
+
+// buildFederationAllowlist parses and checks cfg's allowlist. It is pure,
+// so a candidate configuration can be checked before it is saved.
+func buildFederationAllowlist(cfg *config.Config) (map[string]bool, error) {
+	allow := parseFederationAllowlist(cfg.App.FederationAllowlist)
+	if err := validateFederationAllowlist(allow); err != nil {
+		return nil, err
+	}
+	if len(allow) > 0 && !cfg.App.Private {
+		return nil, fmt.Errorf("federation_allowlist requires private = true: refusing to run an allowlist on a public instance")
+	}
+	if len(allow) > 0 && !cfg.App.Federation {
+		log.Info(federationAllowlistInertWarning)
+	}
+	return allow, nil
+}
+
+// federationAllowlist returns the allowlist in force.
+func (app *App) federationAllowlist() map[string]bool {
+	if s := app.settings.Load(); s != nil {
+		return s.fedAllowlist
+	}
+	return app.fedAllowlist
 }
 
 const (
@@ -203,14 +223,14 @@ func (c *keyCache) set(keyID string, k *rsa.PublicKey, ttl time.Duration) {
 // federationAllowlistActive reports whether a federation allowlist is
 // configured.
 func (app *App) federationAllowlistActive() bool {
-	return len(app.fedAllowlist) > 0
+	return len(app.federationAllowlist()) > 0
 }
 
 // federationOutboundEnabled reports whether this instance may send activities
 // to remote servers. A private instance may, but only when a federation
 // allowlist names the hosts it is allowed to reach.
 func (app *App) federationOutboundEnabled() bool {
-	return !app.cfg.App.Private || app.federationAllowlistActive()
+	return !app.Config().App.Private || app.federationAllowlistActive()
 }
 
 // federationAllowed reports whether the given hostname may federate with this
@@ -230,6 +250,7 @@ func (app *App) federationAllowed(host string) bool {
 	if !app.federationAllowlistActive() {
 		return true
 	}
+	allow := app.federationAllowlist()
 	host = strings.ToLower(host)
 	if host == "" {
 		return false
@@ -240,7 +261,7 @@ func (app *App) federationAllowed(host string) bool {
 	if strings.Contains(host, "*") {
 		return false
 	}
-	if app.fedAllowlist[host] {
+	if allow[host] {
 		return true
 	}
 	// Walk off one label at a time and ask whether a wildcard was configured
@@ -252,7 +273,7 @@ func (app *App) federationAllowed(host string) bool {
 		if !found || after == "" {
 			return false
 		}
-		if app.fedAllowlist[wildcardPrefix+after] {
+		if allow[wildcardPrefix+after] {
 			return true
 		}
 		rest = after
@@ -298,7 +319,7 @@ func (app *App) allowlistedKey(keyID string) (*rsa.PublicKey, error) {
 	u.Fragment = ""
 	actorIRI := u.String()
 
-	resp, err := resolveIRI(app.cfg.App.Host, actorIRI)
+	resp, err := resolveIRI(app.Config().App.Host, actorIRI)
 	if err != nil {
 		app.fedKeys.set(keyID, nil, allowlistKeyErrorTTL)
 		return nil, err

@@ -68,7 +68,7 @@ func viewCollectionPosts(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		// 404 rather than 403: don't confirm that someone else's blog exists.
 		return ErrCollectionNotFound
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	page := pageParam(r)
 	posts, total, err := app.db.GetCollectionPostsForOwner(c.ID, page)
@@ -76,7 +76,7 @@ func viewCollectionPosts(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		return err
 	}
 
-	colls, err := app.db.GetPublishableCollections(u, app.cfg.App.Host)
+	colls, err := app.db.GetPublishableCollections(u, app.Config().App.Host)
 	if err != nil {
 		log.Error("view collection posts: get collections: %v", err)
 		return err
@@ -91,7 +91,7 @@ func viewCollectionPosts(app *App, u *User, w http.ResponseWriter, r *http.Reque
 		Collections: colls,
 		Alias:       c.Alias,
 		ShowBlog:    false,
-		SingleUser:  app.cfg.App.SingleUser,
+		SingleUser:  app.Config().App.SingleUser,
 		Silenced:    u.IsSilenced(),
 		CurrentPage: page,
 		TotalPages:  pageNumbers(total),
@@ -117,7 +117,7 @@ func handleViewAdminPosts(app *App, u *User, w http.ResponseWriter, r *http.Requ
 		UserPage:    NewUserPage(app, r, u, "Posts", flashes),
 		Posts:       posts,
 		ShowBlog:    true,
-		SingleUser:  app.cfg.App.SingleUser,
+		SingleUser:  app.Config().App.SingleUser,
 		Silenced:    u.IsSilenced(),
 		CurrentPage: page,
 		TotalPages:  pageNumbers(total),

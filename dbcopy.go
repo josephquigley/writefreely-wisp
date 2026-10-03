@@ -158,10 +158,10 @@ func CopySQLiteDatabase(apper Apper, opts DBCopyOptions) error {
 
 	apper.LoadConfig()
 	app := apper.App()
-	switch app.cfg.Database.Type {
+	switch app.Config().Database.Type {
 	case driverPostgres:
 	default:
-		return fmt.Errorf("the configured database is %q; db copy writes to a Postgres database, so set [database] type = %s", app.cfg.Database.Type, driverPostgres)
+		return fmt.Errorf("the configured database is %q; db copy writes to a Postgres database, so set [database] type = %s", app.Config().Database.Type, driverPostgres)
 	}
 
 	// mode=ro: the source is only ever read, and a mistyped path fails

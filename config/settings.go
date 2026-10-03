@@ -79,7 +79,7 @@ var dbSettings = []Setting{
 // read from config.ini and never written by a running server.
 var bootstrapSections = []string{
 	"server", "database", "email",
-	"oauth.slack", "oauth.writeas", "oauth.gitlab", "oauth.gitea", "oauth.generic",
+	"oauth.slack", "oauth.writeas", "oauth.gitlab", "oauth.gitea", "oauth.generic", "storage",
 }
 
 // Bootstrap keys in sections that otherwise hold DB settings.
