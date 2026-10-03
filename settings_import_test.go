@@ -199,3 +199,30 @@ func TestImportMismatchLeavesINI(t *testing.T) {
 		t.Error("ini changed after a failed import")
 	}
 }
+
+func TestImportNormalisesInvalidZeroValues(t *testing.T) {
+	// importFixture omits min_username_len and [uploads] max_size_mb, so
+	// the loaded Config holds zeros the registry rejects.
+	a := newSettingsTestApp(t, importFixture)
+	loadINIInto(t, a)
+	ctx := context.Background()
+	if _, err := a.importSettings(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, _ := a.db.LoadSettings(ctx)
+	if rows["app.min_username_len"] != "3" || rows["uploads.max_size_mb"] != "10" {
+		t.Errorf("min_username_len %q, max_size_mb %q", rows["app.min_username_len"], rows["uploads.max_size_mb"])
+	}
+	if _, warns := config.ApplySettings(a.cfg, rows); len(warns) != 0 {
+		t.Errorf("imported rows draw warnings: %v", warns)
+	}
+	// A second node with the same omissions must not see drift.
+	bFile := filepath.Join(t.TempDir(), "config.ini")
+	writeTestINI(t, bFile, importFixture)
+	cfg, _ := config.Load(bFile)
+	b := &App{cfgFile: bFile, db: a.db, cfg: cfg}
+	res, err := b.importSettings(ctx)
+	if err != nil || len(res.Drift) != 0 {
+		t.Errorf("drift %v err %v", res.Drift, err)
+	}
+}

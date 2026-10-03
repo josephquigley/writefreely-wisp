@@ -154,7 +154,7 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 	if err != nil {
 		return res, err
 	}
-	effective := config.SettingsFrom(app.cfg)
+	effective := app.normalisedSettings()
 
 	res.Imported, err = app.db.ClaimSettingsImport(ctx, effective)
 	if err != nil {
@@ -241,4 +241,22 @@ func (app *App) saveSettings(ctx context.Context, changes map[string]string) err
 	app.settingsMu.Lock()
 	defer app.settingsMu.Unlock()
 	return app.loadSettingsLocked(ctx)
+}
+
+// normalisedSettings is config.SettingsFrom(app.cfg) with every value the
+// registry would reject replaced by its default. An ini that omits a key
+// leaves Go's zero value in app.cfg, which for some settings (a minimum
+// length of 0) is not valid; storing it would make every later load warn.
+func (app *App) normalisedSettings() map[string]string {
+	effective := config.SettingsFrom(app.cfg)
+	defs := config.SettingDefaults()
+	var scratch config.Config
+	for _, name := range config.DBSettingNames() {
+		s, _ := config.LookupSetting(name)
+		if err := s.Set(&scratch, effective[name]); err != nil {
+			log.Error("settings: %s was %q in %s, which is not valid (%v); storing the default %q", name, effective[name], app.configPath(), err, defs[name])
+			effective[name] = defs[name]
+		}
+	}
+	return effective
 }
