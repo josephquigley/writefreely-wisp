@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -112,10 +113,13 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return err
 	}
 
-	if err = app.writeUploadedImage(img.RelPath(), stored); err != nil {
+	if err = app.writeUploadedImage(r.Context(), img.RelPath(), stored); err != nil {
 		log.Error("Failed writing uploaded image: %v", err)
 		if rmErr := app.db.DeletePostImage(img.ID); rmErr != nil {
 			log.Error("Failed removing image row after a failed write: %v", rmErr)
+		}
+		if s3Unreachable(err) {
+			return impart.HTTPError{http.StatusServiceUnavailable, "Image storage isn't answering right now, so that image wasn't saved. Try again in a few minutes."}
 		}
 		return impart.HTTPError{http.StatusInsufficientStorage, "Couldn't store that image."}
 	}
@@ -154,7 +158,7 @@ func handleDeleteImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return nil
 	}
 
-	if err = app.deleteImage(img); err != nil {
+	if err = app.deleteImage(r.Context(), img); err != nil {
 		return err
 	}
 
@@ -308,7 +312,7 @@ func removeImageIfUnreferenced(app *App, img *PostImage, excludingPostID string)
 	if refs > 0 {
 		return
 	}
-	if err = app.deleteImage(img); err != nil {
+	if err = app.deleteImage(context.Background(), img); err != nil {
 		log.Error("Unable to delete image %s: %v", img.ID, err)
 		// The row is still here. If it still names a post, that post is gone
 		// or has let go of it, so release it: the orphan sweep only looks at
@@ -333,8 +337,8 @@ func removeImageIfUnreferenced(app *App, img *PostImage, excludingPostID string)
 //
 // No transaction is held across the store call; the row delete is one
 // statement of its own.
-func (app *App) deleteImage(img *PostImage) error {
-	if err := app.removeUploadedImage(img.RelPath()); err != nil && !errors.Is(err, errImageNotFound) {
+func (app *App) deleteImage(ctx context.Context, img *PostImage) error {
+	if err := app.removeUploadedImage(ctx, img.RelPath()); err != nil && !errors.Is(err, errImageNotFound) {
 		log.Error("Failed removing image file %s: %v", img.RelPath(), err)
 		return impart.HTTPError{http.StatusInternalServerError, "Couldn't delete the image."}
 	}

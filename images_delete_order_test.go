@@ -90,7 +90,7 @@ func TestImageDeleteRetrySucceedsAfterObjectAlreadyGone(t *testing.T) {
 	id := uploadTestImage(t, app, u, "a.png")
 	img, err := app.db.GetPostImage(id)
 	require.NoError(t, err)
-	require.NoError(t, app.removeUploadedImage(img.RelPath()))
+	require.NoError(t, app.removeUploadedImage(context.Background(), img.RelPath()))
 	require.Equal(t, 0, countUploadedFiles(t, app))
 
 	_, status := doDelete(t, app, u, id)

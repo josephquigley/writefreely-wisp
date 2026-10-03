@@ -88,6 +88,8 @@ The quickest way to deploy WriteFreely is with [Write.as](https://write.as/write
 
 WriteFreely deploys as a static binary on any platform and architecture that Go supports. Just use our built-in SQLite support, or add a MySQL or MariaDB database, and you'll be up and running!
 
+MySQL needs 5.7.9 or later and MariaDB 10.2.2 or later. Older servers only work with `innodb_file_format=Barracuda`, `innodb_file_per_table` and `innodb_large_prefix` enabled, because some indexed columns need the DYNAMIC row format.
+
 This edition has no pre-built binaries yet. Build from source with `make build`, or run the published container image:
 
 ```
