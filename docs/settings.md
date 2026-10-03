@@ -29,7 +29,17 @@ From a shell, e.g. on a headless install or with `docker compose exec`:
 
 `set` refuses a `config.ini` key and says so. `list`, `get` and `export` only
 read: before the first import they show what `config.ini` says and leave it
-alone.
+alone. If `config.ini` carries the `settings_location = database` marker but
+the database holds no settings (see Upgrading), they refuse instead, the same
+way the server does.
+
+A database setting cannot be exactly a `${VARIABLE}` reference: such a value
+would be read as one if the export were pasted back into `config.ini`. Text
+that merely contains `${...}` is fine.
+
+If two admins have the settings page open and one saves, the other's save is
+refused with "Settings were changed elsewhere since this page was loaded".
+Reload the page and save again. `writefreely settings set` always applies.
 
 The `settings` subcommands print only data on stdout (log lines go to
 stderr), so their output can be piped or redirected. The `-c` flag must
