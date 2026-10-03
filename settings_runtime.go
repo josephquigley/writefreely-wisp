@@ -12,6 +12,8 @@ package writefreely
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -191,4 +193,52 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 		log.Info("Removed %s from %s; they now live in the database.", strings.Join(res.Stripped, ", "), app.configPath())
 	}
 	return res, nil
+}
+
+// settingNameError explains why name cannot be set at runtime.
+func settingNameError(name, cfgPath string) error {
+	if config.IsBootstrap(name) {
+		return fmt.Errorf("%s lives in %s (bootstrap); edit it there and restart", name, cfgPath)
+	}
+	if s := config.SuggestSettings(name); len(s) > 0 {
+		return fmt.Errorf("no setting called %s; did you mean %s?", name, strings.Join(s, " or "))
+	}
+	return fmt.Errorf("no setting called %s", name)
+}
+
+// saveSettings validates changes against the settings in force, writes
+// them, and reloads this node at once. Other nodes pick them up on their
+// next request. Nothing is written unless every value, and the
+// combination, is valid.
+func (app *App) saveSettings(ctx context.Context, changes map[string]string) error {
+	if app.settings.Load() == nil {
+		return errors.New("settings are not in the database yet: run `writefreely db migrate` and restart")
+	}
+	cur := app.Config()
+	cand := *cur
+	stored := map[string]string{}
+	for _, name := range sortedSettingNames(changes) {
+		s, ok := config.LookupSetting(name)
+		if !ok {
+			return settingNameError(name, app.configPath())
+		}
+		if err := s.Set(&cand, changes[name]); err != nil {
+			return err
+		}
+		stored[name] = s.Get(&cand) // normalised text: "TRUE" -> "true"
+	}
+	if _, err := buildFederationAllowlist(&cand); err != nil {
+		return err
+	}
+	if cand.Uploads.Enabled && !cur.Uploads.Enabled {
+		if err := app.ensureUploadsWritable(); err != nil {
+			return fmt.Errorf("cannot enable uploads on this node: %v", err)
+		}
+	}
+	if _, err := app.db.SaveSettings(ctx, stored); err != nil {
+		return err
+	}
+	app.settingsMu.Lock()
+	defer app.settingsMu.Unlock()
+	return app.loadSettingsLocked(ctx)
 }

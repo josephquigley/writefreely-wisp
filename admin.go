@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -167,13 +168,15 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 	p := struct {
 		*UserPage
 		*AdminPage
-		Config config.AppCfg
+		Config  config.AppCfg
+		Uploads config.UploadsCfg
 
 		Message, ConfigMessage string
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		AdminPage: NewAdminPage(app),
 		Config:    app.Config().App,
+		Uploads:   app.Config().Uploads,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -570,38 +573,51 @@ func handleAdminUpdateSite(app *App, u *User, w http.ResponseWriter, r *http.Req
 }
 
 func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *http.Request) error {
-	apper.App().Config().App.SiteName = r.FormValue("site_name")
-	apper.App().Config().App.SiteDesc = r.FormValue("site_desc")
-	apper.App().Config().App.Landing = r.FormValue("landing")
-	apper.App().Config().App.OpenRegistration = r.FormValue("open_registration") == "on"
-	apper.App().Config().App.OpenDeletion = r.FormValue("open_deletion") == "on"
-	mul, err := strconv.Atoi(r.FormValue("min_username_len"))
-	if err == nil {
-		apper.App().Config().App.MinUsernameLen = mul
+	check := func(field string) string {
+		if r.FormValue(field) == "on" {
+			return "true"
+		}
+		return "false"
 	}
-	mb, err := strconv.Atoi(r.FormValue("max_blogs"))
-	if err == nil {
-		apper.App().Config().App.MaxBlogs = mb
+	invites := r.FormValue("user_invites")
+	if invites == "none" {
+		invites = ""
 	}
-	apper.App().Config().App.Federation = r.FormValue("federation") == "on"
-	apper.App().Config().App.PublicStats = r.FormValue("public_stats") == "on"
-	apper.App().Config().App.Monetization = r.FormValue("monetization") == "on"
-	if r.FormValue("private") == "on" || !apper.App().canDisablePrivateMode() {
-		apper.App().Config().App.Private = true
-	} else {
-		apper.App().Config().App.Private = false
+	changes := map[string]string{
+		"app.site_name":            r.FormValue("site_name"),
+		"app.site_description":     r.FormValue("site_desc"),
+		"app.landing":              r.FormValue("landing"),
+		"app.open_registration":    check("open_registration"),
+		"app.open_deletion":        check("open_deletion"),
+		"app.min_username_len":     r.FormValue("min_username_len"),
+		"app.max_blogs":            r.FormValue("max_blogs"),
+		"app.federation":           check("federation"),
+		"app.public_stats":         check("public_stats"),
+		"app.monetization":         check("monetization"),
+		"app.private":              check("private"),
+		"app.local_timeline":       check("local_timeline"),
+		"app.user_invites":         invites,
+		"app.default_visibility":   r.FormValue("default_visibility"),
+		"app.theme":                r.FormValue("theme"),
+		"app.editor":               r.FormValue("editor"),
+		"app.disable_js":           check("disable_js"),
+		"app.webfonts":             check("webfonts"),
+		"app.simple_nav":           check("simple_nav"),
+		"app.wf_modesty":           check("wf_modesty"),
+		"app.chorus":               check("chorus"),
+		"app.forest":               check("forest"),
+		"app.disable_drafts":       check("disable_drafts"),
+		"app.notes_only":           check("notes_only"),
+		"app.federation_allowlist": r.FormValue("federation_allowlist"),
+		"app.instance_announce":    check("instance_announce"),
+		"app.update_checks":        check("update_checks"),
+		"uploads.enabled":          check("uploads_enabled"),
+		"uploads.max_size_mb":      r.FormValue("uploads_max_size_mb"),
 	}
-	apper.App().Config().App.LocalTimeline = r.FormValue("local_timeline") == "on"
-	apper.App().Config().App.UserInvites = r.FormValue("user_invites")
-	if apper.App().Config().App.UserInvites == "none" {
-		apper.App().Config().App.UserInvites = ""
-	}
-	apper.App().Config().App.DefaultVisibility = r.FormValue("default_visibility")
 
 	m := "?cm=Configuration+saved."
-	err = apper.SaveConfig(apper.App().Config())
-	if err != nil {
-		m = "?cm=" + err.Error()
+	if err := apper.App().saveSettings(r.Context(), changes); err != nil {
+		m = "?cm=" + url.QueryEscape(err.Error())
 	}
 	return impart.HTTPError{http.StatusFound, "/admin/settings" + m + "#config"}
 }
