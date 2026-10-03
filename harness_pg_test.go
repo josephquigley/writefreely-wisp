@@ -30,6 +30,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/writefreely/writefreely/config"
 )
 
@@ -147,10 +148,9 @@ func newPostgresTestDB(t testing.TB) *sql.DB {
 // exactly as `writefreely db init` would. cfg may be nil for config.New();
 // its Database.Type is set to postgres either way.
 //
-// While the Postgres schema is not ported (WFPG-03), adminInitDatabase panics
-// with "not implemented for database driver"; the test is then skipped with a
-// message saying so. Any other schema-load error, including one from a
-// partial port, fails the test.
+// A schema-load error fails the test. So does an unsupportedDriver panic: a
+// Postgres case that was forgotten must not turn into a skip while the
+// required test-postgres job stays green.
 func newPostgresTestApp(t testing.TB, cfg *config.Config) *App {
 	t.Helper()
 	sdb := newPostgresTestDB(t)
@@ -160,11 +160,7 @@ func newPostgresTestApp(t testing.TB, cfg *config.Config) *App {
 	cfg.Database.Type = driverPostgres
 	app := &App{db: newDatastore(sdb, driverPostgres), cfg: cfg}
 
-	unported, err := loadPostgresTestSchema(app)
-	if unported != "" {
-		t.Skipf("skipping postgres test: schema load is not ported yet (WFPG-03): %s", unported)
-	}
-	if err != nil {
+	if err := loadPostgresTestSchema(app); err != nil {
 		t.Fatalf("postgres schema load: %v", err)
 	}
 	return app
@@ -177,19 +173,10 @@ func newPostgresTestDatastore(t testing.TB) *datastore {
 	return newPostgresTestApp(t, nil).db
 }
 
-// loadPostgresTestSchema runs adminInitDatabase, turning an
-// unsupportedDriver panic into a non-empty unported message.
-func loadPostgresTestSchema(app *App) (unported string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			msg := fmt.Sprint(r)
-			if !strings.Contains(msg, "not implemented for database driver") {
-				panic(r)
-			}
-			unported = msg
-		}
-	}()
-	return "", adminInitDatabase(app)
+// loadPostgresTestSchema runs adminInitDatabase. It deliberately does not
+// recover: an unsupportedDriver panic must fail the test, not skip it.
+func loadPostgresTestSchema(app *App) error {
+	return adminInitDatabase(app)
 }
 
 // TestPostgresHarness checks the harness itself: a test's database exists
@@ -233,9 +220,7 @@ func TestPostgresHarness(t *testing.T) {
 	}
 }
 
-// TestPostgresSchemaLoads is the probe for the Postgres schema: it skips,
-// naming WFPG-03, until adminInitDatabase supports Postgres, and from then
-// on proves a full `db init` works against a real server.
+// TestPostgresSchemaLoads proves a full `db init` works against a real server.
 func TestPostgresSchemaLoads(t *testing.T) {
 	ds := newPostgresTestDatastore(t)
 	for _, table := range []string{"users", "collections", "posts", "appmigrations"} {
@@ -247,4 +232,17 @@ func TestPostgresSchemaLoads(t *testing.T) {
 			t.Errorf("table %s missing after schema load", table)
 		}
 	}
+}
+
+// TestPostgresSchemaLoadDoesNotSwallowUnportedPanic guards against the
+// harness turning an unsupportedDriver panic into a skip, which would let a
+// migration or query that forgot its Postgres case pass the required
+// test-postgres job unnoticed. It needs no database: the driver is one
+// adminInitDatabase has no branch for, so it panics before touching app.db.
+func TestPostgresSchemaLoadDoesNotSwallowUnportedPanic(t *testing.T) {
+	cfg := config.New()
+	cfg.Database.Type = "oracle"
+	app := &App{cfg: cfg}
+	assert.PanicsWithValue(t, `adminInitDatabase: not implemented for database driver "oracle"`,
+		func() { _ = loadPostgresTestSchema(app) })
 }
