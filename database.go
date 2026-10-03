@@ -1450,6 +1450,17 @@ func tagRegexpTerm(tag string) string {
 	return regexp.QuoteMeta(strings.ToLower(tag))
 }
 
+// tagWordBoundary returns the regular expression that ends a tag in the
+// MySQL tag queries. MySQL before 8.0.4 uses Henry Spencer's implementation,
+// which needs "[[:>:]]"; MySQL 8.0.4+ uses ICU, which rejects that with
+// ERROR 3685 and needs "\b" (as does MariaDB's PCRE).
+func (db *datastore) tagWordBoundary() string {
+	if db.useSpencerRegex {
+		return "[[:>:]]"
+	}
+	return "\\b"
+}
+
 func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFuture bool) ([]string, error) {
 	collID := c.ID
 
@@ -1469,7 +1480,7 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	case driverSQLite:
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	case driverMySQL:
-		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+tagRegexpTerm(tag)+"[[:>:]]")
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
 	default:
 		unsupportedDriver("GetAllPostsTaggedIDs", db.driverName)
 	}
@@ -1533,15 +1544,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	case driverSQLite:
 		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	case driverMySQL:
-		var boundaryRegex string
-		if db.useSpencerRegex {
-			// MySQL earlier than 8.0.4, Henry Spencer's regex implementation
-			boundaryRegex = "[[:>:]]"
-		} else {
-			// MySQL 8.0.4+, International Components for Unicode (ICU) syntax
-			boundaryRegex = "\\b"
-		}
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+boundaryRegex)
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
 	default:
 		unsupportedDriver("GetPostsTagged", db.driverName)
 	}
