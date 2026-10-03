@@ -117,6 +117,10 @@ bump:
 	@echo "    git push"
 	@echo "    gh pr create --base main --title 'Release $(VERSION)'"
 	@echo
+	@echo "The pull request into main needs one bullet under [Unreleased] in"
+	@echo "CHANGELOG.md: one sentence, 35 words at most, summarising the release."
+	@echo "Merging moves it into a section for $(VERSION)+wisp."
+	@echo
 	@echo "Merging it publishes v$(VERSION)+wisp. Put anything an operator"
 	@echo "must do (migrations, new config keys) in the pull request body:"
 	@echo "it becomes the top of the release notes."

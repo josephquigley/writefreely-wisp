@@ -1,0 +1,145 @@
+name: Changelog
+
+# Fork-only. Keeps CHANGELOG.md to one bullet per change: each unrelated
+# change gets its own bullet under [Unreleased], in the Keep a Changelog
+# category that fits it, and related changes share one. Every bullet is one
+# sentence of at most 35 words. Detail belongs in the GitHub release notes.
+# Only the bullet count and the word counts are checked; that each bullet is
+# one sentence, and that unrelated changes are not merged into one bullet, is
+# left to review.
+#
+# Into develop: a pull request must change [Unreleased], either by adding its
+# own bullet or by rewriting the bullet of a closely related change to cover
+# it. A pull request with nothing worth recording opts out by starting its
+# head commit's message with "[kacl-skip]" or "kacl-skip:", which is also how
+# an upstream sync gets through: push an empty commit carrying the prefix.
+#
+# Into main: a pull request into main is a release. wisp-release.yml tags
+# whatever softwareVer app.go names once it merges, and moves the [Unreleased]
+# bullets into a section for that version with kacl-cli. So there must be at
+# least one. A section already named for the version, with the +wisp suffix
+# the tags carry, is accepted too, in case it was cut by hand. There is no
+# opt-out.
+#
+# Uses pull_request_target and an in-job merge for the same reasons as
+# test.yml: the definition comes from the base branch, and what is checked is
+# the merge result. It requests no secrets and only read access to contents.
+on:
+  pull_request_target:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  KACL_VERSION: "0.7.0"
+  MAX_WORDS: "35"
+  BASE_REF: ${{ github.event.pull_request.base.ref }}
+
+jobs:
+  changelog:
+    name: changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Install kacl-cli
+        run: pipx install "python-kacl==$KACL_VERSION"
+      # Read before the merge, so the develop check can tell whether the pull
+      # request changed the summary. Empty when the base has no changelog.
+      - name: Record the base branch's summary
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            kacl-cli get unreleased > "$RUNNER_TEMP/base-unreleased"
+          else
+            : > "$RUNNER_TEMP/base-unreleased"
+          fi
+      - name: Merge the pull request branch
+        id: merge
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          if git log -1 --format=%s FETCH_HEAD | grep -Eqi '^[[:space:]]*(\[kacl-skip\]|kacl-skip:)'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - name: Verify the changelog format
+        run: kacl-cli verify
+
+      - name: Require the pull request to record its change
+        if: env.BASE_REF == 'develop'
+        env:
+          SKIP: ${{ steps.merge.outputs.skip }}
+        run: |
+          # Every bullet: one sentence of at most MAX_WORDS words. At least one.
+          check_bullets() {
+            bullets=$(printf '%s\n' "$2" | grep -c '^- ' || true)
+            if [ "$bullets" -lt 1 ]; then
+              echo "::error file=CHANGELOG.md::$1 has no bullets. Add one per change."
+              exit 1
+            fi
+            printf '%s\n' "$2" | sed -n 's/^- //p' | while IFS= read -r line; do
+              words=$(printf '%s\n' "$line" | wc -w | tr -d ' ')
+              if [ "$words" -gt "$MAX_WORDS" ]; then
+                echo "::error file=CHANGELOG.md::A bullet in $1 is $words words; the limit is $MAX_WORDS: $line"
+                exit 1
+              fi
+            done || exit 1
+          }
+          if [ "$SKIP" = true ]; then
+            echo "Head commit opts out with kacl-skip; no changelog change required."
+            exit 0
+          fi
+
+          entry=$(kacl-cli get unreleased)
+          if [ "$entry" = "$(cat "$RUNNER_TEMP/base-unreleased")" ]; then
+            echo "::error file=CHANGELOG.md::[Unreleased] is unchanged. Add a bullet for this change, or rewrite a closely related bullet to cover it. To opt out, start the head commit message with [kacl-skip] or kacl-skip:."
+            exit 1
+          fi
+
+          check_bullets "[Unreleased]" "$entry"
+          echo "[Unreleased] updated: $bullets bullet(s), each at most $MAX_WORDS words."
+
+      - name: Require the release to list its changes
+        if: env.BASE_REF == 'main'
+        run: |
+          # Every bullet: one sentence of at most MAX_WORDS words. At least one.
+          check_bullets() {
+            bullets=$(printf '%s\n' "$2" | grep -c '^- ' || true)
+            if [ "$bullets" -lt 1 ]; then
+              echo "::error file=CHANGELOG.md::$1 has no bullets. Add one per change."
+              exit 1
+            fi
+            printf '%s\n' "$2" | sed -n 's/^- //p' | while IFS= read -r line; do
+              words=$(printf '%s\n' "$line" | wc -w | tr -d ' ')
+              if [ "$words" -gt "$MAX_WORDS" ]; then
+                echo "::error file=CHANGELOG.md::A bullet in $1 is $words words; the limit is $MAX_WORDS: $line"
+                exit 1
+              fi
+            done || exit 1
+          }
+          version=$(sed -n 's/^[[:space:]]*softwareVer = "\(.*\)"/\1/p' app.go)
+          test -n "$version" || { echo "::error::no softwareVer in app.go"; exit 1; }
+          version="$version+wisp"
+
+          if entry=$(kacl-cli get "$version" 2>/dev/null); then
+            where="$version"
+          else
+            entry=$(kacl-cli get unreleased)
+            where="[Unreleased]"
+          fi
+
+          check_bullets "$where" "$entry"
+          echo "$version: $bullets bullet(s) in $where, each at most $MAX_WORDS words."

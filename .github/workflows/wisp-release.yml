@@ -149,15 +149,48 @@ jobs:
             echo "previous=${previous}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Set the commit identity
+        if: steps.decide.outputs.release == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      # The release's bullets wait under [Unreleased] until now; changelog.yml
+      # refused the pull request into main without any. kacl-cli moves them into
+      # a dated section for this version and updates the compare links, and
+      # the result is committed to main so the tag below includes it.
+      #
+      # That commit is pushed with GITHUB_TOKEN, which triggers no workflow,
+      # so it builds no image of its own. The retag below still names the
+      # image built from GITHUB_SHA, the merge itself: the two commits differ
+      # only in CHANGELOG.md.
+      #
+      # A section already named for this version means it was cut by hand,
+      # and is left alone.
+      - name: Release the changelog
+        if: steps.decide.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+          KACL_VERSION: "0.7.0"
+        run: |
+          pipx install "python-kacl==$KACL_VERSION"
+          if kacl-cli get "${VERSION}+wisp" >/dev/null 2>&1; then
+            echo "CHANGELOG.md already has ${VERSION}+wisp; leaving it"
+            exit 0
+          fi
+          kacl-cli release "${VERSION}+wisp" --modify --auto-link
+          kacl-cli verify
+          git add CHANGELOG.md
+          git commit -m "Changelog for ${VERSION}"
+          git push origin HEAD:main
+
       - name: Create and push the tag
         if: steps.decide.outputs.release == 'true'
         env:
           TAG: ${{ steps.decide.outputs.tag }}
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
-          git -c user.name='github-actions[bot]' \
-              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              tag -a "$TAG" -m "Wisp Edition ${VERSION}"
+          git tag -a "$TAG" -m "Wisp Edition ${VERSION}"
           git push origin "$TAG"
 
       # The operator-facing half of the notes: what someone upgrading has to
@@ -246,6 +279,32 @@ jobs:
           docker buildx imagetools create -t "${IMAGE}:${DOCKER_TAG}" "$source"
           docker buildx imagetools create -t "${IMAGE}:${SERIES_TAG}" "$source"
           docker buildx imagetools create -t "${IMAGE}:latest" "$source"
+
+      # The changelog commit exists only on main, so develop would keep the
+      # bullets under [Unreleased] and list them again in the next release.
+      # Merging main back carries the released section over, and the merge
+      # commit the "Release X to main" pull request created along with it.
+      #
+      # Last, so a conflict cannot hold up a release that is otherwise
+      # complete. If it fails, the release stands: merge main into develop by
+      # hand, keeping develop's [Unreleased] entries and main's new section.
+      - name: Merge main back into develop
+        if: steps.decide.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          # Explicit refspecs, so both tracking refs are current whatever the
+          # checkout configured and whether or not the changelog step pushed.
+          git fetch origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/develop:refs/remotes/origin/develop
+          git checkout -B develop origin/develop
+          git merge --no-ff origin/main -m "Merge main into develop after ${VERSION}" || {
+            git merge --abort
+            echo "::error::main does not merge cleanly into develop. The release is published; merge main into develop by hand."
+            exit 1
+          }
+          git push origin develop
 
   retag:
     name: retag
