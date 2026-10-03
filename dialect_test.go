@@ -91,7 +91,7 @@ func TestDialectHelpersUnchanged(t *testing.T) {
 
 	lite := &datastore{driverName: driverSQLite}
 	assert.Equal(t, "strftime('%Y-%m-%d %H:%M:%S','now')", lite.now())
-	assert.Equal(t, "SUBSTR(content, 0, 80)", lite.clip("content", 80))
+	assert.Equal(t, "SUBSTR(content, 1, 80)", lite.clip("content", 80))
 	assert.Equal(t, "ON CONFLICT(collection_id, attribute) DO UPDATE SET", lite.upsert("collection_id", "attribute"))
 	assert.Equal(t, "DATETIME('now', '-24 HOUR')", lite.dateAdd(-24, "HOUR"))
 	assert.Equal(t, "DATETIME('now', '-6 MONTH')", lite.dateSub(6, "MONTH"))
