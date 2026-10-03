@@ -16,14 +16,11 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ### Added
 
-- PostgreSQL is supported as a third database alongside MySQL and SQLite: set `type = postgres` with `username`, `password`, `database`, `host`, `port` and `tls` under `[database]`.
-- `writefreely db copy --from sqlite:<path>` copies a SQLite database into an empty, initialized Postgres database in one transaction, verifying row counts and checksums before committing.
+- PostgreSQL is supported alongside MySQL and SQLite (`type = postgres` under `[database]`), and `writefreely db copy --from sqlite:<path>` moves an existing SQLite database into Postgres, verified before committing.
 
 ### Changed
 
-- Email-subscriber addresses, post IDs, slugs, language codes and remote handles are now matched case-insensitively on every database, so `/lang:EN` and mixed-case addresses work.
-- Titles, slugs and remote actor fields are cleaned of NUL bytes and invalid UTF-8 and trimmed to their column limits; OAuth remote user IDs over 128 characters are refused.
-- Renaming a blog now replaces a stale redirect under the old name instead of keeping it, and the rename succeeds even if recording the redirect fails.
+- Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
 
 ### Security
 
