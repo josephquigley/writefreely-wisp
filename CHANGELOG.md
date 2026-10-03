@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and OAuth login states are strictly single-use, refusing replayed or concurrent callbacks.
+- Access tokens match exactly instead of via `LIKE`, closing a wildcard bypass, `db init` stops at the first failed table, and OAuth login states are strictly single-use.
 
 ## [0.20.0+wisp] - 2026-09-09
 
