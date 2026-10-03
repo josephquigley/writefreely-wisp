@@ -19,8 +19,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/writefreely/writefreely/config"
 )
@@ -255,6 +257,15 @@ func (c *rebindConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		conn.Close()
 		return nil, fmt.Errorf("%s: pgx returned %T, want *stdlib.Conn", driverPostgresRebind, conn)
 	}
+	// pgx scans timestamptz into time.Local whatever the session TimeZone
+	// is. Scan into UTC instead (WFPG-06), as SQLite values already are:
+	// Post.Created8601 and friends format with a literal "Z", so a local
+	// value would render the wrong instant on any host not running in UTC.
+	pc.Conn().TypeMap().RegisterType(&pgtype.Type{
+		Name:  "timestamptz",
+		OID:   pgtype.TimestamptzOID,
+		Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+	})
 	return &rebindConn{inner: pc}, nil
 }
 

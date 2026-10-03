@@ -46,11 +46,13 @@ import (
 //     appended after partial output from the page that actually failed)
 
 // newTemplateTestApp builds a fully-initialized App backed by a temporary
-// SQLite database and disposable in-memory keys, for use in rendering
-// tests. It skips the test if the binary wasn't built with `-tags sqlite`.
+// SQLite database (or, under WF_TEST_DB_TYPE=mysql or postgres, a fresh one
+// on that engine) and disposable in-memory keys, for use in rendering tests.
+// On SQLite it skips the test if the binary wasn't built with `-tags sqlite`.
 func newTemplateTestApp(t *testing.T, mutate func(cfg *config.Config)) (*App, *mux.Router) {
 	t.Helper()
-	if !SQLiteEnabled {
+	engine, _ := testDBEngine()
+	if !SQLiteEnabled && engine == driverSQLite {
 		t.Skip("SQLite support not compiled in; run with `go test -tags sqlite` to run this test")
 	}
 
@@ -91,11 +93,17 @@ func newTemplateTestApp(t *testing.T, mutate func(cfg *config.Config)) (*App, *m
 	app.InitSession()
 	app.InitDecoder()
 
-	connectToDatabase(app)
-	t.Cleanup(func() { app.db.Close() })
+	if e := engineTestApp(t, app.cfg); e != nil {
+		// A fresh wf_test_* database with the schema loaded; see
+		// harness_app_test.go.
+		app.db = e.db
+	} else {
+		connectToDatabase(app)
+		t.Cleanup(func() { app.db.Close() })
 
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init database: %v", err)
+		if err := adminInitDatabase(app); err != nil {
+			t.Fatalf("init database: %v", err)
+		}
 	}
 
 	initActivityPub(app)

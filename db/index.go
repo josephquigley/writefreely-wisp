@@ -49,5 +49,12 @@ func (b *CreateIndexSqlBuilder) ToSQL() (string, error) {
 }
 
 func (b *DropIndexSqlBuilder) ToSQL() (string, error) {
-	return fmt.Sprintf("DROP INDEX %s on %s", b.Name, b.Table), nil
+	switch b.Dialect {
+	case DialectPostgres:
+		// Postgres index names are per schema, not per table.
+		return fmt.Sprintf("DROP INDEX %s", b.Name), nil
+	case DialectSQLite, DialectMySQL:
+		return fmt.Sprintf("DROP INDEX %s on %s", b.Name, b.Table), nil
+	}
+	return "", fmt.Errorf("unsupported dialect %d for DROP INDEX %s", b.Dialect, b.Name)
 }

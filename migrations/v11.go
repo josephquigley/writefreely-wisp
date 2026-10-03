@@ -34,6 +34,8 @@ func widenOauthAcceesToken(db *datastore) error {
 			return err
 		}
 	case driverSQLite:
+	case driverPostgres:
+		return errBeforePostgresBase("widenOauthAcceesToken")
 	default:
 		unsupportedDriver("widenOauthAcceesToken", db.driverName)
 	}

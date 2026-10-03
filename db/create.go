@@ -66,7 +66,11 @@ var UnsetSize OptionalInt = OptionalInt{Set: false, Value: 0}
 var UnsetDefault OptionalString = OptionalString{Set: false, Value: ""}
 
 func (d ColumnType) Format(dialect DialectType, size OptionalInt) (string, error) {
-	if dialect != DialectMySQL && dialect != DialectSQLite {
+	switch dialect {
+	case DialectMySQL, DialectSQLite:
+	case DialectPostgres:
+		return d.formatPostgres(size)
+	default:
 		return "", fmt.Errorf("unsupported column type %d for dialect %d and size %v", d, dialect, size)
 	}
 	switch d {
@@ -127,6 +131,30 @@ func (d ColumnType) Format(dialect DialectType, size OptionalInt) (string, error
 		return "TEXT", nil
 	}
 	return "", fmt.Errorf("unsupported column type %d for dialect %d and size %v", d, dialect, size)
+}
+
+// formatPostgres follows postgres.sql's mapping. Integer types take no
+// display width on Postgres, so size is ignored for them. CHAR becomes
+// VARCHAR, because Postgres pads a CHAR(n) value with spaces.
+func (d ColumnType) formatPostgres(size OptionalInt) (string, error) {
+	switch d {
+	case ColumnTypeSmallInt:
+		return "SMALLINT", nil
+	case ColumnTypeInteger:
+		return "INTEGER", nil
+	case ColumnTypeChar, ColumnTypeVarChar:
+		if size.Set {
+			return fmt.Sprintf("VARCHAR(%d)", size.Value), nil
+		}
+		return "VARCHAR", nil
+	case ColumnTypeBool:
+		return "BOOLEAN", nil
+	case ColumnTypeDateTime:
+		return "TIMESTAMPTZ", nil
+	case ColumnTypeText:
+		return "TEXT", nil
+	}
+	return "", fmt.Errorf("unsupported column type %d for dialect %d and size %v", d, DialectPostgres, size)
 }
 
 func (c *Column) SetName(name string) *Column {

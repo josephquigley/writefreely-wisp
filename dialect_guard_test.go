@@ -39,23 +39,6 @@ import (
 var unportedDriverSites = map[string]int{
 	// Seeded by WFPG-01 from develop 04bf560. The trailing ticket is a best
 	// guess at the owner; the ticket texts in Outline win.
-	"app.go:adminInitDatabase":                       1, // WFPG-03
-	"database.go:datastore.CreatePost":               2, // WFPG-06
-	"database.go:datastore.UpdateCollection":         2, // WFPG-04
-	"database.go:datastore.GetAllPostsTaggedIDs":     1, // WFPG-04
-	"database.go:datastore.GetPostsTagged":           1, // WFPG-04
-	"database.go:datastore.UpdateDynamicContent":     1, // WFPG-04
-	"database.go:datastore.RecordRemoteUserID":       1, // WFPG-04
-	"database.go:datastore.DatabaseInitialized":      1, // WFPG-03
-	"database.go:datastore.GetJobsToRun":             1, // WFPG-04
-	"migrations/migrations.go:datastore.tableExists": 1, // WFPG-03
-	"migrations/v4.go:oauth":                         1, // WFPG-03
-	"migrations/v5.go:oauthSlack":                    1, // WFPG-03
-	"migrations/v7.go:oauthAttach":                   1, // WFPG-03
-	"migrations/v8.go:oauthInvites":                  1, // WFPG-03
-	"migrations/v9.go:optimizeDrafts":                1, // WFPG-03
-	"migrations/v11.go:widenOauthAcceesToken":        1, // WFPG-03
-	"migrations/v17.go:fixPostSignatureCharset":      1, // WFPG-03
 }
 
 // reviewedDriverSites lists driver comparisons that have been read and are

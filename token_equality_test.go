@@ -12,9 +12,21 @@ import (
 )
 
 // newTokenTestDB opens a throwaway SQLite database holding only the two
-// tables the access-token lookups read, with one user and one token.
+// tables the access-token lookups read, with one user and one token. Under
+// WF_TEST_DB_TYPE=mysql or postgres it is a fresh database on that engine
+// with the real schema instead, holding the same user and token.
 func newTokenTestDB(t *testing.T, victimToken []byte) *datastore {
 	t.Helper()
+	if e := engineTestApp(t, nil); e != nil {
+		ds := e.db
+		if _, err := ds.Exec("INSERT INTO users (id, username, password) VALUES (1, 'victim', 'x')"); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+		if _, err := ds.Exec("INSERT INTO accesstokens (token, user_id) VALUES (?, 1)", victimToken); err != nil {
+			t.Fatalf("insert token: %v", err)
+		}
+		return ds
+	}
 	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "tokens.db")+"?parseTime=true")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
