@@ -173,7 +173,7 @@ func (m *Mailer) Send(msg *Message) error {
 			if e == nil {
 				emailSent = true
 			} else {
-				log.Error("Unable to send email to %s: %v", r.email, e)
+				log.Error("Unable to send email to recipient %s: %v", r.vars["id"], e)
 				err = e
 			}
 		}

@@ -462,14 +462,13 @@ Sent to %recipient.to%. Unsubscribe: ` + p.Collection.CanonicalURL() + `email/un
 	log.Info("[email] Adding %d recipient(s)", len(subs))
 	for _, s := range subs {
 		e := s.FinalEmail(app.keys)
-		log.Info("[email] Adding %s", e)
 		err = m.AddRecipientAndVariables(e, map[string]string{
 			"id":    s.ID,
 			"to":    e,
 			"token": s.Token,
 		})
 		if err != nil {
-			log.Error("Unable to add receipient %s: %s", e, err)
+			log.Error("Unable to add recipient %s to post email: %s", s.ID, err)
 		}
 	}
 

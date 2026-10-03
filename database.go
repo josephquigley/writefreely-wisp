@@ -3433,7 +3433,7 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 	if err != nil {
 		if db.isDuplicateKeyErr(err) {
 			// Duplicate, so just return existing subscriber information
-			log.Info("Duplicate subscriber for email %s, user %d; returning existing subscriber", email, userID)
+			log.Info("Duplicate subscriber for collection %d, user %d; returning existing subscriber", collID, userID)
 			return db.FetchEmailSubscriber(email, userID, collID)
 		}
 		return nil, err
