@@ -179,16 +179,21 @@ func Configure(fname string, configSections string) (*SetupData, error) {
 		selPrompt = promptui.Select{
 			Templates: selTmpls,
 			Label:     "Database driver",
-			Items:     []string{"MySQL", "SQLite"},
+			Items:     []string{"MySQL", "SQLite", "PostgreSQL"},
 		}
 		sel, _, err := selPrompt.Run()
 		if err != nil {
 			return data, err
 		}
 
-		if sel == 0 {
-			// Configure for MySQL
-			data.Config.UseMySQL(isNewCfg)
+		if sel == 0 || sel == 2 {
+			if sel == 0 {
+				// Configure for MySQL
+				data.Config.UseMySQL(isNewCfg)
+			} else {
+				// Configure for PostgreSQL; same connection prompts as MySQL
+				data.Config.UsePostgres(isNewCfg)
+			}
 
 			prompt = promptui.Prompt{
 				Templates: tmpls,

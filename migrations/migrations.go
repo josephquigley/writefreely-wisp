@@ -13,6 +13,7 @@ package migrations
 
 import (
 	"database/sql"
+	"fmt"
 
 	"github.com/writeas/web-core/log"
 )
@@ -23,14 +24,29 @@ type datastore struct {
 	driverName string
 }
 
+// NewDatastore wraps db for running migrations. dn is the driver name
+// (driverMySQL, driverSQLite or driverPostgres); any other name panics, so
+// that an unsupported engine never falls through to MySQL SQL.
 func NewDatastore(db *sql.DB, dn string) *datastore {
+	switch dn {
+	case driverMySQL, driverSQLite, driverPostgres:
+	default:
+		panic(fmt.Sprintf("migrations.NewDatastore: unsupported database driver %q", dn))
+	}
 	return &datastore{db, dn}
+}
+
+// unsupportedDriver panics with a message naming the migration function
+// that has not been ported to driverName.
+func unsupportedDriver(fn, driverName string) {
+	panic(fmt.Sprintf("migrations.%s: not implemented for database driver %q", fn, driverName))
 }
 
 // TODO: use these consts from writefreely pkg
 const (
-	driverMySQL  = "mysql"
-	driverSQLite = "sqlite3"
+	driverMySQL    = "mysql"
+	driverSQLite   = "sqlite3"
+	driverPostgres = "postgres"
 )
 
 type Migration interface {
@@ -136,10 +152,13 @@ func Migrate(db *datastore) error {
 func (db *datastore) tableExists(t string) bool {
 	var dummy string
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		err = db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", t).Scan(&dummy)
-	} else {
+	case driverMySQL:
 		err = db.QueryRow("SHOW TABLES LIKE '" + t + "'").Scan(&dummy)
+	default:
+		unsupportedDriver("tableExists", db.driverName)
 	}
 	switch {
 	case err == sql.ErrNoRows:

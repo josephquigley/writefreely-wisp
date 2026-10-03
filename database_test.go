@@ -16,7 +16,7 @@ func TestOAuthDatastore(t *testing.T) {
 		ctx := context.Background()
 		ds := &datastore{
 			DB:         db,
-			driverName: "",
+			driverName: driverMySQL,
 		}
 
 		state, err := ds.GenerateOAuthState(ctx, "test", "development", 0, "")

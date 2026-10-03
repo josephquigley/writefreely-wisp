@@ -1036,10 +1036,11 @@ func connectToDatabase(app *App) {
 
 	var db *sql.DB
 	var err error
-	if app.cfg.Database.Type == driverMySQL {
+	switch app.cfg.Database.Type {
+	case driverMySQL:
 		db, err = sql.Open(app.cfg.Database.Type, fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=%s&tls=%t", app.cfg.Database.User, app.cfg.Database.Password, app.cfg.Database.Host, app.cfg.Database.Port, app.cfg.Database.Database, url.QueryEscape(time.Local.String()), app.cfg.Database.TLS))
 		db.SetMaxOpenConns(50)
-	} else if app.cfg.Database.Type == driverSQLite {
+	case driverSQLite:
 		if !SQLiteEnabled {
 			log.Error("Invalid database type '%s'. Binary wasn't compiled with SQLite3 support.", app.cfg.Database.Type)
 			os.Exit(1)
@@ -1050,15 +1051,21 @@ func connectToDatabase(app *App) {
 		}
 		db, err = sql.Open("sqlite3_with_regex", app.cfg.Database.FileName+"?parseTime=true&cached=shared")
 		db.SetMaxOpenConns(2)
-	} else {
-		log.Error("Invalid database type '%s'. Only 'mysql' and 'sqlite3' are supported right now.", app.cfg.Database.Type)
+	case driverPostgres:
+		// pgx behind the placeholder-rebinding wrapper; see pgdriver.go.
+		db, err = sql.Open(driverPostgresRebind, postgresDSN(app.cfg.Database))
+		// A conservative default under Postgres' stock max_connections of
+		// 100. WFPG-12 tunes the pool.
+		db.SetMaxOpenConns(20)
+	default:
+		log.Error("Invalid database type '%s'. Only '%s', '%s' and '%s' are supported right now.", app.cfg.Database.Type, driverMySQL, driverSQLite, driverPostgres)
 		os.Exit(1)
 	}
 	if err != nil {
 		log.Error("%s", err)
 		os.Exit(1)
 	}
-	app.db = &datastore{DB: db, driverName: app.cfg.Database.Type}
+	app.db = newDatastore(db, app.cfg.Database.Type)
 }
 
 func shutdown(app *App) {
@@ -1153,10 +1160,13 @@ var sqliteSql string
 
 func adminInitDatabase(app *App) error {
 	var schema string
-	if app.cfg.Database.Type == driverSQLite {
+	switch app.cfg.Database.Type {
+	case driverSQLite:
 		schema = sqliteSql
-	} else {
+	case driverMySQL:
 		schema = schemaSql
+	default:
+		unsupportedDriver("adminInitDatabase", app.cfg.Database.Type)
 	}
 
 	tblReg := regexp.MustCompile("CREATE TABLE (IF NOT EXISTS )?`([a-z_]+)`")

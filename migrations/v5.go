@@ -19,8 +19,12 @@ import (
 
 func oauthSlack(db *datastore) error {
 	dialect := wf_db.DialectMySQL
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		dialect = wf_db.DialectSQLite
+	case driverMySQL:
+	default:
+		unsupportedDriver("oauthSlack", db.driverName)
 	}
 	return wf_db.RunTransactionWithOptions(context.Background(), db.DB, &sql.TxOptions{}, func(ctx context.Context, tx *sql.Tx) error {
 		builders := []wf_db.SQLBuilder{

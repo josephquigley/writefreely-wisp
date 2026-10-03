@@ -47,8 +47,12 @@ const (
 	mySQLErrTooManyConns = 1040
 	mySQLErrMaxUserConns = 1203
 
-	driverMySQL  = "mysql"
-	driverSQLite = "sqlite3"
+	// Driver names, as used in the config file's [database] type and in
+	// datastore.driverName. Postgres is opened with sql.Open under
+	// driverPostgresRebind (pgdriver.go), not under this name.
+	driverMySQL    = "mysql"
+	driverSQLite   = "sqlite3"
+	driverPostgres = "postgres"
 )
 
 var (
@@ -167,62 +171,51 @@ type writestore interface {
 type datastore struct {
 	*sql.DB
 	driverName string
+	// dialect holds the driver-specific SQL; see dialect.go. Build a
+	// datastore with newDatastore to set it. When nil it is resolved from
+	// driverName on use.
+	dialect dialect
 
 	useSpencerRegex bool
 }
 
 var _ writestore = &datastore{}
 
-func (db *datastore) now() string {
-	if db.driverName == driverSQLite {
-		return "strftime('%Y-%m-%d %H:%M:%S','now')"
+// dialectOrDefault returns db's dialect, resolving it from driverName for
+// a datastore built as a struct literal (as some tests do). It panics on an
+// unknown driver name.
+func (db *datastore) dialectOrDefault() dialect {
+	if db.dialect != nil {
+		return db.dialect
 	}
-	return "NOW()"
+	return dialectFor(db.driverName)
+}
+
+// The helpers below are thin delegates to the dialect (dialect.go), kept so
+// that existing call sites do not change.
+
+func (db *datastore) now() string {
+	return db.dialectOrDefault().Now()
 }
 
 func (db *datastore) clip(field string, l int) string {
-	if db.driverName == driverSQLite {
-		return fmt.Sprintf("SUBSTR(%s, 0, %d)", field, l)
-	}
-	return fmt.Sprintf("LEFT(%s, %d)", field, l)
+	return db.dialectOrDefault().Clip(field, l)
 }
 
 func (db *datastore) upsert(indexedCols ...string) string {
-	if db.driverName == driverSQLite {
-		// NOTE: SQLite UPSERT syntax only works in v3.24.0 (2018-06-04) or later
-		// Leaving this for whenever we can upgrade and include it in our binary
-		cc := strings.Join(indexedCols, ", ")
-		return "ON CONFLICT(" + cc + ") DO UPDATE SET"
-	}
-	return "ON DUPLICATE KEY UPDATE"
+	return db.dialectOrDefault().Upsert(indexedCols...)
 }
 
 func (db *datastore) dateAdd(l int, unit string) string {
-	if db.driverName == driverSQLite {
-		return fmt.Sprintf("DATETIME('now', '%d %s')", l, unit)
-	}
-	return fmt.Sprintf("DATE_ADD(NOW(), INTERVAL %d %s)", l, unit)
+	return db.dialectOrDefault().DateAdd(l, unit)
 }
 
 func (db *datastore) dateSub(l int, unit string) string {
-	if db.driverName == driverSQLite {
-		return fmt.Sprintf("DATETIME('now', '-%d %s')", l, unit)
-	}
-	return fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d %s)", l, unit)
+	return db.dialectOrDefault().DateSub(l, unit)
 }
 
 func (db *datastore) version() (string, error) {
-	var v string
-	var err error
-	if db.driverName == driverSQLite {
-		err = db.QueryRow("SELECT sqlite_version()").Scan(&v)
-	} else {
-		err = db.QueryRow("SELECT version()").Scan(&v)
-	}
-	if err != nil {
-		return "", err
-	}
-	return v, nil
+	return db.dialectOrDefault().Version(context.Background(), db.DB)
 }
 
 // CreateUser creates a new user in the database from the given User, UPDATING it in the process with the user's ID.
@@ -735,18 +728,26 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 	}
 
 	created := time.Now()
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		// SQLite stores datetimes in UTC, so convert time.Now() to it here
 		created = created.UTC()
+	case driverMySQL:
+	default:
+		unsupportedDriver("CreatePost", db.driverName)
 	}
 	if post.Created != nil && *post.Created != "" {
 		created, err = time.Parse("2006-01-02T15:04:05Z", *post.Created)
 		if err != nil {
 			log.Error("Unable to parse Created time '%s': %v", *post.Created, err)
 			created = time.Now()
-			if db.driverName == driverSQLite {
+			switch db.driverName {
+			case driverSQLite:
 				// SQLite stores datetimes in UTC, so convert time.Now() to it here
 				created = created.UTC()
+			case driverMySQL:
+			default:
+				unsupportedDriver("CreatePost", db.driverName)
 			}
 		}
 	}
@@ -985,10 +986,13 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 
 	// Update MathJax value
 	if c.MathJax {
-		if db.driverName == driverSQLite {
+		switch db.driverName {
+		case driverSQLite:
 			_, err = db.Exec("INSERT OR REPLACE INTO collectionattributes (collection_id, attribute, value) VALUES (?, ?, ?)", collID, "render_mathjax", "1")
-		} else {
+		case driverMySQL:
 			_, err = db.Exec("INSERT INTO collectionattributes (collection_id, attribute, value) VALUES (?, ?, ?) "+db.upsert("collection_id", "attribute")+" value = ?", collID, "render_mathjax", "1", "1")
+		default:
+			unsupportedDriver("UpdateCollection", db.driverName)
 		}
 		if err != nil {
 			log.Error("Unable to insert render_mathjax value: %v", err)
@@ -1168,10 +1172,13 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 			log.Error("Unable to create hash: %s", err)
 			return impart.HTTPError{http.StatusInternalServerError, "Could not create password hash."}
 		}
-		if db.driverName == driverSQLite {
+		switch db.driverName {
+		case driverSQLite:
 			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, hashedPass)
-		} else {
+		case driverMySQL:
 			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, hashedPass, hashedPass)
+		default:
+			unsupportedDriver("UpdateCollection", db.driverName)
 		}
 		if err != nil {
 			return err
@@ -1445,10 +1452,13 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	}
 	var rows *sql.Rows
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
-	} else {
+	case driverMySQL:
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+strings.ToLower(tag)+"[[:>:]]")
+	default:
+		unsupportedDriver("GetAllPostsTaggedIDs", db.driverName)
 	}
 	if err != nil {
 		log.Error("Failed selecting tagged posts: %v", err)
@@ -1506,9 +1516,10 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 
 	var rows *sql.Rows
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
-	} else {
+	case driverMySQL:
 		var boundaryRegex string
 		if db.useSpencerRegex {
 			// MySQL earlier than 8.0.4, Henry Spencer's regex implementation
@@ -1518,6 +1529,8 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 			boundaryRegex = "\\b"
 		}
 		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, "#"+strings.ToLower(tag)+boundaryRegex)
+	default:
+		unsupportedDriver("GetPostsTagged", db.driverName)
 	}
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
@@ -2937,10 +2950,13 @@ func (db *datastore) GetDynamicContent(id string) (*instanceContent, error) {
 
 func (db *datastore) UpdateDynamicContent(id, title, content, contentType string) error {
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		_, err = db.Exec("INSERT OR REPLACE INTO appcontent (id, title, content, updated, content_type) VALUES (?, ?, ?, "+db.now()+", ?)", id, title, content, contentType)
-	} else {
+	case driverMySQL:
 		_, err = db.Exec("INSERT INTO appcontent (id, title, content, updated, content_type) VALUES (?, ?, ?, "+db.now()+", ?) "+db.upsert("id")+" title = ?, content = ?, updated = "+db.now(), id, title, content, contentType, title, content)
+	default:
+		unsupportedDriver("UpdateDynamicContent", db.driverName)
 	}
 	if err != nil {
 		log.Error("Unable to INSERT appcontent for '%s': %v", id, err)
@@ -3128,10 +3144,13 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 
 func (db *datastore) RecordRemoteUserID(ctx context.Context, localUserID int64, remoteUserID, provider, clientID, accessToken string) error {
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		_, err = db.ExecContext(ctx, "INSERT OR REPLACE INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?)", localUserID, remoteUserID, provider, clientID, accessToken)
-	} else {
+	case driverMySQL:
 		_, err = db.ExecContext(ctx, "INSERT INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?) "+db.upsert("user")+" access_token = ?", localUserID, remoteUserID, provider, clientID, accessToken, accessToken)
+	default:
+		unsupportedDriver("RecordRemoteUserID", db.driverName)
 	}
 	if err != nil {
 		log.Error("Unable to INSERT oauth_users for '%d': %v", localUserID, err)
@@ -3187,10 +3206,13 @@ func (db *datastore) GetOauthAccounts(ctx context.Context, userID int64) ([]oaut
 func (db *datastore) DatabaseInitialized() bool {
 	var dummy string
 	var err error
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		err = db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").Scan(&dummy)
-	} else {
+	case driverMySQL:
 		err = db.QueryRow("SHOW TABLES LIKE 'users'").Scan(&dummy)
+	default:
+		unsupportedDriver("DatabaseInitialized", db.driverName)
 	}
 	switch {
 	case err == sql.ErrNoRows:
@@ -3500,8 +3522,12 @@ func (db *datastore) DeleteJobByPost(postID string) error {
 
 func (db *datastore) GetJobsToRun(action string) ([]*PostJob, error) {
 	timeWhere := "created < DATE_SUB(NOW(), INTERVAL delay MINUTE) AND created > DATE_SUB(NOW(), INTERVAL delay + 5 MINUTE)"
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		timeWhere = "created < DATETIME('now', '-' || delay || ' MINUTE') AND created > DATETIME('now', '-' || (delay+5) || ' MINUTE')"
+	case driverMySQL:
+	default:
+		unsupportedDriver("GetJobsToRun", db.driverName)
 	}
 	rows, err := db.Query(`SELECT pj.id, post_id, action, delay
 		FROM publishjobs pj
