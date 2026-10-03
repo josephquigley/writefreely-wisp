@@ -211,3 +211,77 @@ site_name = Paisans
 		t.Error("app.site_name still present after strip")
 	}
 }
+
+func TestStripKeysFollowsSymlink(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "real.ini")
+	if err := os.WriteFile(real, []byte(stripFixture), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "config.ini")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StripKeys(link, []string{"app.site_name"}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link replaced: %v %v", fi, err)
+	}
+	b, _ := os.ReadFile(real)
+	if strings.Contains(string(b), "site_name") || !strings.Contains(string(b), "private") {
+		t.Errorf("target:\n%s", b)
+	}
+	// no temp files left in either directory
+	for _, d := range []string{filepath.Dir(real), filepath.Dir(link)} {
+		m, _ := filepath.Glob(filepath.Join(d, ".config.ini.*"))
+		if len(m) != 0 {
+			t.Errorf("leftover %v", m)
+		}
+	}
+}
+
+func TestMarkSettingsInDatabase(t *testing.T) {
+	fname := filepath.Join(t.TempDir(), "config.ini")
+	if err := os.WriteFile(fname, []byte(stripFixture), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := HasSettingsMarker(fname); ok {
+		t.Fatal("marker before writing")
+	}
+	wrote, err := MarkSettingsInDatabase(fname)
+	if err != nil || !wrote {
+		t.Fatalf("wrote %v err %v", wrote, err)
+	}
+	b, _ := os.ReadFile(fname)
+	s := string(b)
+	want := "; Community settings live in the database. Do not remove this line; see docs/settings.md.\nsettings_location = database\n"
+	if !strings.Contains(s, want) {
+		t.Fatalf("marker missing:\n%s", s)
+	}
+	if strings.Index(s, "settings_location") > strings.Index(s, "[server]") {
+		t.Errorf("marker not in the top-of-file section:\n%s", s)
+	}
+	if ok, err := HasSettingsMarker(fname); err != nil || !ok {
+		t.Errorf("has marker %v %v", ok, err)
+	}
+	if wrote, err := MarkSettingsInDatabase(fname); err != nil || wrote {
+		t.Errorf("second call wrote %v err %v", wrote, err)
+	}
+	t.Setenv("WF_DB_PASSWORD", "x")
+	// An older binary maps the file onto its Config and ignores the key.
+	if _, err := Load(fname); err != nil {
+		t.Errorf("Load with marker: %v", err)
+	}
+	// Marker does not look like a DB-bound or bootstrap key.
+	present, err := KeysPresent(fname, DBSettingNames())
+	if err != nil || !reflect.DeepEqual(present, []string{"app.site_name", "app.private", "uploads.enabled"}) {
+		t.Errorf("present %v err %v", present, err)
+	}
+	// And stripping keeps it.
+	if _, err := StripKeys(fname, present); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := HasSettingsMarker(fname); !ok {
+		t.Error("strip dropped the marker")
+	}
+}
