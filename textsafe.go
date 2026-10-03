@@ -21,8 +21,11 @@ package writefreely
 // code runs on every engine.
 
 import (
+	"net/http"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/writeas/impart"
 	"github.com/writeas/web-core/activitystreams"
 	"github.com/writefreely/writefreely/parse"
 )
@@ -38,6 +41,7 @@ const (
 	postImageMaxLengthFilename = 255 // post_images.filename
 	appContentMaxLengthTitle   = 255 // appcontent.title
 	remoteUserKeyMaxLengthID   = 255 // remoteuserkeys.id
+	oauthRemoteUserIDMaxLength = 128 // oauth_users.remote_user_id
 
 	// emailMaxLength is the longest address that can be valid (RFC 5321's
 	// 256-octet path, less its angle brackets). emailsubscribers.email is
@@ -131,4 +135,35 @@ func sanitizeRemoteActor(a *activitystreams.Person) {
 	// remoteuserkeys.id is varchar(255) and is never read back, only written
 	// as the row's key, so truncating an over-long one loses nothing.
 	a.PublicKey.ID = boundedDBText(a.PublicKey.ID, remoteUserKeyMaxLengthID)
+}
+
+// fetchRemoteActorForStorage fetches a remote actor, as newRemoteActor does,
+// and makes the strings that handle resolution writes to remoteusers
+// storable. Those callers insert the fetched inboxes and URL directly rather
+// than going through unmarshalActor, so they need the same cleaning here.
+// remoteusers' string columns are text on Postgres, so nothing is truncated.
+func fetchRemoteActorForStorage(app *App, actorIRI string) (remoteActorInfo, error) {
+	a, err := newRemoteActor(app, actorIRI)
+	if err != nil {
+		return a, err
+	}
+	return remoteActorInfo{
+		iri:         sanitizeDBText(a.iri),
+		inbox:       sanitizeDBText(a.inbox),
+		sharedInbox: sanitizeDBText(a.sharedInbox),
+		url:         sanitizeDBText(a.url),
+	}, nil
+}
+
+// errOAuthRemoteUserIDUnstorable is returned for an OAuth account ID that
+// oauth_users.remote_user_id cannot hold exactly.
+var errOAuthRemoteUserIDUnstorable = impart.HTTPError{Status: http.StatusBadRequest, Message: "The sign-in provider returned an account ID this site cannot store."}
+
+// isStorableOAuthRemoteUserID reports whether id fits oauth_users.remote_user_id
+// unchanged. The column is the key a returning OAuth user is found by, so an
+// ID that does not fit is refused, never repaired: truncating it (as MySQL
+// outside strict mode would) could map two provider accounts to one local
+// user, and Postgres would fail the insert with a 500.
+func isStorableOAuthRemoteUserID(id string) bool {
+	return isValidDBText(id) && utf8.RuneCountInString(id) <= oauthRemoteUserIDMaxLength
 }
