@@ -262,8 +262,13 @@ scheme decides whether TLS is used. Addressing is path-style, which Garage
 needs; set `s3_virtual_host = true` for a store that wants bucket subdomains.
 The bucket can stay private: images are still served at `/uploads/...` and
 streamed through the app, never redirected to the bucket, so URLs that other
-servers have cached keep working. The server checks at startup that it can
-write to and delete from the bucket, and refuses to start if not.
+servers have cached keep working. At startup the server checks that it can
+write to and delete from the bucket, and refuses to start if the store answers
+and says no (a missing bucket, a rejected key). If the store does not answer
+within 15 seconds, the blog starts anyway and logs "uploaded images are
+unavailable"; pages render, `/uploads/` returns 502 for images and uploads fail
+with a 503 until the store is back. Each S3 call is bounded (30 seconds to
+write or delete, 30 seconds to start fetching an image).
 
 Existing images are copied in with:
 
