@@ -11,6 +11,9 @@ nodes still do not share configuration. `/admin/settings` writes its changes to
 `App.SaveConfig` → `config.Save`), so the other nodes keep their old values, and
 after a failover the settings quietly revert.
 
+Context: founder decision 2026-10-03, wisp goes multi-node. This reverses
+the HA design's 2026-09-01 decision that wisp stays a pinned single app.
+
 ## Goal
 
 * Every node reads the same community-policy settings, and a change made on one
@@ -31,7 +34,9 @@ after a failover the settings quietly revert.
   defeat the encryption, and the cookie and CSRF keys would let anyone who
   reads a backup forge sessions. Founder decision, 2026-10-03: keeping
   identical keys on every node, and redistributing them in the rare event
-  they change, is the sysadmin's job.
+  they change, is the sysadmin's job, including having them in place
+  before a node first starts. No guard against a node generating keys
+  into an empty directory is planned.
 * Moving images off local disk (WFPG-13).
 * Updating any particular deployment's copy of `config.ini`, e.g. a
   config-management tree that would re-deliver stripped keys. That is deploy
