@@ -1098,18 +1098,21 @@ func adminInitDatabase(app *App) error {
 		if strings.TrimSpace(q) == "" {
 			continue
 		}
+		table := "???"
 		parts := tblReg.FindStringSubmatch(q)
 		if len(parts) >= 3 {
-			log.Info("Creating table %s...", parts[2])
+			table = parts[2]
+			log.Info("Creating table %s...", table)
 		} else {
 			log.Info("Creating table ??? (Weird query) No match in: %v", parts)
 		}
 		_, err := app.db.Exec(q)
 		if err != nil {
-			log.Error("%s", err)
-		} else {
-			log.Info("Created.")
+			// Stop at the first failure. Carrying on would let `db init`
+			// report success with tables missing.
+			return fmt.Errorf("create table %s: %v", table, err)
 		}
+		log.Info("Created.")
 	}
 
 	// Set up migrations table
