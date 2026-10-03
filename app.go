@@ -992,7 +992,7 @@ func connectToDatabase(app *App) {
 	var err error
 	var db_tls map[bool]string
 	db_tls = make(map[bool]string)
-	db_tls[true] = "enable"
+	db_tls[true] = "require"
 	db_tls[false] = "disable"
 	if app.cfg.Database.Type == driverMySQL {
 		db, err = sql.Open(app.cfg.Database.Type, fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=%s&tls=%t", app.cfg.Database.User, app.cfg.Database.Password, app.cfg.Database.Host, app.cfg.Database.Port, app.cfg.Database.Database, url.QueryEscape(time.Local.String()), app.cfg.Database.TLS))
