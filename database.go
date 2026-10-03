@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1369,6 +1370,22 @@ func (db *datastore) GetPosts(cfg *config.Config, c *Collection, page int, inclu
 	return &posts, nil
 }
 
+// tagRegexpTerm returns tag lowercased, with every regular expression
+// metacharacter in it escaped, so that the tag queries match it literally.
+// The tag comes from the request URL, so without this a reader chooses the
+// pattern: "a.c" would also match "#abc", and "(" makes the query fail.
+//
+// regexp.QuoteMeta puts a backslash only before ASCII punctuation, never
+// before a letter or digit, so it cannot form an escape such as \b or \d. A
+// backslash before punctuation means that character literally in every
+// dialect these queries reach: Go's RE2 (SQLite's regexp() is registered
+// from the regexp package), ICU (MySQL 8.0.4+), Henry Spencer's POSIX ERE
+// (MySQL before 8.0.4) and PCRE (MariaDB). The pattern is bound as a query
+// parameter, so no SQL string escaping is layered on top of it.
+func tagRegexpTerm(tag string) string {
+	return regexp.QuoteMeta(strings.ToLower(tag))
+}
+
 func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFuture bool) ([]string, error) {
 	collID := c.ID
 
@@ -1385,9 +1402,9 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 	var rows *sql.Rows
 	var err error
 	if db.driverName == driverSQLite {
-		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	} else {
-		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+strings.ToLower(tag)+"[[:>:]]")
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+tagRegexpTerm(tag)+"[[:>:]]")
 	}
 	if err != nil {
 		log.Error("Failed selecting tagged posts: %v", err)
@@ -1446,7 +1463,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	var rows *sql.Rows
 	var err error
 	if db.driverName == driverSQLite {
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	} else {
 		var boundaryRegex string
 		if db.useSpencerRegex {
@@ -1456,7 +1473,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 			// MySQL 8.0.4+, International Components for Unicode (ICU) syntax
 			boundaryRegex = "\\b"
 		}
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, "#"+strings.ToLower(tag)+boundaryRegex)
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+boundaryRegex)
 	}
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
