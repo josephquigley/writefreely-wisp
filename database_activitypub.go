@@ -48,3 +48,25 @@ func apAddRemoteUser(app *App, t *sql.Tx, fullActor *activitystreams.Person) (in
 
 	return remoteUserID, nil
 }
+
+// apAddRemoteUserKey stores a remote user's public key inside t. A key that is
+// already stored is not an error: a remote server may deliver the same Follow
+// more than once.
+func apAddRemoteUserKey(app *App, t *sql.Tx, fullActor *activitystreams.Person, remoteUserID int64) error {
+	_, err := t.Exec(app.db.QueryWrap("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)"+app.db.onConflictDoNothing()), fullActor.PublicKey.ID, remoteUserID, fullActor.PublicKey.PublicKeyPEM)
+	if err != nil && !app.db.isDuplicateKeyErr(err) {
+		return err
+	}
+	return nil
+}
+
+// apAddRemoteFollow records inside t that a remote user follows a collection.
+// A follow that is already recorded is not an error: a remote server may
+// deliver the same Follow more than once.
+func apAddRemoteFollow(app *App, t *sql.Tx, collID, remoteUserID int64) error {
+	_, err := t.Exec(app.db.QueryWrap("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")"+app.db.onConflictDoNothing()), collID, remoteUserID)
+	if err != nil && !app.db.isDuplicateKeyErr(err) {
+		return err
+	}
+	return nil
+}

@@ -202,6 +202,18 @@ func (db *datastore) upsert(indexedCols ...string) string {
 	panic(INVALID_DRIVER_MSG)
 }
 
+// onConflictDoNothing returns a clause to append to an INSERT whose duplicate
+// row should be skipped rather than treated as an error. Only Postgres gets
+// one: there a failed statement aborts the whole transaction, so forgiving a
+// duplicate-key error afterwards is too late. MySQL and SQLite leave the
+// transaction usable, so callers keep checking isDuplicateKeyErr for them.
+func (db *datastore) onConflictDoNothing() string {
+	if db.driverName == driverPostgres {
+		return " ON CONFLICT DO NOTHING"
+	}
+	return ""
+}
+
 func (db *datastore) dateAdd(l int, unit string) string {
 	switch db.driverName {
 	case driverSQLite:
