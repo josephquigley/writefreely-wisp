@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -49,6 +50,16 @@ type dialect interface {
 
 	// Now returns an SQL expression for the current timestamp.
 	Now() string
+	// NowForInsert returns the current time as a Go value to bind to a
+	// datetime parameter, in the zone this engine's stored values use:
+	// server-local on MySQL (its connection uses loc=Local, so existing
+	// installs hold local times), UTC on SQLite and Postgres.
+	NowForInsert() time.Time
+	// TimeArg returns t as it should be bound to a datetime parameter. It is
+	// t.UTC() on Postgres, so every value it is sent is UTC (the columns are
+	// timestamptz, so the instant is the same either way). MySQL and SQLite
+	// return t unchanged, preserving their behaviour.
+	TimeArg(t time.Time) time.Time
 	// Clip returns an SQL expression for the first l characters of field.
 	Clip(field string, l int) string
 	// Upsert returns the clause that follows an INSERT … VALUES (…) to turn
@@ -137,6 +148,10 @@ func (mysqlDialect) DriverName() string { return driverMySQL }
 
 func (mysqlDialect) Now() string { return "NOW()" }
 
+func (mysqlDialect) NowForInsert() time.Time { return time.Now() }
+
+func (mysqlDialect) TimeArg(t time.Time) time.Time { return t }
+
 func (mysqlDialect) Clip(field string, l int) string {
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)
 }
@@ -179,6 +194,11 @@ type sqliteDialect struct{}
 func (sqliteDialect) DriverName() string { return driverSQLite }
 
 func (sqliteDialect) Now() string { return "strftime('%Y-%m-%d %H:%M:%S','now')" }
+
+// SQLite stores datetimes in UTC.
+func (sqliteDialect) NowForInsert() time.Time { return time.Now().UTC() }
+
+func (sqliteDialect) TimeArg(t time.Time) time.Time { return t }
 
 // SQLite strings are 1-indexed (WFPG-11 defect B).
 func (sqliteDialect) Clip(field string, l int) string {
@@ -248,6 +268,13 @@ var postgresIntervalUnits = map[string]bool{
 func (postgresDialect) DriverName() string { return driverPostgres }
 
 func (postgresDialect) Now() string { return "NOW()" }
+
+// The columns are timestamptz and the session TimeZone is UTC (postgresDSN),
+// so Go always sends UTC and the stored instant never depends on the
+// process's time zone.
+func (postgresDialect) NowForInsert() time.Time { return time.Now().UTC() }
+
+func (postgresDialect) TimeArg(t time.Time) time.Time { return t.UTC() }
 
 func (postgresDialect) Clip(field string, l int) string {
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)

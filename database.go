@@ -724,28 +724,13 @@ func (db *datastore) CreatePost(userID, collID int64, post *SubmittedPost) (*Pos
 		}
 	}
 
-	created := time.Now()
-	switch db.driverName {
-	case driverSQLite:
-		// SQLite stores datetimes in UTC, so convert time.Now() to it here
-		created = created.UTC()
-	case driverMySQL:
-	default:
-		unsupportedDriver("CreatePost", db.driverName)
-	}
+	created := db.dialectOrDefault().NowForInsert()
 	if post.Created != nil && *post.Created != "" {
+		// Parsed with a literal Z, so already UTC on every engine.
 		created, err = time.Parse("2006-01-02T15:04:05Z", *post.Created)
 		if err != nil {
 			log.Error("Unable to parse Created time '%s': %v", *post.Created, err)
-			created = time.Now()
-			switch db.driverName {
-			case driverSQLite:
-				// SQLite stores datetimes in UTC, so convert time.Now() to it here
-				created = created.UTC()
-			case driverMySQL:
-			default:
-				unsupportedDriver("CreatePost", db.driverName)
-			}
+			created = db.dialectOrDefault().NowForInsert()
 		}
 	}
 
@@ -828,7 +813,7 @@ func (db *datastore) UpdateOwnedPost(post *AuthenticatedPost, userID int64) erro
 		}
 		queryUpdates += sep + "created = ?"
 		sep = ", "
-		params = append(params, createTime)
+		params = append(params, db.dialectOrDefault().TimeArg(createTime))
 	}
 
 	// WHERE parameters...
@@ -2869,6 +2854,10 @@ func (db *datastore) GetAPActorKeys(collectionID int64) ([]byte, []byte) {
 }
 
 func (db *datastore) CreateUserInvite(id string, userID int64, maxUses int, expires *time.Time) error {
+	if expires != nil {
+		e := db.dialectOrDefault().TimeArg(*expires)
+		expires = &e
+	}
 	_, err := db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES (?, ?, ?, "+db.now()+", ?, 0)", id, userID, maxUses, expires)
 	return err
 }
@@ -3058,11 +3047,11 @@ func (db *datastore) GetUsersFiltered(f UserFilter) ([]FilteredUser, error) {
 
 	if f.Since != nil {
 		where = append(where, "u.created >= ?")
-		params = append(params, *f.Since)
+		params = append(params, db.dialectOrDefault().TimeArg(*f.Since))
 	}
 	if f.Until != nil {
 		where = append(where, "u.created < ?")
-		params = append(params, *f.Until)
+		params = append(params, db.dialectOrDefault().TimeArg(*f.Until))
 	}
 	if f.NoInvite {
 		where = append(where, "NOT EXISTS (SELECT 1 FROM usersinvited i WHERE i.user_id = u.id)")
