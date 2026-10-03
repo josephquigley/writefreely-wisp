@@ -1,0 +1,82 @@
+name: Changelog
+
+# Fork-only. Blocks a pull request into main unless CHANGELOG.md is valid Keep
+# a Changelog and carries the summary of the release it cuts.
+#
+# A pull request into main is a release: wisp-release.yml tags whatever
+# softwareVer app.go names once it merges, and moves the [Unreleased] entry
+# into a section for that version with kacl-cli. So the summary is expected
+# under [Unreleased]. A section already named for the version, with the
+# +wisp suffix the tags carry, is accepted too, in case it was cut by hand.
+#
+# Either way the entry is one bullet of at most 35 words, one sentence,
+# summarising the whole release. Detail belongs in the GitHub release notes.
+# Only the bullet count and the word count are checked here; that it is one
+# sentence is left to review.
+#
+# Uses pull_request_target and an in-job merge for the same reasons as
+# test.yml: the definition comes from the base branch, and what is checked is
+# the merge result. It requests no secrets and only read access to contents.
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  KACL_VERSION: "0.7.0"
+  MAX_WORDS: "35"
+
+jobs:
+  changelog:
+    name: changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - name: Install kacl-cli
+        run: pipx install "python-kacl==$KACL_VERSION"
+      - name: Verify the changelog format
+        run: kacl-cli verify
+      - name: Require one summary of the release
+        run: |
+          version=$(sed -n 's/^[[:space:]]*softwareVer = "\(.*\)"/\1/p' app.go)
+          test -n "$version" || { echo "::error::no softwareVer in app.go"; exit 1; }
+          version="$version+wisp"
+
+          if entry=$(kacl-cli get "$version" 2>/dev/null); then
+            where="$version"
+          else
+            entry=$(kacl-cli get unreleased)
+            where="[Unreleased]"
+          fi
+
+          bullets=$(printf '%s\n' "$entry" | grep -c '^- ' || true)
+          if [ "$bullets" -ne 1 ]; then
+            echo "::error file=CHANGELOG.md::$where has $bullets bullets. Releasing $version needs exactly one under [Unreleased]: a single sentence summarising the release."
+            exit 1
+          fi
+
+          words=$(printf '%s\n' "$entry" | sed -n 's/^- //p' | wc -w)
+          if [ "$words" -gt "$MAX_WORDS" ]; then
+            echo "::error file=CHANGELOG.md::The $where entry is $words words. The limit is $MAX_WORDS."
+            exit 1
+          fi
+
+          echo "$version: summary found in $where, one bullet, $words words."
