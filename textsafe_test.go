@@ -103,8 +103,11 @@ func TestUnmarshalActorSanitizes(t *testing.T) {
 			t.Errorf("%s still contains a NUL byte: %q", name, v)
 		}
 	}
-	if n := utf8.RuneCountInString(a.PublicKey.ID); n != remoteUserKeyMaxLengthID {
-		t.Errorf("key id has %d runes, want %d", n, remoteUserKeyMaxLengthID)
+	// The key ID is compared against a signature's keyId by the allowlist
+	// check, so it must come through whole; only the remoteuserkeys inserts
+	// bound it to the column.
+	if a.PublicKey.ID != keyID {
+		t.Errorf("key id was changed: has %d runes, want %d", utf8.RuneCountInString(a.PublicKey.ID), utf8.RuneCountInString(keyID))
 	}
 }
 
@@ -306,6 +309,13 @@ func exerciseLengthBounds(t *testing.T, app *App, u *User, coll *Collection) {
 		}
 		if inbox != "https://remote.example/users/nul/inbox" {
 			t.Errorf("inbox = %q", inbox)
+		}
+		var keyID string
+		if err := app.db.QueryRow("SELECT k.id FROM remoteuserkeys k JOIN remoteusers u ON u.id = k.remote_user_id WHERE u.actor_id = ?", "https://remote.example/users/nul").Scan(&keyID); err != nil {
+			t.Fatalf("read key: %v", err)
+		}
+		if want := boundedDBText(a.PublicKey.ID, remoteUserKeyMaxLengthID); keyID != want {
+			t.Errorf("stored key id has %d runes, want the %d-rune prefix", utf8.RuneCountInString(keyID), remoteUserKeyMaxLengthID)
 		}
 	})
 

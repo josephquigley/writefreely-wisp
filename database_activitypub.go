@@ -27,7 +27,7 @@ func apAddRemoteUser(app *App, t *sql.Tx, fullActor *activitystreams.Person) (in
 	}
 
 	// Add in key
-	_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, remoteUserID, []byte(fullActor.PublicKey.PublicKeyPEM))
+	_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", remoteUserKeyID(fullActor), remoteUserID, []byte(fullActor.PublicKey.PublicKeyPEM))
 	if err != nil {
 		if !app.db.isDuplicateKeyErr(err) {
 			t.Rollback()

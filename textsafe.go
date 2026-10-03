@@ -120,6 +120,11 @@ func (c *SubmittedCollection) sanitizeForStorage() {
 // server storable. Of these, remoteusers stores the ID, inboxes and URL, and
 // remoteuserkeys the key ID and PEM; the display name and summary are not
 // stored today but are cleaned too, so a future column for them starts safe.
+//
+// Nothing is truncated here. The key ID in particular must stay whole: the
+// federation allowlist compares it with a signature's keyId, and a shortened
+// one never matches. remoteUserKeyID bounds it where remoteuserkeys is
+// written instead.
 func sanitizeRemoteActor(a *activitystreams.Person) {
 	if a == nil {
 		return
@@ -132,9 +137,13 @@ func sanitizeRemoteActor(a *activitystreams.Person) {
 	} {
 		sanitizeDBTextPtr(s)
 	}
-	// remoteuserkeys.id is varchar(255) and is never read back, only written
-	// as the row's key, so truncating an over-long one loses nothing.
-	a.PublicKey.ID = boundedDBText(a.PublicKey.ID, remoteUserKeyMaxLengthID)
+}
+
+// remoteUserKeyID returns a's key ID bounded to remoteuserkeys.id. The column
+// is varchar(255) and is never read back, only written as the row's key, so
+// truncating an over-long ID there loses nothing. a itself is left alone.
+func remoteUserKeyID(a *activitystreams.Person) string {
+	return boundedDBText(a.PublicKey.ID, remoteUserKeyMaxLengthID)
 }
 
 // fetchRemoteActorForStorage fetches a remote actor, as newRemoteActor does,

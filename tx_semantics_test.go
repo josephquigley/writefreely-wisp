@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -166,6 +167,24 @@ func testFollowWithStaleKeyStored(t *testing.T, app *App) {
 	assert.Equal(t, 1, f.inbox.count())
 }
 
+// testFollowWithLongKeyID: an actor whose key ID is longer than
+// remoteuserkeys.id (varchar(255)) is still stored and accepted. The ID is
+// truncated only at the insert, so the actor keeps its full key ID.
+func testFollowWithLongKeyID(t *testing.T, app *App) {
+	f := newFollowFixture(t, app)
+	fullKeyID := f.remote.ID + "#" + strings.Repeat("k", 300-len(f.remote.ID)-1)
+	f.remote.PublicKey.ID = fullKeyID
+
+	f.follow(t)
+	assert.Equal(t, 1, f.followers(t), "the follower must be stored despite the long key id")
+	assert.Equal(t, 1, f.inbox.count())
+	assert.Equal(t, fullKeyID, f.remote.PublicKey.ID, "storing the key must not shorten the actor's key id")
+
+	var keys int
+	require.NoError(t, app.db.QueryRow("SELECT COUNT(*) FROM remoteuserkeys WHERE id = ?", fullKeyID[:remoteUserKeyMaxLengthID]).Scan(&keys))
+	assert.Equal(t, 1, keys)
+}
+
 // testRenameWithConflictingRedirect: a redirect already stored from the old
 // username (left by an earlier owner of it) does not undo the rename, and is
 // replaced so the old name points at the new one.
@@ -230,6 +249,7 @@ var txSemanticsScenarios = []struct {
 }{
 	{"FollowTwiceAcceptedTwice", testFollowTwiceAcceptedTwice},
 	{"FollowWithStaleKeyStored", testFollowWithStaleKeyStored},
+	{"FollowWithLongKeyID", testFollowWithLongKeyID},
 	{"RenameWithConflictingRedirect", testRenameWithConflictingRedirect},
 	{"RenameChainsRedirects", testRenameChainsRedirects},
 	{"SignupClearsRedirect", testSignupClearsRedirect},
