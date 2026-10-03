@@ -850,10 +850,13 @@ func makeActivityPost(app *App, p *activitystreams.Person, url string, m interfa
 }
 
 // isPublicIRI reports whether iri is an http(s) URL whose host resolves
-// exclusively to public, routable IP addresses. It rejects loopback,
-// private, link-local (including cloud metadata endpoints like
-// 169.254.169.254), and unspecified addresses to mitigate SSRF via
+// exclusively to public, routable IP addresses, to mitigate SSRF via
 // attacker-supplied ActivityPub IRIs (e.g. inbox actor/object fields).
+//
+// It rejects loopback, private, link-local (including cloud metadata
+// endpoints like 169.254.169.254), CGNAT, multicast and unspecified
+// addresses. That list is isPublicAddr's, not its own: this used to carry a
+// second, weaker copy that let 100.64.0.0/10 and plain multicast through.
 func isPublicIRI(iri string) error {
 	u, err := url.Parse(iri)
 	if err != nil {
@@ -871,7 +874,10 @@ func isPublicIRI(iri string) error {
 		return fmt.Errorf("unable to resolve host %q: %v", host, err)
 	}
 	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		// Shared with the webfinger client's dial-time check; the
+		// ruleset lives in ssrf_guard.go. This one stays a pre-flight
+		// check so an IRI is refused before anything is signed or sent.
+		if !isPublicAddr(ip, host, nil) {
 			return fmt.Errorf("host %q resolves to disallowed address %s", host, ip)
 		}
 	}
