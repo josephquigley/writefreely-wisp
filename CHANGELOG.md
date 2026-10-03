@@ -39,6 +39,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Tag pages escape regex characters in the tag, work on MySQL 8, and return an error when a tag query fails, on collection tag pages too.
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
 - On MySQL and MariaDB, tokens, invite codes and remote actor addresses now match case-sensitively, and remote actors with non-Latin characters in their URLs save; the upgrade migration may take a while on large instances.
+- Saving a post whose title matches many others in a blog no longer fails when the random slug suffix collides too; it now retries several times before giving up.
 
 ## [0.20.0+wisp] - 2026-09-09
 
