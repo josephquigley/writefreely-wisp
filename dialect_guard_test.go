@@ -41,13 +41,7 @@ var unportedDriverSites = map[string]int{
 	// guess at the owner; the ticket texts in Outline win.
 	"app.go:adminInitDatabase":                       1, // WFPG-03
 	"database.go:datastore.CreatePost":               2, // WFPG-06
-	"database.go:datastore.UpdateCollection":         2, // WFPG-04
-	"database.go:datastore.GetAllPostsTaggedIDs":     1, // WFPG-04
-	"database.go:datastore.GetPostsTagged":           1, // WFPG-04
-	"database.go:datastore.UpdateDynamicContent":     1, // WFPG-04
-	"database.go:datastore.RecordRemoteUserID":       1, // WFPG-04
 	"database.go:datastore.DatabaseInitialized":      1, // WFPG-03
-	"database.go:datastore.GetJobsToRun":             1, // WFPG-04
 	"migrations/migrations.go:datastore.tableExists": 1, // WFPG-03
 	"migrations/v4.go:oauth":                         1, // WFPG-03
 	"migrations/v5.go:oauthSlack":                    1, // WFPG-03

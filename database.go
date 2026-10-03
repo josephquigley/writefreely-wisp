@@ -215,6 +215,13 @@ func (db *datastore) dateSub(l int, unit string) string {
 	return db.dialectOrDefault().DateSub(l, unit)
 }
 
+// insertReturningID runs an INSERT through q (the datastore itself or a
+// *sql.Tx) and returns the new row's id, on every dialect. See
+// dialect.InsertReturningID for what query may contain.
+func (db *datastore) insertReturningID(q sqlQueryer, query string, args ...interface{}) (int64, error) {
+	return db.dialectOrDefault().InsertReturningID(context.Background(), q, query, args...)
+}
+
 func (db *datastore) version() (string, error) {
 	return db.dialectOrDefault().Version(context.Background(), db.DB)
 }
@@ -233,7 +240,7 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 
 	// 1. Add to `users` table
 	// NOTE: Assumes User's Password is already hashed!
-	res, err := t.Exec("INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, u.HashedPass, u.Email)
+	u.ID, err = db.insertReturningID(t, "INSERT INTO users (username, password, email) VALUES (?, ?, ?)", u.Username, u.HashedPass, u.Email)
 	if err != nil {
 		t.Rollback()
 		if db.isDuplicateKeyErr(err) {
@@ -243,18 +250,12 @@ func (db *datastore) CreateUser(cfg *config.Config, u *User, collectionTitle str
 		log.Error("Rolling back users INSERT: %v\n", err)
 		return err
 	}
-	u.ID, err = res.LastInsertId()
-	if err != nil {
-		t.Rollback()
-		log.Error("Rolling back after LastInsertId: %v\n", err)
-		return err
-	}
 
 	// 2. Create user's Collection
 	if collectionTitle == "" {
 		collectionTitle = u.Username
 	}
-	res, err = t.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", u.Username, collectionTitle, collectionDesc, defaultVisibility(cfg), u.ID, 0)
+	_, err = t.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", u.Username, collectionTitle, collectionDesc, defaultVisibility(cfg), u.ID, 0)
 	if err != nil {
 		t.Rollback()
 		if db.isDuplicateKeyErr(err) {
@@ -325,7 +326,7 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	}
 
 	// All good, so create new collection
-	res, err := db.Exec("INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
+	collID, err := db.insertReturningID(db.DB, "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
 	if err != nil {
 		if db.isDuplicateKeyErr(err) {
 			return nil, impart.HTTPError{http.StatusConflict, "Collection already exists."}
@@ -335,16 +336,12 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	}
 
 	c := &Collection{
+		ID:          collID,
 		Alias:       alias,
 		Title:       title,
 		OwnerID:     userID,
 		PublicOwner: false,
 		Public:      defaultVisibility(cfg) == CollPublic,
-	}
-
-	c.ID, err = res.LastInsertId()
-	if err != nil {
-		log.Error("Couldn't get collection LastInsertId: %v\n", err)
 	}
 
 	return c, nil
@@ -986,7 +983,7 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 		switch db.driverName {
 		case driverSQLite:
 			_, err = db.Exec("INSERT OR REPLACE INTO collectionattributes (collection_id, attribute, value) VALUES (?, ?, ?)", collID, "render_mathjax", "1")
-		case driverMySQL:
+		case driverMySQL, driverPostgres:
 			_, err = db.Exec("INSERT INTO collectionattributes (collection_id, attribute, value) VALUES (?, ?, ?) "+db.upsert("collection_id", "attribute")+" value = ?", collID, "render_mathjax", "1", "1")
 		default:
 			unsupportedDriver("UpdateCollection", db.driverName)
@@ -1172,7 +1169,7 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 		switch db.driverName {
 		case driverSQLite:
 			_, err = db.Exec("INSERT OR REPLACE INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?)", alias, hashedPass)
-		case driverMySQL:
+		case driverMySQL, driverPostgres:
 			_, err = db.Exec("INSERT INTO collectionpasswords (collection_id, password) VALUES ((SELECT id FROM collections WHERE alias = ?), ?) "+db.upsert("collection_id")+" password = ?", alias, hashedPass, hashedPass)
 		default:
 			unsupportedDriver("UpdateCollection", db.driverName)
@@ -1387,7 +1384,7 @@ func (db *datastore) GetPosts(cfg *config.Config, c *Collection, page int, inclu
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	timeCondition := ""
 	if !includeFuture {
@@ -1461,6 +1458,17 @@ func (db *datastore) tagWordBoundary() string {
 	return "\\b"
 }
 
+// postgresTagPattern returns the Postgres regular expression (for the `~`
+// operator) that finds #tag in lowercased post content. Postgres regexes are
+// Henry Spencer's ARE, in which "\b" is a backspace, not a word boundary, so
+// a copy of the MySQL pattern matches nothing and tag pages go silently
+// empty; the ARE word-end escape is "\y". tagRegexpTerm's
+// backslash-before-punctuation escapes mean the literal character in an ARE
+// too, so the escaped tag composes with it unchanged.
+func postgresTagPattern(tag string) string {
+	return "#" + tagRegexpTerm(tag) + `\y`
+}
+
 func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFuture bool) ([]string, error) {
 	collID := c.ID
 
@@ -1481,6 +1489,8 @@ func (db *datastore) GetAllPostsTaggedIDs(c *Collection, tag string, includeFutu
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	case driverMySQL:
 		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
+	case driverPostgres:
+		rows, err = db.Query("SELECT id FROM posts WHERE collection_id = ? AND LOWER(content) ~ ? "+timeCondition+" ORDER BY created "+order, collID, postgresTagPattern(tag))
 	default:
 		unsupportedDriver("GetAllPostsTaggedIDs", db.driverName)
 	}
@@ -1531,7 +1541,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	timeCondition := ""
 	if !includeFuture {
@@ -1545,6 +1555,8 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, `.*#`+tagRegexpTerm(tag)+`\b.*`)
 	case driverMySQL:
 		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+tagRegexpTerm(tag)+db.tagWordBoundary())
+	case driverPostgres:
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) ~ ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, postgresTagPattern(tag))
 	default:
 		unsupportedDriver("GetPostsTagged", db.driverName)
 	}
@@ -1605,7 +1617,7 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	timeCondition := ""
 	if !includeFuture {
@@ -2250,7 +2262,7 @@ func (db *datastore) GetAnonymousPosts(u *User, page int) (*[]PublicPost, error)
 
 	limitStr := ""
 	if page > 0 {
-		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
+		limitStr = fmt.Sprintf(" LIMIT %d OFFSET %d", pagePosts, start)
 	}
 	rows, err := db.Query("SELECT id, view_count, title, language, created, updated, content FROM posts WHERE owner_id = ? AND collection_id IS NULL ORDER BY created DESC, id DESC"+limitStr, u.ID)
 	if err != nil {
@@ -2980,7 +2992,7 @@ func (db *datastore) UpdateDynamicContent(id, title, content, contentType string
 	switch db.driverName {
 	case driverSQLite:
 		_, err = db.Exec("INSERT OR REPLACE INTO appcontent (id, title, content, updated, content_type) VALUES (?, ?, ?, "+db.now()+", ?)", id, title, content, contentType)
-	case driverMySQL:
+	case driverMySQL, driverPostgres:
 		_, err = db.Exec("INSERT INTO appcontent (id, title, content, updated, content_type) VALUES (?, ?, ?, "+db.now()+", ?) "+db.upsert("id")+" title = ?, content = ?, updated = "+db.now(), id, title, content, contentType, title, content)
 	default:
 		unsupportedDriver("UpdateDynamicContent", db.driverName)
@@ -2992,9 +3004,9 @@ func (db *datastore) UpdateDynamicContent(id, title, content, contentType string
 }
 
 func (db *datastore) GetAllUsers(page uint) (*[]User, error) {
-	limitStr := fmt.Sprintf("0, %d", adminUsersPerPage)
+	limitStr := fmt.Sprintf("%d OFFSET 0", adminUsersPerPage)
 	if page > 1 {
-		limitStr = fmt.Sprintf("%d, %d", (page-1)*adminUsersPerPage, adminUsersPerPage)
+		limitStr = fmt.Sprintf("%d OFFSET %d", adminUsersPerPage, (page-1)*adminUsersPerPage)
 	}
 
 	rows, err := db.Query("SELECT id, username, created, status FROM users ORDER BY created DESC, id DESC LIMIT " + limitStr)
@@ -3174,8 +3186,8 @@ func (db *datastore) RecordRemoteUserID(ctx context.Context, localUserID int64, 
 	switch db.driverName {
 	case driverSQLite:
 		_, err = db.ExecContext(ctx, "INSERT OR REPLACE INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?)", localUserID, remoteUserID, provider, clientID, accessToken)
-	case driverMySQL:
-		_, err = db.ExecContext(ctx, "INSERT INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?) "+db.upsert("user")+" access_token = ?", localUserID, remoteUserID, provider, clientID, accessToken, accessToken)
+	case driverMySQL, driverPostgres:
+		_, err = db.ExecContext(ctx, "INSERT INTO oauth_users (user_id, remote_user_id, provider, client_id, access_token) VALUES (?, ?, ?, ?, ?) "+db.upsert("user_id", "provider", "client_id")+" access_token = ?", localUserID, remoteUserID, provider, clientID, accessToken, accessToken)
 	default:
 		unsupportedDriver("RecordRemoteUserID", db.driverName)
 	}
@@ -3508,13 +3520,9 @@ func (db *datastore) IsSubscriberConfirmed(email string) bool {
 }
 
 func (db *datastore) InsertJob(j *PostJob) error {
-	res, err := db.Exec("INSERT INTO publishjobs (post_id, action, delay) VALUES (?, ?, ?)", j.PostID, j.Action, j.Delay)
+	jobID, err := db.insertReturningID(db.DB, "INSERT INTO publishjobs (post_id, action, delay) VALUES (?, ?, ?)", j.PostID, j.Action, j.Delay)
 	if err != nil {
 		return err
-	}
-	jobID, err := res.LastInsertId()
-	if err != nil {
-		log.Error("[jobs] Couldn't get last insert ID! %s", err)
 	}
 	log.Info("[jobs] Queued %s job #%d for post %s, delayed %d minutes", j.Action, jobID, j.PostID, j.Delay)
 	return nil
@@ -3552,6 +3560,12 @@ func (db *datastore) GetJobsToRun(action string) ([]*PostJob, error) {
 	switch db.driverName {
 	case driverSQLite:
 		timeWhere = "created < DATETIME('now', '-' || delay || ' MINUTE') AND created > DATETIME('now', '-' || (delay+5) || ' MINUTE')"
+	case driverPostgres:
+		// The interval comes from a column, so DateSub (which takes a
+		// constant) cannot build it. make_interval takes an integer number
+		// of minutes; the cast keeps this valid whatever integer type
+		// WFPG-03 gives delay.
+		timeWhere = "created < NOW() - make_interval(mins => CAST(delay AS integer)) AND created > NOW() - make_interval(mins => CAST(delay AS integer) + 5)"
 	case driverMySQL:
 	default:
 		unsupportedDriver("GetJobsToRun", db.driverName)
