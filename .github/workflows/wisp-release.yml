@@ -155,8 +155,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-      # The release summary waits under [Unreleased] until now; changelog.yml
-      # refused the pull request into main without one. kacl-cli moves it into
+      # The release's bullets wait under [Unreleased] until now; changelog.yml
+      # refused the pull request into main without any. kacl-cli moves them into
       # a dated section for this version and updates the compare links, and
       # the result is committed to main so the tag below includes it.
       #
@@ -281,7 +281,7 @@ jobs:
           docker buildx imagetools create -t "${IMAGE}:latest" "$source"
 
       # The changelog commit exists only on main, so develop would keep the
-      # summary under [Unreleased] and list it again in the next release.
+      # bullets under [Unreleased] and list them again in the next release.
       # Merging main back carries the released section over, and the merge
       # commit the "Release X to main" pull request created along with it.
       #
