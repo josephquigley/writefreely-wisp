@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
 	"github.com/writeas/web-core/log"
 )
 
@@ -42,7 +42,7 @@ import (
 //     methods. On Postgres the rebinding driver (pgdriver.go) rewrites them to
 //     `$n` for every statement, whether it goes through datastore, a *sql.Tx,
 //     or the migrations package. Rebind exists only for code that must see
-//     the final text (tests, logging, or a raw pgx connection).
+//     the final text (tests, logging, or a raw driver connection).
 type dialect interface {
 	// DriverName is the database/sql driver name this dialect serves, i.e.
 	// one of driverMySQL, driverSQLite or driverPostgres. It is the value of
@@ -379,8 +379,8 @@ func (postgresDialect) InsertIgnore(insert string) string {
 // isPostgresErrCode reports whether err is (or wraps) a Postgres error with
 // the given SQLSTATE code.
 func isPostgresErrCode(err error, code string) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == code
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && string(pqErr.Code) == code
 }
 
 // --------------------------------------------------------------- shared --

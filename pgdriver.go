@@ -19,18 +19,15 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/lib/pq"
 	"github.com/writefreely/writefreely/config"
 )
 
 // driverPostgresRebind is the database/sql driver name to open Postgres
 // with: sql.Open(driverPostgresRebind, postgresDSN(cfg)).
 //
-// It is pgx v5's stdlib driver with one change: every query text passed to
+// It is lib/pq's driver with one change: every query text passed to
 // Prepare, Exec or Query has its `?` placeholders rewritten to `$1…$n` (see
 // rebindPostgres). Doing this at the driver, rather than on datastore,
 // covers every path to the database: datastore methods, *sql.Tx from
@@ -44,7 +41,7 @@ func init() {
 	sql.Register(driverPostgresRebind, rebindDriver{})
 }
 
-// postgresDSN builds a pgx connection URL from the [database] section.
+// postgresDSN builds a lib/pq connection URL from the [database] section.
 // It uses host, port, username, password, database and tls; tls = true maps
 // to sslmode=require and false to sslmode=disable. The session time zone is
 // pinned to UTC (WFPG-06 relies on it).
@@ -213,7 +210,7 @@ func isSQLIdentByte(c byte) bool {
 }
 
 // rebindDriver is registered as driverPostgresRebind. It opens connections
-// through pgx's stdlib driver and wraps each one in a rebindConn.
+// through lib/pq's connector and wraps each one in a rebindConn.
 type rebindDriver struct{}
 
 var (
@@ -229,12 +226,10 @@ func (d rebindDriver) Open(name string) (driver.Conn, error) {
 	return c.Connect(context.Background())
 }
 
+// OpenConnector uses pq.NewConnector: pq.Driver does not implement
+// driver.DriverContext itself.
 func (rebindDriver) OpenConnector(name string) (driver.Connector, error) {
-	dc, ok := stdlib.GetDefaultDriver().(driver.DriverContext)
-	if !ok {
-		return nil, fmt.Errorf("%s: pgx stdlib driver does not implement driver.DriverContext", driverPostgresRebind)
-	}
-	inner, err := dc.OpenConnector(name)
+	inner, err := pq.NewConnector(name)
 	if err != nil {
 		return nil, err
 	}
@@ -247,40 +242,52 @@ type rebindConnector struct {
 
 var _ driver.Connector = (*rebindConnector)(nil)
 
+// pqConn is every driver interface rebindConn forwards. lib/pq's connection
+// type is unexported, so it is held through this interface; Connect refuses
+// a connection that lacks any of them rather than silently losing it.
+type pqConn interface {
+	driver.Conn
+	driver.QueryerContext
+	driver.ExecerContext
+	driver.ConnPrepareContext
+	driver.ConnBeginTx
+	driver.NamedValueChecker
+	driver.Pinger
+	driver.SessionResetter
+	driver.Validator
+}
+
+// Connect opens a lib/pq connection. Timestamps need nothing here: lib/pq
+// scans timestamptz into the session TimeZone, and postgresDSN pins that to
+// UTC, so values arrive in time.UTC (WFPG-06), as SQLite values already do.
+// Post.Created8601 and friends format with a literal "Z", so a non-UTC value
+// would render the wrong instant. TestPostgresTimeIsUTCWhateverTheEnvironment
+// holds this.
 func (c *rebindConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	conn, err := c.inner.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	pc, ok := conn.(*stdlib.Conn)
+	pc, ok := conn.(pqConn)
 	if !ok {
 		conn.Close()
-		return nil, fmt.Errorf("%s: pgx returned %T, want *stdlib.Conn", driverPostgresRebind, conn)
+		return nil, fmt.Errorf("%s: lib/pq returned %T, which lacks a driver interface rebindConn forwards", driverPostgresRebind, conn)
 	}
-	// pgx scans timestamptz into time.Local whatever the session TimeZone
-	// is. Scan into UTC instead (WFPG-06), as SQLite values already are:
-	// Post.Created8601 and friends format with a literal "Z", so a local
-	// value would render the wrong instant on any host not running in UTC.
-	pc.Conn().TypeMap().RegisterType(&pgtype.Type{
-		Name:  "timestamptz",
-		OID:   pgtype.TimestamptzOID,
-		Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
-	})
 	return &rebindConn{inner: pc}, nil
 }
 
 func (c *rebindConnector) Driver() driver.Driver { return rebindDriver{} }
 
-// rebindConn wraps a pgx *stdlib.Conn, rebinding placeholders on the way
+// rebindConn wraps a lib/pq connection, rebinding placeholders on the way
 // in. database/sql discovers a connection's capabilities by type assertion,
-// so every optional interface *stdlib.Conn implements must be forwarded
-// here, or pgx's behaviour for it is silently lost. TestRebindConnForwards
-// checks that list against pgx at test time.
+// so every optional interface lib/pq's connection implements must be
+// forwarded here, or its behaviour is silently lost.
+// TestPostgresRebindConnForwards checks that list against lib/pq.
 //
-// Code that needs the raw pgx connection through sql.Conn.Raw gets a
-// *rebindConn; call Unwrap (or Conn, which matches *stdlib.Conn) on it.
+// Code that needs the raw lib/pq connection through sql.Conn.Raw gets a
+// *rebindConn; call Unwrap on it.
 type rebindConn struct {
-	inner *stdlib.Conn
+	inner pqConn
 }
 
 var (
@@ -295,11 +302,8 @@ var (
 	_ driver.Validator          = (*rebindConn)(nil)
 )
 
-// Unwrap returns the wrapped pgx stdlib connection.
-func (c *rebindConn) Unwrap() *stdlib.Conn { return c.inner }
-
-// Conn returns the underlying *pgx.Conn, as (*stdlib.Conn).Conn does.
-func (c *rebindConn) Conn() *pgx.Conn { return c.inner.Conn() }
+// Unwrap returns the wrapped lib/pq connection.
+func (c *rebindConn) Unwrap() driver.Conn { return c.inner }
 
 func (c *rebindConn) Prepare(query string) (driver.Stmt, error) {
 	return c.inner.Prepare(rebindPostgres(query))
@@ -336,12 +340,6 @@ func (c *rebindConn) ResetSession(ctx context.Context) error {
 	return c.inner.ResetSession(ctx)
 }
 
-// IsValid forwards to pgx if it implements driver.Validator (pgx v5.11
-// does not), and otherwise reports true, which is what database/sql
-// assumes for a connection without the method.
-func (c *rebindConn) IsValid() bool {
-	if v, ok := interface{}(c.inner).(driver.Validator); ok {
-		return v.IsValid()
-	}
-	return true
-}
+// IsValid forwards to lib/pq, which reports false once the connection has
+// seen a fatal error, so database/sql drops it instead of reusing it.
+func (c *rebindConn) IsValid() bool { return c.inner.IsValid() }

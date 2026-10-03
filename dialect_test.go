@@ -20,8 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/writefreely/writefreely/config"
@@ -133,11 +132,15 @@ func TestPostgresDSN(t *testing.T) {
 	assert.Equal(t, "require", u.Query().Get("sslmode"))
 	assert.Equal(t, "UTC", u.Query().Get("timezone"))
 
-	// pgx must read it back the same way.
-	pc, err := pgconn.ParseConfig(dsn)
+	// lib/pq must read it back the same way.
+	pc, err := pq.NewConfig(dsn)
 	require.NoError(t, err)
+	assert.Equal(t, "db.internal", pc.Host)
+	assert.Equal(t, uint16(6543), pc.Port)
+	assert.Equal(t, "wf", pc.User)
 	assert.Equal(t, "p@ss/w:rd?#", pc.Password)
-	assert.Equal(t, "UTC", pc.RuntimeParams["timezone"])
+	assert.Equal(t, "require", string(pc.SSLMode))
+	assert.Equal(t, "UTC", pc.Runtime["timezone"])
 
 	dsn = postgresDSN(config.DatabaseCfg{Host: "::1", Database: "wf"})
 	u, err = url.Parse(dsn)
@@ -147,15 +150,27 @@ func TestPostgresDSN(t *testing.T) {
 	assert.Nil(t, u.User)
 }
 
-// TestRebindConnForwards checks, against the pgx version in go.mod, that
-// rebindConn implements every optional database/sql/driver connection
-// interface that *stdlib.Conn implements. If a pgx upgrade adds one, this
-// fails until rebindConn forwards it too.
-func TestRebindConnForwards(t *testing.T) {
+// TestPostgresRebindConnForwards checks, against the lib/pq version in
+// go.mod, that rebindConn implements every optional database/sql/driver
+// connection interface lib/pq's connection implements. If a lib/pq upgrade
+// adds one, this fails until rebindConn forwards it too. The deprecated
+// Execer and Queryer are left out: database/sql calls them only when the
+// Context variants are missing, and rebindConn has those.
+func TestPostgresRebindConnForwards(t *testing.T) {
+	sdb := newPostgresTestDB(t)
+	conn, err := sdb.Conn(context.Background())
+	require.NoError(t, err)
+	defer conn.Close()
+	var inner reflect.Type
+	require.NoError(t, conn.Raw(func(dc interface{}) error {
+		rc, ok := dc.(*rebindConn)
+		require.True(t, ok, "%T", dc)
+		inner = reflect.TypeOf(rc.Unwrap())
+		return nil
+	}))
+
 	ifaces := map[string]reflect.Type{
-		"Execer":             reflect.TypeOf((*driver.Execer)(nil)).Elem(), //nolint:staticcheck
 		"ExecerContext":      reflect.TypeOf((*driver.ExecerContext)(nil)).Elem(),
-		"Queryer":            reflect.TypeOf((*driver.Queryer)(nil)).Elem(), //nolint:staticcheck
 		"QueryerContext":     reflect.TypeOf((*driver.QueryerContext)(nil)).Elem(),
 		"ConnPrepareContext": reflect.TypeOf((*driver.ConnPrepareContext)(nil)).Elem(),
 		"ConnBeginTx":        reflect.TypeOf((*driver.ConnBeginTx)(nil)).Elem(),
@@ -164,20 +179,40 @@ func TestRebindConnForwards(t *testing.T) {
 		"SessionResetter":    reflect.TypeOf((*driver.SessionResetter)(nil)).Elem(),
 		"Validator":          reflect.TypeOf((*driver.Validator)(nil)).Elem(),
 	}
-	inner := reflect.TypeOf((*stdlib.Conn)(nil))
 	outer := reflect.TypeOf((*rebindConn)(nil))
 	for name, it := range ifaces {
 		if inner.Implements(it) {
-			assert.Truef(t, outer.Implements(it), "*stdlib.Conn implements driver.%s but rebindConn does not forward it", name)
+			assert.Truef(t, outer.Implements(it), "%v implements driver.%s but rebindConn does not forward it", inner, name)
 		}
 	}
 }
 
+// TestPostgresPoolDropsTerminatedBackend: after the server kills a pooled
+// connection (failover, restart, pg_terminate_backend), at most one call may
+// fail; the next must run on a fresh connection.
+func TestPostgresPoolDropsTerminatedBackend(t *testing.T) {
+	sdb := newPostgresTestDB(t)
+	ctx := context.Background()
+	sdb.SetMaxOpenConns(1)
+	sdb.SetMaxIdleConns(1)
+
+	var pid int
+	require.NoError(t, sdb.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid))
+	var killed bool
+	require.NoError(t, testPGAdmin.QueryRowContext(ctx, "SELECT pg_terminate_backend(?, 5000)", pid).Scan(&killed))
+	require.True(t, killed)
+
+	_, _ = sdb.ExecContext(ctx, "SELECT 1") // may surface the dead connection once
+	var newPID int
+	require.NoError(t, sdb.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&newPID))
+	assert.NotEqual(t, pid, newPID)
+}
+
 func TestPostgresErrorClassifiers(t *testing.T) {
 	pg := newDatastore(nil, driverPostgres)
-	dup := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23505"})
-	load := &pgconn.PgError{Code: "53300"}
-	other := &pgconn.PgError{Code: "42P01"}
+	dup := fmt.Errorf("wrapped: %w", &pq.Error{Code: "23505"})
+	load := &pq.Error{Code: "53300"}
+	other := &pq.Error{Code: "42P01"}
 
 	assert.True(t, pg.isDuplicateKeyErr(dup))
 	assert.False(t, pg.isDuplicateKeyErr(other))
@@ -254,13 +289,15 @@ func TestPostgresConnection(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT "+db.dateAdd(1, "HOUR")+" > "+db.now()+" AND "+db.dateSub(1, "DAY")+" < "+db.now()).Scan(&later))
 	assert.True(t, later)
 
-	// sql.Conn.Raw still reaches pgx through the wrapper.
+	// sql.Conn.Raw still reaches lib/pq through the wrapper.
 	conn, err := db.Conn(ctx)
 	require.NoError(t, err)
 	defer conn.Close()
 	require.NoError(t, conn.Raw(func(dc interface{}) error {
 		rc, ok := dc.(*rebindConn)
 		require.True(t, ok, "%T", dc)
-		return rc.Conn().Ping(ctx)
+		p, ok := rc.Unwrap().(driver.Pinger)
+		require.True(t, ok, "%T", rc.Unwrap())
+		return p.Ping(ctx)
 	}))
 }
