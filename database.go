@@ -3038,7 +3038,10 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 			return err
 		}
 
-		res, err := tx.ExecContext(ctx, "UPDATE oauth_client_states SET used = TRUE WHERE state = ?", state)
+		// The used = FALSE condition belongs in the UPDATE, not only in the
+		// SELECT above: two callers can both pass the SELECT, and only the
+		// UPDATE's row count decides which of them consumed the state.
+		res, err := tx.ExecContext(ctx, "UPDATE oauth_client_states SET used = TRUE WHERE state = ? AND used = FALSE", state)
 		if err != nil {
 			return err
 		}
