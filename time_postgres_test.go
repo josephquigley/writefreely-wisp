@@ -197,3 +197,27 @@ func TestPostgresTestDSNAlwaysUTC(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "UTC", u.Query().Get("timezone"))
 }
+
+func TestPostgresTimeArgTruncatesToMicroseconds(t *testing.T) {
+	pg := postgresDialect{}
+	in := time.Date(2026, 10, 3, 12, 0, 59, 999999600, time.UTC)
+	assert.Equal(t, time.Date(2026, 10, 3, 12, 0, 59, 999999000, time.UTC), pg.TimeArg(in))
+	assert.Zero(t, pg.NowForInsert().Nanosecond()%1000)
+}
+
+// TestPostgresTimeArgRoundTrip: a value sent through TimeArg reads back
+// unchanged. Without truncation lib/pq sends the nanoseconds and Postgres
+// rounds 59.9999996 up into the next minute.
+func TestPostgresTimeArgRoundTrip(t *testing.T) {
+	sdb := newPostgresTestDB(t)
+	db := newDatastore(sdb, driverPostgres)
+	_, err := db.Exec("CREATE TABLE tt (v timestamptz NOT NULL)")
+	require.NoError(t, err)
+
+	in := postgresDialect{}.TimeArg(time.Date(2026, 10, 3, 12, 0, 59, 999999600, time.UTC))
+	_, err = db.Exec("INSERT INTO tt (v) VALUES (?)", in)
+	require.NoError(t, err)
+	var out time.Time
+	require.NoError(t, db.QueryRow("SELECT v FROM tt").Scan(&out))
+	assert.True(t, in.Equal(out), "sent %s, read %s", in, out)
+}

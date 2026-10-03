@@ -313,9 +313,11 @@ func (postgresDialect) Now() string { return "NOW()" }
 // The columns are timestamptz and the session TimeZone is UTC (postgresDSN),
 // so Go always sends UTC and the stored instant never depends on the
 // process's time zone.
-func (postgresDialect) NowForInsert() time.Time { return time.Now().UTC() }
+func (postgresDialect) NowForInsert() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 
-func (postgresDialect) TimeArg(t time.Time) time.Time { return t.UTC() }
+// TimeArg truncates to microseconds, Postgres' precision, so the stored
+// instant does not depend on how the driver rounds the rest.
+func (postgresDialect) TimeArg(t time.Time) time.Time { return t.UTC().Truncate(time.Microsecond) }
 
 func (postgresDialect) Clip(field string, l int) string {
 	return fmt.Sprintf("LEFT(%s, %d)", field, l)
