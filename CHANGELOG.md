@@ -17,10 +17,12 @@ changes share a bullet. Detailed notes are on the corresponding
 ### Added
 
 - PostgreSQL is supported alongside MySQL and SQLite (`type = postgres` under `[database]`), and `writefreely db copy --from sqlite:<path>` moves an existing SQLite database into Postgres, verified before committing.
+- `writefreely settings list|get|set|export` changes settings without editing a file, and the admin page now covers every setting kept in the database.
 
 ### Changed
 
 - Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
+- Instance settings now live in the database, so every server sharing it uses the same values; upgrading moves them out of config.ini and removes them from the file, without a backup.
 
 ### Security
 
