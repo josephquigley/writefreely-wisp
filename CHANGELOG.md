@@ -18,6 +18,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - Successful invite lookups on SQLite no longer log a spurious error.
+- Successful invite lookups on SQLite no longer log a spurious error.
 
 ### Security
 
