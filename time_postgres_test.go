@@ -11,6 +11,9 @@
 package writefreely
 
 import (
+	"database/sql"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -162,4 +165,35 @@ func TestPostgresUsersFilteredWindow(t *testing.T) {
 		names = append(names, u.Username)
 	}
 	assert.Equal(t, []string{"newer"}, names)
+}
+
+// TestPostgresTimeIsUTCWhateverTheEnvironment: lib/pq reads timestamptz in
+// the session TimeZone. postgresDSN pins it to UTC, and that must beat a
+// host's PGTZ or PGOPTIONS, or Created8601 renders the wrong instant.
+func TestPostgresTimeIsUTCWhateverTheEnvironment(t *testing.T) {
+	newPostgresTestDB(t) // skips unless WF_TEST_DB_TYPE=postgres
+	t.Setenv("PGTZ", "America/Detroit")
+	t.Setenv("PGOPTIONS", "-c timezone=Asia/Tokyo")
+
+	dsn, err := testPGDSN(os.Getenv(envTestPGDSN), "postgres")
+	require.NoError(t, err)
+	db, err := sql.Open(driverPostgresRebind, dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	var zone string
+	var now time.Time
+	require.NoError(t, db.QueryRow("SELECT current_setting('TimeZone'), now()").Scan(&zone, &now))
+	assert.Equal(t, "UTC", zone)
+	assert.Same(t, time.UTC, now.Location())
+}
+
+// TestPostgresTestDSNAlwaysUTC: a WF_TEST_PG_DSN that names another zone
+// must not change what the suite tests.
+func TestPostgresTestDSNAlwaysUTC(t *testing.T) {
+	dsn, err := testPGDSN("postgres://u@h/db?timezone=America/Detroit", "x")
+	require.NoError(t, err)
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	assert.Equal(t, "UTC", u.Query().Get("timezone"))
 }

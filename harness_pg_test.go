@@ -77,7 +77,7 @@ func initPostgresTests() error {
 }
 
 // testPGDSN returns base with its database replaced by dbName and the
-// session time zone pinned to UTC unless base already sets one, matching
+// session time zone pinned to UTC, matching
 // postgresDSN. Only URL-form DSNs (postgres://…) are accepted.
 func testPGDSN(base, dbName string) (string, error) {
 	u, err := url.Parse(base)
@@ -87,9 +87,10 @@ func testPGDSN(base, dbName string) (string, error) {
 	u.Path = "/" + dbName
 	u.RawPath = ""
 	q := u.Query()
-	if q.Get("timezone") == "" {
-		q.Set("timezone", "UTC")
-	}
+	// Always UTC, as postgresDSN does: lib/pq scans timestamptz in the
+	// session zone, so a DSN naming another zone would test something the
+	// application never runs.
+	q.Set("timezone", "UTC")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
