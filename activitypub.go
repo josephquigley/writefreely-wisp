@@ -1569,25 +1569,28 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 				return
 			}
 
-			// Add in key
-			_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
+			// Add in key. A key that is already stored is skipped in the
+			// SQL rather than forgiven after the fact: on Postgres a
+			// duplicate-key error aborts the transaction, and the follow
+			// below would then never be stored. public_key is binary
+			// (bytea on Postgres), so the PEM goes in as bytes.
+			_, err = t.Exec(app.db.insertIgnore("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)"), fullActor.PublicKey.ID, followerID, []byte(fullActor.PublicKey.PublicKeyPEM))
 			if err != nil {
-				if !app.db.isDuplicateKeyErr(err) {
-					t.Rollback()
-					log.Error("Couldn't add follower keys in DB: %v\n", err)
-					return
-				}
+				t.Rollback()
+				log.Error("Couldn't add follower keys in DB: %v\n", err)
+				return
 			}
 		}
 
-		// Add follow
-		_, err = t.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", c.ID, followerID)
+		// Add follow. A remote that re-sends its Follow (Mastodon and Mbin
+		// both do) is already a follower; skipping the row in SQL keeps the
+		// transaction alive on Postgres so that the commit succeeds and the
+		// Accept below still goes out.
+		_, err = t.Exec(app.db.insertIgnore("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")"), c.ID, followerID)
 		if err != nil {
-			if !app.db.isDuplicateKeyErr(err) {
-				t.Rollback()
-				log.Error("Couldn't add follower in DB: %v\n", err)
-				return
-			}
+			t.Rollback()
+			log.Error("Couldn't add follower in DB: %v\n", err)
+			return
 		}
 
 		err = t.Commit()
