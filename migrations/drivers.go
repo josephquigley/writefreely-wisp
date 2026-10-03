@@ -194,15 +194,22 @@ func (db *datastore) QueryWrap(q string) string {
 	}
 
 	output := ""
-	escape := false
+	// quote holds the character that opened the current quoted run, or 0
+	// outside one. A run closes only on the same character, so a ` inside
+	// '...' (or a ' inside `...`) does not end it. A doubled quote ('it''s')
+	// closes and immediately reopens the run, which leaves it quoted.
+	var quote byte
 	ctr := 0
 
 	for i := range len(q) {
-		if q[i] == '\'' || q[i] == '`' {
-			escape = !escape
+		switch c := q[i]; {
+		case quote == 0 && (c == '\'' || c == '`' || c == '"'):
+			quote = c
+		case c == quote:
+			quote = 0
 		}
 
-		if q[i] == '?' && !escape {
+		if q[i] == '?' && quote == 0 {
 			ctr += 1
 			output += fmt.Sprintf("$%d", ctr)
 		} else {
