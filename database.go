@@ -1333,7 +1333,7 @@ func (db *datastore) GetPosts(cfg *config.Config, c *Collection, page int, inclu
 		pinnedCondition = "AND pinned_position IS NULL"
 	}
 	// FUTURE: handle different post contentType's here
-	rows, err := db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? "+pinnedCondition+" "+timeCondition+" ORDER BY created "+order+limitStr, collID)
+	rows, err := db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? "+pinnedCondition+" "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID)
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -1446,7 +1446,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 	var rows *sql.Rows
 	var err error
 	if db.driverName == driverSQLite {
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
 	} else {
 		var boundaryRegex string
 		if db.useSpencerRegex {
@@ -1456,7 +1456,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 			// MySQL 8.0.4+, International Components for Unicode (ICU) syntax
 			boundaryRegex = "\\b"
 		}
-		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, "#"+strings.ToLower(tag)+boundaryRegex)
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+", id "+order+limitStr, collID, "#"+strings.ToLower(tag)+boundaryRegex)
 	}
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
@@ -1525,7 +1525,7 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 	rows, err := db.Query(`SELECT `+postCols+`
 FROM posts
 WHERE collection_id = ? AND language = ? `+timeCondition+`
-ORDER BY created `+order+limitStr, collID, lang)
+ORDER BY created `+order+`, id `+order+limitStr, collID, lang)
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -2151,7 +2151,7 @@ func (db *datastore) GetAnonymousPosts(u *User, page int) (*[]PublicPost, error)
 	if page > 0 {
 		limitStr = fmt.Sprintf(" LIMIT %d, %d", start, pagePosts)
 	}
-	rows, err := db.Query("SELECT id, view_count, title, language, created, updated, content FROM posts WHERE owner_id = ? AND collection_id IS NULL ORDER BY created DESC"+limitStr, u.ID)
+	rows, err := db.Query("SELECT id, view_count, title, language, created, updated, content FROM posts WHERE owner_id = ? AND collection_id IS NULL ORDER BY created DESC, id DESC"+limitStr, u.ID)
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve user anonymous posts."}
@@ -2885,7 +2885,7 @@ func (db *datastore) GetAllUsers(page uint) (*[]User, error) {
 		limitStr = fmt.Sprintf("%d, %d", (page-1)*adminUsersPerPage, adminUsersPerPage)
 	}
 
-	rows, err := db.Query("SELECT id, username, created, status FROM users ORDER BY created DESC LIMIT " + limitStr)
+	rows, err := db.Query("SELECT id, username, created, status FROM users ORDER BY created DESC, id DESC LIMIT " + limitStr)
 	if err != nil {
 		log.Error("Failed selecting from users: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve all users."}
