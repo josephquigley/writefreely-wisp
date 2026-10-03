@@ -28,8 +28,8 @@ package writefreely
 //   - Datetimes are read as text and parsed here, explicitly, as UTC unless
 //     the text carries an offset. The SQLite driver turns text it cannot
 //     parse into the zero time silently; this refuses instead. Postgres keeps
-//     microseconds, so values are truncated to the microsecond (pgx would
-//     truncate them the same way).
+//     microseconds, so values are truncated to the microsecond (the
+//     dialect's TimeArg truncates new writes the same way).
 //   - Binary columns (bytea in Postgres) are read with CAST(… AS BLOB), so
 //     the bytes arrive as []byte whether the row stored TEXT (access tokens
 //     written before WFPG-05) or BLOB.
@@ -67,7 +67,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
 	"github.com/mattn/go-sqlite3"
 	"github.com/writefreely/writefreely/migrations"
 )
@@ -907,11 +907,11 @@ func (w *dbCopyWriter) flush() error {
 // dbCopyErr reduces a Postgres error to its code, message and constraint.
 // The detail line, which can quote the offending value, is left out.
 func dbCopyErr(err error) error {
-	var pe *pgconn.PgError
+	var pe *pq.Error
 	if errors.As(err, &pe) {
 		s := fmt.Sprintf("%s (SQLSTATE %s)", pe.Message, pe.Code)
-		if pe.ConstraintName != "" {
-			s += ", constraint " + pe.ConstraintName
+		if pe.Constraint != "" {
+			s += ", constraint " + pe.Constraint
 		}
 		return errors.New(s)
 	}

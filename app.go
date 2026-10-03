@@ -1141,7 +1141,7 @@ func connectToDatabase(app *App) {
 		db, err = sql.Open("sqlite3_with_regex", app.cfg.Database.FileName+"?parseTime=true&cached=shared")
 		db.SetMaxOpenConns(2)
 	case driverPostgres:
-		// pgx behind the placeholder-rebinding wrapper; see pgdriver.go.
+		// lib/pq behind the placeholder-rebinding wrapper; see pgdriver.go.
 		db, err = sql.Open(driverPostgresRebind, postgresDSN(app.cfg.Database))
 		// A conservative default under Postgres' stock max_connections of
 		// 100. WFPG-12 tunes the pool.
