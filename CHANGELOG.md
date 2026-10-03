@@ -18,6 +18,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
+- A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
 
 ### Security
 
