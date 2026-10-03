@@ -25,7 +25,7 @@ import (
 // gate every signup path (web, API, and OAuth) must pass through so the checks can't be side-stepped by hitting a
 // different endpoint.
 func (app *App) canRegister(inviteCode string) error {
-	if app.cfg.App.OpenRegistration {
+	if app.Config().App.OpenRegistration {
 		return nil
 	}
 	i, err := app.db.GetUserInvite(inviteCode)
@@ -70,7 +70,7 @@ func handleWebSignup(app *App, w http.ResponseWriter, r *http.Request) error {
 	ur.Normalize = true
 
 	to := "/"
-	if app.cfg.App.SimpleNav {
+	if app.Config().App.SimpleNav {
 		to = "/new"
 	}
 	if ur.InviteCode != "" {

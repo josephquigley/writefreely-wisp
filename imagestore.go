@@ -208,10 +208,10 @@ func imageSlug(filename string) string {
 
 // uploadsRoot returns the directory uploaded images are written to.
 func (app *App) uploadsRoot() string {
-	if dir := strings.TrimSpace(app.cfg.Uploads.Dir); dir != "" {
+	if dir := strings.TrimSpace(app.Config().Uploads.Dir); dir != "" {
 		return dir
 	}
-	return filepath.Join(app.cfg.Server.StaticParentDir, staticDir, uploadsDir)
+	return filepath.Join(app.Config().Server.StaticParentDir, staticDir, uploadsDir)
 }
 
 // ImageStore keeps the bytes of uploaded images. Every path is relative to
@@ -262,11 +262,11 @@ func (app *App) imageStore() ImageStore {
 // been written to.
 func (app *App) initImageStore() error {
 	app.imagesOnce.Do(func() {
-		if !app.cfg.Storage.UsesS3() {
+		if !app.Config().Storage.UsesS3() {
 			app.images = &localImageStore{root: app.uploadsRoot}
 			return
 		}
-		app.images, app.imagesErr = newS3ImageStore(app.cfg.Storage)
+		app.images, app.imagesErr = newS3ImageStore(app.Config().Storage)
 	})
 	return app.imagesErr
 }
@@ -318,7 +318,7 @@ func (app *App) checkUploadsAtStartup() error {
 		return nil
 	}
 	if s3Unreachable(err) {
-		st := app.cfg.Storage
+		st := app.Config().Storage
 		log.Error("uploaded images are unavailable: S3 at %s/%s did not answer: %v; the blog is starting without them", st.S3Endpoint, st.S3Bucket, err)
 		return nil
 	}

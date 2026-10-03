@@ -52,7 +52,7 @@ func ownedPinnedCollection(app *App, u *User, r *http.Request) (*Collection, err
 	if c.OwnerID != u.ID {
 		return nil, ErrCollectionNotFound
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 	return c, nil
 }
 
@@ -92,7 +92,7 @@ func viewPinnedPosts(app *App, u *User, w http.ResponseWriter, r *http.Request) 
 		UserPage:    NewUserPage(app, r, u, c.DisplayTitle()+" Pinned Posts", flashes),
 		Collection:  c,
 		Alias:       c.Alias,
-		SingleUser:  app.cfg.App.SingleUser,
+		SingleUser:  app.Config().App.SingleUser,
 		CSRFField:   csrf.TemplateField(r),
 		PinnedPosts: *posts,
 		LastIndex:   len(*posts) - 1,

@@ -62,6 +62,10 @@ func startOrphanImageSweep(app *App) {
 	t := time.NewTicker(1 * time.Hour)
 	for {
 		<-t.C
+		app.refreshSettings(context.Background())
+		if !app.Config().Uploads.Enabled {
+			continue
+		}
 		withJobLock(app, jobLockOrphanSweep, func() {
 			log.Info("[jobs] Sweeping orphaned image uploads...")
 			sweepOrphanedImages(app)
@@ -110,7 +114,7 @@ func runJobs(app *App, jobs []*PostJob, reqColl bool) error {
 			log.Info("[job #%d] Unable to get collection: %s", j.ID, err)
 			continue
 		}
-		coll.hostName = app.cfg.App.Host
+		coll.hostName = app.Config().App.Host
 		coll.ForPublic()
 		p.Collection = &CollectionObj{Collection: *coll}
 		err = jobEmailPost(app, p, p.Collection.ID)

@@ -52,7 +52,7 @@ func SyncImages(apper Apper, to string, out io.Writer) error {
 	}
 	apper.LoadConfig()
 	app := apper.App()
-	if !app.cfg.Storage.UsesS3() {
+	if !app.Config().Storage.UsesS3() {
 		return errNoS3Storage
 	}
 	connectToDatabase(app)
@@ -65,10 +65,10 @@ var errNoS3Storage = errors.New("config.ini has no [storage] section with type =
 // syncImagesToS3 is SyncImages on an App whose configuration is loaded and
 // whose database is connected.
 func syncImagesToS3(app *App, out io.Writer) error {
-	if !app.cfg.Storage.UsesS3() {
+	if !app.Config().Storage.UsesS3() {
 		return errNoS3Storage
 	}
-	dst, err := newS3ImageStore(app.cfg.Storage)
+	dst, err := newS3ImageStore(app.Config().Storage)
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func syncImagesToS3(app *App, out io.Writer) error {
 	// Always the directory, whatever store the app itself would use: this
 	// copies off this node's disk.
 	src := &localImageStore{root: app.uploadsRoot}
-	fmt.Fprintf(out, "Copying %d images from %s into bucket %s...\n", len(refs), app.uploadsRoot(), app.cfg.Storage.S3Bucket)
+	fmt.Fprintf(out, "Copying %d images from %s into bucket %s...\n", len(refs), app.uploadsRoot(), app.Config().Storage.S3Bucket)
 	r := syncImages(ctx, refs, src, dst, out)
 	fmt.Fprintf(out, "Copied %d, already present %d, replaced %d, failed %d.\n", r.Copied, r.Present, r.Repaired, r.Failed)
 	if r.Failed > 0 {

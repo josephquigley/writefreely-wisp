@@ -24,12 +24,11 @@ import (
 	"github.com/writeas/go-webfinger"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/log"
-	"github.com/writefreely/writefreely/config"
 )
 
 type wfResolver struct {
 	db  *datastore
-	cfg *config.Config
+	app *App
 }
 
 var wfUserNotFoundErr = impart.HTTPError{http.StatusNotFound, "User not found."}
@@ -39,7 +38,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 	var err error
 	if username == host {
 		c = instanceColl
-	} else if wfr.cfg.App.SingleUser {
+	} else if wfr.app.Config().App.SingleUser {
 		c, err = wfr.db.GetCollectionByID(1)
 	} else {
 		c, err = wfr.db.GetCollection(username)
@@ -48,7 +47,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 		log.Error("Unable to get blog: %v", err)
 		return nil, err
 	}
-	c.hostName = wfr.cfg.App.Host
+	c.hostName = wfr.app.Config().App.Host
 
 	if !c.IsInstanceColl() {
 		silenced, err := wfr.db.IsUserSilenced(c.OwnerID)
@@ -60,7 +59,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 			return nil, wfUserNotFoundErr
 		}
 	}
-	if wfr.cfg.App.SingleUser {
+	if wfr.app.Config().App.SingleUser {
 		// Ensure handle matches user-chosen one on single-user blogs
 		if username != c.Alias {
 			log.Info("Username '%s' is not handle '%s'", username, c.Alias)
@@ -69,7 +68,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 	}
 	// Only return information if site has federation enabled.
 	// TODO: enable two levels of federation? Unlisted or Public on timelines?
-	if !wfr.cfg.App.Federation {
+	if !wfr.app.Config().App.Federation {
 		return nil, wfUserNotFoundErr
 	}
 

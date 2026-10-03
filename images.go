@@ -45,7 +45,7 @@ type uploadedImage struct {
 // metadata, and the path it is stored at is derived entirely from the owner's
 // ID and the hash of the stored bytes.
 func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	if !app.cfg.Uploads.Enabled {
+	if !app.Config().Uploads.Enabled {
 		// A disabled feature shouldn't advertise itself.
 		return impart.HTTPError{http.StatusNotFound, "Not found."}
 	}
@@ -53,7 +53,7 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return ErrUserSilenced
 	}
 
-	maxBytes := app.cfg.MaxUploadBytes()
+	maxBytes := app.Config().MaxUploadBytes()
 
 	// Bound the body before parsing it, so an oversized upload is refused
 	// without ever being buffered.
@@ -132,7 +132,7 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 // references the image; otherwise they stay and the removal is local to the
 // post being edited.
 func handleDeleteImage(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	if !app.cfg.Uploads.Enabled {
+	if !app.Config().Uploads.Enabled {
 		return impart.HTTPError{http.StatusNotFound, "Not found."}
 	}
 
@@ -228,7 +228,7 @@ var imageURLPattern = regexp.MustCompile(`/` + uploadsDir + `/([0-9]{4}/[0-9]{2}
 // post. Failing to attach must never fail the save, so problems are logged
 // rather than returned.
 func attachPostImages(app *App, ownerID int64, postID, content string) {
-	if !app.cfg.Uploads.Enabled || postID == "" {
+	if !app.Config().Uploads.Enabled || postID == "" {
 		return
 	}
 
@@ -286,7 +286,7 @@ func detachUnusedPostImages(app *App, postID string, referenced map[string]bool)
 // keeping any that another post still references. The post is already gone by
 // the time this runs, so failures are logged rather than returned.
 func cleanUpPostImages(app *App, postID string) {
-	if !app.cfg.Uploads.Enabled {
+	if !app.Config().Uploads.Enabled {
 		return
 	}
 

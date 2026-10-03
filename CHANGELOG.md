@@ -17,12 +17,14 @@ changes share a bullet. Detailed notes are on the corresponding
 ### Added
 
 - PostgreSQL is supported alongside MySQL and SQLite (`type = postgres` under `[database]`), and `writefreely db copy --from sqlite:<path>` moves an existing SQLite database into Postgres, verified before committing.
+- `writefreely settings list|get|set|export` changes settings without editing a file, and the admin page covers every database setting and refuses saves from a page older than the current settings.
 - Uploaded images can be kept in S3-compatible storage such as Garage through a new `[storage]` section, served at unchanged `/uploads/` URLs, and `writefreely images sync --to s3` copies existing images there.
 - Scheduled email publishing and the orphaned-image sweep take a database lock, so two app processes sharing one MySQL or Postgres database never email the same post twice.
 
 ### Changed
 
 - Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
+- Settings now live in the database and leave config.ini on upgrade, which gains a `settings_location` marker; an older binary runs on zero values (a private instance turns public) until `settings export` is pasted back.
 
 ### Security
 

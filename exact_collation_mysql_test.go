@@ -68,6 +68,9 @@ func TestMySQLExactMatchCollations(t *testing.T) {
 	for _, c := range exactMatchColumns {
 		assert.Equal(t, c.collation, mysqlColumnCollation(t, app, c.table, c.column), "%s.%s", c.table, c.column)
 	}
+	// V21's tables hold any Unicode and are keyed by exact name.
+	assert.Equal(t, "utf8mb4_bin", mysqlColumnCollation(t, app, "app_settings", "name"))
+	assert.Equal(t, "utf8mb4_bin", mysqlColumnCollation(t, app, "app_settings", "value"))
 	// Meant to ignore case, and left alone (see V19).
 	assert.Equal(t, "utf8mb4_unicode_ci", mysqlColumnCollation(t, app, "emailsubscribers", "email"))
 }
@@ -95,7 +98,11 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 		`ALTER TABLE oauth_client_states ROW_FORMAT=COMPACT`,
 		`ALTER TABLE remoteusers ROW_FORMAT=COMPACT`,
 		`ALTER TABLE remoteuserkeys ROW_FORMAT=COMPACT`,
-		`DELETE FROM appmigrations WHERE version = 20`,
+		// V21 (settings tables) is undone too, so Migrate runs V20 and then
+		// V21 again, as it would on a V19 database.
+		`DROP TABLE app_settings`,
+		`DROP TABLE app_settings_version`,
+		`DELETE FROM appmigrations WHERE version >= 20`,
 	} {
 		_, err := app.db.Exec(q)
 		require.NoError(t, err, q)
@@ -155,8 +162,10 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 
 	// Running it again is harmless: a migration interrupted part way is
 	// finished by running it again.
-	_, err = app.db.Exec("DELETE FROM appmigrations WHERE version = 20")
-	require.NoError(t, err)
+	for _, q := range []string{"DROP TABLE app_settings", "DROP TABLE app_settings_version", "DELETE FROM appmigrations WHERE version >= 20"} {
+		_, err = app.db.Exec(q)
+		require.NoError(t, err, q)
+	}
 	require.NoError(t, migrations.Migrate(migrations.NewDatastore(app.db.DB, driverMySQL)))
 	for _, table := range wideKeyTables {
 		assert.Equal(t, "Dynamic", mysqlRowFormat(t, app, table), table)

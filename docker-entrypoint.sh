@@ -16,6 +16,10 @@
 #                              i.e. when the keys had to be generated too.
 #                              Force with true, disable with false.
 #
+# `--migrate` also moves settings out of config.ini into the database on
+# the first start of this version, and removes them from the file. A
+# read-only config.ini is fine: the keys are logged and ignored.
+#
 set -eu
 
 CONFIG_FILE="${WRITEFREELY_CONFIG:-config.ini}"
