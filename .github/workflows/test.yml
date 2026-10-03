@@ -124,13 +124,12 @@ jobs:
   # selects the engine; docs/database-testing.md). `make test-mysql` runs the
   # same thing locally, and with MYSQL_IMAGE=mysql:8.4 against MySQL.
   #
-  # continue-on-error until it has been seen green. Known open failures on
-  # MySQL: the case-insensitive collation (TestExactMatch*) and latin1
-  # remoteusers columns, both awaiting a decision.
+  # Required: a failure here fails the run. It was continue-on-error until
+  # migration V20 gave tokens, codes and remote IRIs binary collations and
+  # remoteusers utf8mb4, which cleared the last known MySQL failures.
   test-mysql:
     name: test-mysql
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       mysql:
         image: mariadb:11

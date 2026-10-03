@@ -76,5 +76,4 @@ instead, so no reference database is needed.
 
 `.github/workflows/test.yml` has `test-mysql` (a `mariadb:11` service) and
 `test-postgres` (a `postgres:18` service) jobs beside the SQLite ones. Both
-run `go test -count=1 -tags sqlite ./...`. `test-postgres` is required;
-`test-mysql` stays `continue-on-error` until it has been seen green.
+run `go test -count=1 -tags sqlite ./...`. Both are required.
