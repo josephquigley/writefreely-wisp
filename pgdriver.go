@@ -229,9 +229,10 @@ func (d rebindDriver) Open(name string) (driver.Conn, error) {
 
 // OpenConnector parses name with pqConfigFromDSN and opens it with
 // pq.NewConnectorConfig. pq.NewConnector is not used: it also reads the PG*
-// environment variables and refuses to start on some of them (PGSSLMODE=
-// prefer, PGGSSENCMODE, PGSERVICE), which a host may export for psql. The
-// [database] section is the whole configuration.
+// environment variables and refuses to start on some of them (PGGSSENCMODE,
+// PGREQUIRESSL, PGCHANNELBINDING, PGSSLCRL, or a PGSERVICE without a service
+// file), which a host may export for psql. The [database] section is the
+// whole configuration.
 func (rebindDriver) OpenConnector(name string) (driver.Connector, error) {
 	cfg, err := pqConfigFromDSN(name)
 	if err != nil {

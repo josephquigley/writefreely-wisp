@@ -303,12 +303,13 @@ func TestPostgresConnection(t *testing.T) {
 }
 
 // TestPostgresIgnoresPGEnvironment: lib/pq's NewConnector reads PG*
-// variables and refuses some outright (PGSSLMODE=prefer, PGGSSENCMODE,
-// PGSERVICE). The [database] section is the whole configuration, so a host
-// that exports them for psql must still start.
+// variables and refuses some outright (PGGSSENCMODE, PGCHANNELBINDING, a
+// PGSERVICE with no service file). The [database] section is the whole
+// configuration, so a host that exports them for psql must still start.
 func TestPostgresIgnoresPGEnvironment(t *testing.T) {
 	t.Setenv("PGSSLMODE", "prefer")
 	t.Setenv("PGGSSENCMODE", "disable")
+	t.Setenv("PGCHANNELBINDING", "prefer")
 	t.Setenv("PGSERVICE", "elsewhere")
 	t.Setenv("PGDATABASE", "not_this_one")
 	dsn := postgresDSN(config.DatabaseCfg{User: "wf", Password: "pw", Database: "writefreely", Host: "db.internal", TLS: true})
