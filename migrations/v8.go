@@ -23,6 +23,8 @@ func oauthInvites(db *datastore) error {
 	case driverSQLite:
 		dialect = wf_db.DialectSQLite
 	case driverMySQL:
+	case driverPostgres:
+		return errBeforePostgresBase("oauthInvites")
 	default:
 		unsupportedDriver("oauthInvites", db.driverName)
 	}

@@ -23,6 +23,8 @@ func oauthSlack(db *datastore) error {
 	case driverSQLite:
 		dialect = wf_db.DialectSQLite
 	case driverMySQL:
+	case driverPostgres:
+		return errBeforePostgresBase("oauthSlack")
 	default:
 		unsupportedDriver("oauthSlack", db.driverName)
 	}

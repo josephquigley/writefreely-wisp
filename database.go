@@ -3231,25 +3231,12 @@ func (db *datastore) GetOauthAccounts(ctx context.Context, userID int64) ([]oaut
 // initialized with the correct schema.
 // Currently, it checks to see if the `users` table exists.
 func (db *datastore) DatabaseInitialized() bool {
-	var dummy string
-	var err error
-	switch db.driverName {
-	case driverSQLite:
-		err = db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").Scan(&dummy)
-	case driverMySQL:
-		err = db.QueryRow("SHOW TABLES LIKE 'users'").Scan(&dummy)
-	default:
-		unsupportedDriver("DatabaseInitialized", db.driverName)
-	}
-	switch {
-	case err == sql.ErrNoRows:
-		return false
-	case err != nil:
-		log.Error("Couldn't SHOW TABLES: %v", err)
+	exists, err := db.dialectOrDefault().TableExists(context.Background(), db.DB, "users")
+	if err != nil {
+		log.Error("Couldn't check for the users table: %v", err)
 		return false
 	}
-
-	return true
+	return exists
 }
 
 func (db *datastore) RemoveOauth(ctx context.Context, userID int64, provider string, clientID string, remoteUserID string) error {

@@ -8,7 +8,23 @@
  * in the LICENSE file in this source code package.
  */
 
-// Package migrations contains database migrations for WriteFreely
+// Package migrations contains database migrations for WriteFreely.
+//
+// # Rule for V19 and later
+//
+// Every migration added from V19 on runs on MySQL, SQLite and Postgres, and
+// must be correct on all three. Write column types with the helpers in
+// drivers.go (typeInt, typeVarChar, typeBool, typeDateTime, …), never as a
+// literal type, and put any statement that cannot be written portably in a
+// `switch db.driverName` with a case for each engine and a default that
+// panics. Test it against all three before merging.
+//
+// Migrations V1 to V18 predate Postgres support and are MySQL and SQLite
+// only. A Postgres database is created by `writefreely db init` from
+// postgres.sql, which already describes the V18 schema, and starts at
+// PostgresBaseVersion; Migrate refuses to run anything older on Postgres.
+// When you add a migration, do not also edit postgres.sql: Migrate applies
+// the new migration to fresh Postgres databases right after init.
 package migrations
 
 import (
@@ -40,6 +56,13 @@ func NewDatastore(db *sql.DB, dn string) *datastore {
 // that has not been ported to driverName.
 func unsupportedDriver(fn, driverName string) {
 	panic(fmt.Sprintf("migrations.%s: not implemented for database driver %q", fn, driverName))
+}
+
+// errBeforePostgresBase is returned by a migration from before
+// PostgresBaseVersion if it is ever asked to run on Postgres. Migrate refuses
+// before it gets that far; this is the second line of defence.
+func errBeforePostgresBase(fn string) error {
+	return fmt.Errorf("migrations.%s: predates V%d and must not run on Postgres", fn, PostgresBaseVersion)
 }
 
 // TODO: use these consts from writefreely pkg
@@ -97,23 +120,63 @@ func CurrentVer() int {
 	return len(migrations)
 }
 
-func SetInitialMigrations(db *datastore) error {
-	// Included schema files represent changes up to V1, so note that in the database
-	_, err := db.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, "+db.now()+", ?)", 1, "")
-	if err != nil {
-		return err
+// PostgresBaseVersion is the migration version postgres.sql describes. A
+// Postgres database starts here: migrations up to and including it never
+// run on Postgres. It never changes once Postgres databases exist.
+const PostgresBaseVersion = 18
+
+// InitialVersion returns the migration version that the schema file `db
+// init` loads for driverName describes: V1 for schema.sql and sqlite.sql,
+// PostgresBaseVersion for postgres.sql.
+func InitialVersion(driverName string) int {
+	switch driverName {
+	case driverMySQL, driverSQLite:
+		return 1
+	case driverPostgres:
+		return PostgresBaseVersion
 	}
-	return nil
+	panic(unknownDriver("InitialVersion", driverName))
+}
+
+// Execer is satisfied by *sql.DB and *sql.Tx.
+type Execer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+// SetInitialMigrations records, in a freshly created schema, the migration
+// version that schema is at; see InitialVersion.
+func SetInitialMigrations(db *datastore) error {
+	return SetInitialMigrationsOn(db, db.driverName)
+}
+
+// SetInitialMigrationsOn is SetInitialMigrations through ex, which may be a
+// transaction that also created the schema.
+func SetInitialMigrationsOn(ex Execer, driverName string) error {
+	d := &datastore{driverName: driverName}
+	_, err := ex.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, "+d.now()+", ?)", InitialVersion(driverName), "")
+	return err
 }
 
 func Migrate(db *datastore) error {
 	var version int
 	var err error
+	isPostgres := false
+	switch db.driverName {
+	case driverMySQL, driverSQLite:
+	case driverPostgres:
+		isPostgres = true
+	default:
+		unsupportedDriver("Migrate", db.driverName)
+	}
+
 	if db.tableExists("appmigrations") {
-		err = db.QueryRow("SELECT MAX(version) FROM appmigrations").Scan(&version)
+		// MAX is NULL on an empty table.
+		err = db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM appmigrations").Scan(&version)
 		if err != nil {
 			return err
 		}
+	} else if isPostgres {
+		return fmt.Errorf("no appmigrations table: a Postgres database must be created with `writefreely db init`, which starts it at V%d", PostgresBaseVersion)
 	} else {
 		log.Info("Initializing appmigrations table...")
 		version = 0
@@ -125,6 +188,10 @@ func Migrate(db *datastore) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	if isPostgres && version < PostgresBaseVersion {
+		return fmt.Errorf("database is at V%d, but Postgres databases start at V%d: migrations before V%d are MySQL and SQLite only. Create the database with `writefreely db init`", version, PostgresBaseVersion, PostgresBaseVersion+1)
 	}
 
 	if len(migrations[version:]) > 0 {
@@ -150,13 +217,21 @@ func Migrate(db *datastore) error {
 }
 
 func (db *datastore) tableExists(t string) bool {
-	var dummy string
+	var exists bool
 	var err error
 	switch db.driverName {
 	case driverSQLite:
+		var dummy string
 		err = db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", t).Scan(&dummy)
+		exists = err == nil
 	case driverMySQL:
+		var dummy string
 		err = db.QueryRow("SHOW TABLES LIKE '" + t + "'").Scan(&dummy)
+		exists = err == nil
+	case driverPostgres:
+		// The same query as postgresDialect.TableExists in the writefreely
+		// package, which this package cannot import.
+		err = db.QueryRow("SELECT to_regclass(?) IS NOT NULL", t).Scan(&exists)
 	default:
 		unsupportedDriver("tableExists", db.driverName)
 	}
@@ -164,9 +239,8 @@ func (db *datastore) tableExists(t string) bool {
 	case err == sql.ErrNoRows:
 		return false
 	case err != nil:
-		log.Error("Couldn't SHOW TABLES: %v", err)
+		log.Error("Couldn't check whether table %s exists: %v", t, err)
 		return false
 	}
-
-	return true
+	return exists
 }
