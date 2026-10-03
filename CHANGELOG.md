@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and tag pages escape the tag, so tags containing regex characters match only themselves.
 
 ## [0.20.0+wisp] - 2026-09-09
 
