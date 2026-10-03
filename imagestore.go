@@ -281,14 +281,16 @@ func (b brokenImageStore) Exists(context.Context, string) (bool, error)      { r
 func (b brokenImageStore) Probe(context.Context) error                       { return b.err }
 
 // writeUploadedImage stores b at the given uploads-relative path.
-func (app *App) writeUploadedImage(relPath string, b []byte) error {
-	return app.imageStore().Put(context.Background(), relPath, b, mimeForPath(relPath))
+// ctx is the request's, so a writer who goes away stops the write; the store
+// bounds it either way.
+func (app *App) writeUploadedImage(ctx context.Context, relPath string, b []byte) error {
+	return app.imageStore().Put(ctx, relPath, b, mimeForPath(relPath))
 }
 
 // removeUploadedImage deletes the image at the given uploads-relative path.
 // One that is already gone is not an error.
-func (app *App) removeUploadedImage(relPath string) error {
-	return app.imageStore().Delete(context.Background(), relPath)
+func (app *App) removeUploadedImage(ctx context.Context, relPath string) error {
+	return app.imageStore().Delete(ctx, relPath)
 }
 
 // ensureUploadsWritable verifies the image store can be written to.
@@ -302,6 +304,25 @@ func (app *App) removeUploadedImage(relPath string) error {
 // then. With S3 the same holds for a wrong endpoint, bucket or key.
 func (app *App) ensureUploadsWritable() error {
 	return app.imageStore().Probe(context.Background())
+}
+
+// checkUploadsAtStartup is the startup check of the image store. It returns an
+// error only when the instance should refuse to start: a local directory it
+// cannot write to, or an S3 store that answered and said no (a missing bucket,
+// a refused key), both of which are configuration. An S3 store that does not
+// answer at all is an outage, and images are all it takes down, so it is
+// logged and startup goes on; the store is used again on the next request.
+func (app *App) checkUploadsAtStartup() error {
+	err := app.ensureUploadsWritable()
+	if err == nil {
+		return nil
+	}
+	if s3Unreachable(err) {
+		st := app.cfg.Storage
+		log.Error("uploaded images are unavailable: S3 at %s/%s did not answer: %v; the blog is starting without them", st.S3Endpoint, st.S3Bucket, err)
+		return nil
+	}
+	return err
 }
 
 // mimeForPath returns the type an image is served as, from its extension.

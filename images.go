@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -112,10 +113,13 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return err
 	}
 
-	if err = app.writeUploadedImage(img.RelPath(), stored); err != nil {
+	if err = app.writeUploadedImage(r.Context(), img.RelPath(), stored); err != nil {
 		log.Error("Failed writing uploaded image: %v", err)
 		if rmErr := app.db.DeletePostImage(img.ID); rmErr != nil {
 			log.Error("Failed removing image row after a failed write: %v", rmErr)
+		}
+		if s3Unreachable(err) {
+			return impart.HTTPError{http.StatusServiceUnavailable, "Image storage isn't answering right now, so that image wasn't saved. Try again in a few minutes."}
 		}
 		return impart.HTTPError{http.StatusInsufficientStorage, "Couldn't store that image."}
 	}
@@ -159,7 +163,7 @@ func handleDeleteImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 	if err = app.db.DeletePostImage(img.ID); err != nil {
 		return err
 	}
-	if err = app.removeUploadedImage(img.RelPath()); err != nil {
+	if err = app.removeUploadedImage(r.Context(), img.RelPath()); err != nil {
 		log.Error("Failed removing image file %s: %v", img.RelPath(), err)
 	}
 
@@ -317,7 +321,7 @@ func removeImageIfUnreferenced(app *App, img *PostImage, excludingPostID string)
 		log.Error("Unable to delete image %s: %v", img.ID, err)
 		return
 	}
-	if err = app.removeUploadedImage(img.RelPath()); err != nil {
+	if err = app.removeUploadedImage(context.Background(), img.RelPath()); err != nil {
 		log.Error("Unable to remove image file %s: %v", img.RelPath(), err)
 	}
 }
