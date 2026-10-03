@@ -16,6 +16,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/go-ini/ini"
 )
 
 const stripFixture = `; deployment notes stay
@@ -129,5 +131,83 @@ func TestStripKeysReadOnly(t *testing.T) {
 	after, _ := os.ReadFile(p)
 	if string(before) != string(after) {
 		t.Error("file changed despite the error")
+	}
+}
+
+func TestStripKeysPreservesRemainingValues(t *testing.T) {
+	// Fixture with tricky values that must survive the rewrite
+	fixture := `[database]
+password = ${WF_DB_PASSWORD}
+user = "admin user "
+query = value with # hash
+
+[oauth.generic]
+client_secret = "secret; with semicolon"
+scope = "read write"
+token_endpoint = https://oauth.example/token?param=value&other=stuff
+custom_value = """triple quoted"""
+backtick_value = ` + "`test`" + `
+
+[app]
+site_name = Paisans
+`
+	p := writeINI(t, fixture)
+
+	// Load before stripping
+	beforeFile, err := ini.Load(p)
+	if err != nil {
+		t.Fatalf("failed to load before: %v", err)
+	}
+
+	// Strip an unrelated key
+	removed, err := StripKeys(p, []string{"app.site_name"})
+	if err != nil {
+		t.Fatalf("StripKeys failed: %v", err)
+	}
+	if !reflect.DeepEqual(removed, []string{"app.site_name"}) {
+		t.Errorf("removed %v, want [app.site_name]", removed)
+	}
+
+	// Load after stripping
+	afterFile, err := ini.Load(p)
+	if err != nil {
+		t.Fatalf("failed to load after: %v", err)
+	}
+
+	// Verify all remaining keys have identical values
+	sections := []string{"database", "oauth.generic"}
+	expectedKeys := map[string]map[string]bool{
+		"database": {
+			"password": true,
+			"user":     true,
+			"query":    true,
+		},
+		"oauth.generic": {
+			"client_secret":  true,
+			"scope":          true,
+			"token_endpoint": true,
+			"custom_value":   true,
+			"backtick_value": true,
+		},
+	}
+
+	for _, section := range sections {
+		sec, _ := afterFile.GetSection(section)
+		if sec == nil {
+			t.Fatalf("section [%s] not found after strip", section)
+		}
+		for key := range expectedKeys[section] {
+			beforeVal := beforeFile.Section(section).Key(key).Value()
+			afterVal := sec.Key(key).Value()
+			if beforeVal != afterVal {
+				t.Errorf("[%s].%s changed: before %q, after %q", section, key, beforeVal, afterVal)
+			}
+		}
+	}
+
+	// Verify app.site_name is actually gone
+	appSec, _ := afterFile.GetSection("app")
+	if appSec != nil && appSec.HasKey("site_name") {
+		t.Error("app.site_name still present after strip")
 	}
 }

@@ -72,6 +72,10 @@ func StripKeys(fname string, names []string) ([]string, error) {
 		tmp.Close()
 		return present, err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return present, err
+	}
 	if err := tmp.Close(); err != nil {
 		return present, err
 	}
@@ -80,6 +84,14 @@ func StripKeys(fname string, names []string) ([]string, error) {
 	}
 	if err := os.Rename(tmp.Name(), fname); err != nil {
 		return present, err
+	}
+	// Sync the directory to ensure the rename is durable.
+	// This is best-effort; if the directory is read-only, let the
+	// caller decide whether to treat that as an error (they have the
+	// keys back in present to report what changed).
+	if d, err := os.Open(filepath.Dir(fname)); err == nil {
+		d.Sync()
+		d.Close()
 	}
 	return present, nil
 }
