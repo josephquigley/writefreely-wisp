@@ -65,9 +65,13 @@ func ViewFeed(app *App, w http.ResponseWriter, req *http.Request) error {
 
 	tag := mux.Vars(req)["tag"]
 	if tag != "" {
-		coll.Posts, _ = app.db.GetPostsTagged(app.cfg, c, tag, 1, false)
+		coll.Posts, err = app.db.GetPostsTagged(app.cfg, c, tag, 1, false)
 	} else {
-		coll.Posts, _ = app.db.GetPosts(app.cfg, c, 1, false, true, false, "")
+		coll.Posts, err = app.db.GetPosts(app.cfg, c, 1, false, true, false, "")
+	}
+	if err != nil {
+		log.Error("view feed: get posts: %v", err)
+		return ErrInternalGeneral
 	}
 
 	author := ""
