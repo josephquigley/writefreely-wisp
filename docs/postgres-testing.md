@@ -72,7 +72,8 @@ func TestCreateUser_Postgres(t *testing.T) {
 Every database is named `wf_test_<16 hex digits>`. It is created from the
 maintenance connection in `WF_TEST_PG_DSN`, opened through the
 `postgres-rebind` driver (so `?` placeholders work, and the session time zone
-is UTC), and dropped with `DROP DATABASE … WITH (FORCE)` in the test's
+is UTC; any `timezone` in `WF_TEST_PG_DSN` is overridden, because lib/pq
+returns timestamps in the session zone), and dropped with `DROP DATABASE … WITH (FORCE)` in the test's
 cleanup, so a connection the test leaked cannot stop the drop. Tests are
 isolated from one another and need no teardown of their own.
 
