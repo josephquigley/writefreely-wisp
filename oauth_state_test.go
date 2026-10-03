@@ -24,8 +24,14 @@ import (
 // oauth_client_states table, with immediate transactions and a busy timeout
 // so that concurrent validations queue for the write lock instead of failing
 // with SQLITE_BUSY.
+//
+// Under WF_TEST_DB_TYPE=mysql or postgres it is a fresh database on that
+// engine with the real schema instead, which includes oauth_client_states.
 func newOAuthStateTestDB(t *testing.T) *datastore {
 	t.Helper()
+	if e := engineTestApp(t, nil); e != nil {
+		return e.db
+	}
 	dbPath := filepath.Join(t.TempDir(), "oauth.db")
 	db, err := sql.Open("sqlite3_with_regex", dbPath+"?parseTime=true&_busy_timeout=10000&_txlock=immediate")
 	if err != nil {

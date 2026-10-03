@@ -3236,6 +3236,10 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 }
 
 func (db *datastore) RecordRemoteUserID(ctx context.Context, localUserID int64, remoteUserID, provider, clientID, accessToken string) error {
+	if !isStorableOAuthRemoteUserID(remoteUserID) {
+		log.Error("Refusing to record OAuth remote user ID for '%d': not storable (%d bytes)", localUserID, len(remoteUserID))
+		return errOAuthRemoteUserIDUnstorable
+	}
 	var err error
 	switch db.driverName {
 	case driverSQLite:
@@ -3321,7 +3325,7 @@ func handleFailedPostInsert(err error) error {
 
 // Deprecated: use GetProfileURLFromHandle() instead, which returns user-facing URL instead of actor_id
 func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, error) {
-	handle = normalizeRemoteHandle(handle)
+	handle = sanitizeDBText(normalizeRemoteHandle(handle))
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -3339,7 +3343,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = sanitizeDBText(remoteLookup(handle))
 		// An empty result means webfinger failed — the peer was down, the
 		// handle does not exist, the response did not parse. Stop here.
 		// Carrying on writes a remoteusers row with an empty actor_id, and
@@ -3359,7 +3363,7 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(app, actorIRI)
+			remoteActor, err := fetchRemoteActorForStorage(app, actorIRI)
 			// Same reasoning as the empty lookup above: a failed fetch has no
 			// inbox to record, and caching it would poison the handle rather
 			// than leave it to be retried.

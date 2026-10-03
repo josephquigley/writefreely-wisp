@@ -2,7 +2,6 @@ package writefreely
 
 import (
 	"bytes"
-	"database/sql"
 	"fmt"
 	stdlog "log"
 	"net/http"
@@ -120,7 +119,7 @@ func TestUpdateActivityIDVariesPerEdit(t *testing.T) {
 	}
 }
 
-// newInboxTestApp builds a real, sqlite-backed App suitable for exercising
+// newInboxTestApp builds a real, database-backed App (openAppTestDB) suitable for exercising
 // handleFetchCollectionInbox end-to-end, with a single user and collection
 // already created. When allowlist is non-empty the App is private and that
 // allowlist is configured; otherwise the App behaves as an ordinary,
@@ -129,11 +128,6 @@ func newInboxTestApp(t *testing.T, allowlist string) *App {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	cfg := config.New()
 	cfg.UseSQLite(true)
@@ -143,13 +137,8 @@ func newInboxTestApp(t *testing.T, allowlist string) *App {
 	cfg.App.Private = allowlist != ""
 	cfg.App.FederationAllowlist = allowlist
 
-	app := &App{
-		db:  &datastore{DB: db, driverName: driverSQLite},
-		cfg: cfg,
-	}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	openAppTestDB(t, app, "sqlite3", dbPath+"?parseTime=true&cached=shared")
 	if err := app.initFederationAllowlist(); err != nil {
 		t.Fatalf("initFederationAllowlist: %v", err)
 	}

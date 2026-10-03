@@ -1345,7 +1345,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 		// manual SQL.
 		if remoteUser.Inbox == "" {
 			log.Info("Remote user %s inbox empty, fetching", actorIRI)
-			fetched, err := newRemoteActor(app, actorIRI)
+			fetched, err := fetchRemoteActorForStorage(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't re-fetch remote actor %s: %v", actorIRI, err)
 				return nil, nil, err
@@ -1374,7 +1374,7 @@ func normalizeRemoteHandle(handle string) string {
 }
 
 func GetProfileURLFromHandle(app *App, handle string) (string, error) {
-	handle = normalizeRemoteHandle(handle)
+	handle = sanitizeDBText(normalizeRemoteHandle(handle))
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -1392,7 +1392,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = sanitizeDBText(remoteLookup(handle))
 		// See GetProfilePageFromHandle: an empty webfinger result must not
 		// reach the INSERT below, or the handle is cached against an empty
 		// actor_id and never resolves again.
@@ -1409,7 +1409,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(app, actorIRI)
+			remoteActor, err := fetchRemoteActorForStorage(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
 				return "", err
@@ -1430,7 +1430,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// an authorized-fetch instance, and it disables delivery to that
 		// actor until something replaces it.
 		log.Info("Remote user %s URL or inbox empty, fetching", remoteUser.ActorID)
-		fetchedActor, err := newRemoteActor(app, remoteUser.ActorID)
+		fetchedActor, err := fetchRemoteActorForStorage(app, remoteUser.ActorID)
 		if err != nil {
 			log.Error("Couldn't fetch remote actor: %v", err)
 		} else {

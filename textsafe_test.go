@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -307,6 +308,71 @@ func exerciseLengthBounds(t *testing.T, app *App, u *User, coll *Collection) {
 			t.Errorf("inbox = %q", inbox)
 		}
 	})
+
+	// Handle resolution writes remoteusers from webfinger and a fetched actor
+	// directly, not through unmarshalActor, so it needs its own cleaning.
+	t.Run("handle resolution stores a cleaned remote actor", func(t *testing.T) {
+		stubRemoteLookup(t, func(handle string) string {
+			return "https://remote.example/users/" + strings.SplitN(handle, "@", 2)[0] + "\x00"
+		})
+		stubNewRemoteActor(t, func(_ *App, iri string) (remoteActorInfo, error) {
+			return remoteActorInfo{iri: iri, inbox: iri + "/in\x00box", sharedInbox: "https://remote.example/sh\xffared", url: iri + "/pro\x00file"}, nil
+		})
+
+		for _, c := range []struct {
+			name    string
+			resolve func(handle string) (string, error)
+			handle  string
+		}{
+			{"GetProfileURLFromHandle", func(h string) (string, error) { return GetProfileURLFromHandle(app, h) }, "url\x00h@remote.example"},
+			{"GetProfilePageFromHandle", func(h string) (string, error) { return app.db.GetProfilePageFromHandle(app, h) }, "page\x00h@remote.example"},
+		} {
+			got, err := c.resolve(c.handle)
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			if strings.ContainsRune(got, 0) {
+				t.Errorf("%s returned %q, still carrying a NUL byte", c.name, got)
+			}
+			handle := strings.ReplaceAll(c.handle, "\x00", "")
+			wantIRI := "https://remote.example/users/" + strings.SplitN(handle, "@", 2)[0]
+			var actorID, inbox, shared string
+			if err := app.db.QueryRow("SELECT actor_id, inbox, shared_inbox FROM remoteusers WHERE handle = ?", handle).Scan(&actorID, &inbox, &shared); err != nil {
+				t.Fatalf("%s: read remoteusers row for %q: %v", c.name, handle, err)
+			}
+			if actorID != wantIRI || inbox != wantIRI+"/inbox" || shared != "https://remote.example/sh�ared" {
+				t.Errorf("%s stored actor_id=%q inbox=%q shared_inbox=%q", c.name, actorID, inbox, shared)
+			}
+		}
+	})
+
+	t.Run("OAuth remote user ID that does not fit is refused", func(t *testing.T) {
+		ctx := context.Background()
+		fits := strings.Repeat("r", oauthRemoteUserIDMaxLength-1) + "€"
+		if err := app.db.RecordRemoteUserID(ctx, u.ID, fits, "generic", "client", "tok"); err != nil {
+			t.Fatalf("RecordRemoteUserID with a %d-character ID: %v", oauthRemoteUserIDMaxLength, err)
+		}
+		if id, err := app.db.GetIDForRemoteUser(ctx, fits, "generic", "client"); err != nil || id != u.ID {
+			t.Errorf("GetIDForRemoteUser = %d, %v; want %d", id, err, u.ID)
+		}
+		for name, id := range map[string]string{
+			"too long":     strings.Repeat("r", oauthRemoteUserIDMaxLength+1),
+			"NUL byte":     "r\x00r",
+			"invalid UTF8": "r\xffr",
+		} {
+			err := app.db.RecordRemoteUserID(ctx, u.ID, id, "other", "client", "tok")
+			if err != errOAuthRemoteUserIDUnstorable {
+				t.Errorf("%s: RecordRemoteUserID returned %v, want errOAuthRemoteUserIDUnstorable", name, err)
+			}
+		}
+		var n int
+		if err := app.db.QueryRow("SELECT COUNT(*) FROM oauth_users WHERE provider = 'other'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%d unstorable OAuth IDs were stored, want 0", n)
+		}
+	})
 }
 
 // createPostOrSkip calls CreatePost, skipping the test if this engine's
@@ -349,4 +415,56 @@ func lastRunes(s string, n int) string {
 		return s
 	}
 	return string(r[len(r)-n:])
+}
+
+// TestOAuthCallbackRefusesUnstorableRemoteUserID checks the input boundary:
+// an account ID oauth_users.remote_user_id cannot hold exactly is a 400 from
+// the callback, before it is looked up, attached or carried into signup.
+func TestOAuthCallbackRefusesUnstorableRemoteUserID(t *testing.T) {
+	looked := false
+	app := &MockOAuthDatastoreProvider{
+		DoDB: func() OAuthDatastore {
+			return &MockOAuthDatastore{
+				DoGetIDForRemoteUser: func(ctx context.Context, remoteUserID, provider, clientID string) (int64, error) {
+					looked = true
+					return 1, nil
+				},
+			}
+		},
+	}
+	longID := strings.Repeat("9", oauthRemoteUserIDMaxLength+1)
+	h := oauthHandler{
+		Config:   app.Config(),
+		DB:       app.DB(),
+		Store:    app.SessionStore(),
+		EmailKey: []byte{0xd, 0xe, 0xc, 0xa, 0xf, 0xf, 0xb, 0xa, 0xd},
+		oauthClient: writeAsOauthClient{
+			ClientID:         app.Config().WriteAsOauth.ClientID,
+			ClientSecret:     app.Config().WriteAsOauth.ClientSecret,
+			ExchangeLocation: app.Config().WriteAsOauth.TokenLocation,
+			InspectLocation:  app.Config().WriteAsOauth.InspectLocation,
+			AuthLocation:     app.Config().WriteAsOauth.AuthLocation,
+			CallbackLocation: "http://localhost/oauth/callback",
+			HttpClient: &MockHTTPClient{
+				DoDo: func(req *http.Request) (*http.Response, error) {
+					switch req.URL.String() {
+					case "https://write.as/oauth/token":
+						return &http.Response{StatusCode: 200, Body: &StringReadCloser{strings.NewReader(`{"access_token": "access_token", "expires_in": 1000, "refresh_token": "refresh_token", "token_type": "access"}`)}}, nil
+					case "https://write.as/oauth/inspect":
+						return &http.Response{StatusCode: 200, Body: &StringReadCloser{strings.NewReader(`{"client_id": "development", "user_id": "` + longID + `", "expires_at": "2019-12-19T11:42:01Z", "username": "nick", "email": "nick@testing.write.as"}`)}}, nil
+					}
+					return &http.Response{StatusCode: http.StatusNotFound}, nil
+				},
+			},
+		},
+	}
+	req := httptest.NewRequest("GET", "/oauth/callback", nil)
+	err := h.viewOauthCallback(&App{cfg: app.Config(), sessionStore: app.SessionStore()}, httptest.NewRecorder(), req)
+	he, ok := err.(impart.HTTPError)
+	if !ok || he.Status != http.StatusBadRequest {
+		t.Fatalf("viewOauthCallback returned %v, want a 400", err)
+	}
+	if looked {
+		t.Error("the unstorable ID was looked up anyway")
+	}
 }

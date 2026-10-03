@@ -35,13 +35,11 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	if runPostgresTests() {
-		// See harness_pg_test.go. Asking for Postgres and not reaching it
-		// is a failed run, not a skipped one.
-		if err := initPostgresTests(); err != nil {
-			fmt.Println("postgres test harness:", err)
-			os.Exit(1)
-		}
+	// See harness_app_test.go. Asking for MySQL or Postgres and not
+	// reaching it is a failed run, not a skipped one.
+	if err := initTestDBEngine(); err != nil {
+		fmt.Println("test database harness:", err)
+		os.Exit(1)
 	}
 
 	code := m.Run()
@@ -52,6 +50,11 @@ func TestMain(m *testing.M) {
 	}
 	if testPGAdmin != nil {
 		if closeErr := testPGAdmin.Close(); closeErr != nil {
+			fmt.Println(closeErr)
+		}
+	}
+	if testMySQLAdmin != nil {
+		if closeErr := testMySQLAdmin.Close(); closeErr != nil {
 			fmt.Println(closeErr)
 		}
 	}
@@ -93,12 +96,13 @@ func ensureMySQL(db *sql.DB) error {
 }
 
 // withTestDB provides a scoped database connection. Under
-// WF_TEST_DB_TYPE=postgres the connection is to a fresh wf_test_* database
-// with the schema loaded (newPostgresTestApp), dropped when the test ends;
-// otherwise it is a copy of the MySQL reference database (newTestDatabase).
+// WF_TEST_DB_TYPE=postgres or mysql the connection is to a fresh wf_test_*
+// database with the schema loaded (engineTestApp), dropped when the test
+// ends; otherwise it is a copy of the MySQL reference database
+// (newTestDatabase).
 func withTestDB(t *testing.T, testBody ScopedTestBody) {
-	if runPostgresTests() {
-		testBody(newPostgresTestApp(t, nil).db.DB)
+	if e := engineTestApp(t, nil); e != nil {
+		testBody(e.db.DB)
 		return
 	}
 	db, cleanup, err := newTestDatabase(testDB,

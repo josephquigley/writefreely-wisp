@@ -26,6 +26,11 @@ import (
 // SELECT, every caller that passed the SELECT before the first commit then
 // matched the row in its UPDATE and "won". The condition must be in the UPDATE.
 func TestValidateOAuthStateConcurrentMySQL(t *testing.T) {
+	if runMySQLHarnessTests() {
+		ds := newMySQLTestAppWith(t, nil, map[string]string{"clientFoundRows": "true"}).db
+		validateOAuthStateConcurrently(t, ds)
+		return
+	}
 	if !runMySQLTests() {
 		t.Skip("skipping mysql tests")
 	}
@@ -45,9 +50,13 @@ func TestValidateOAuthStateConcurrentMySQL(t *testing.T) {
 	}
 	defer db.Close()
 
-	ctx := context.Background()
-	ds := &datastore{DB: db, driverName: driverMySQL}
+	validateOAuthStateConcurrently(t, &datastore{DB: db, driverName: driverMySQL})
+}
 
+// validateOAuthStateConcurrently is TestValidateOAuthStateConcurrentMySQL's
+// body, shared by the harness and TEST_MYSQL paths.
+func validateOAuthStateConcurrently(t *testing.T, ds *datastore) {
+	ctx := context.Background()
 	const rounds, callers = 20, 32
 	for round := 0; round < rounds; round++ {
 		state, err := ds.GenerateOAuthState(ctx, "generic", "client", 0, "")
