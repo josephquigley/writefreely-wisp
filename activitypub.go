@@ -573,7 +573,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
-			return fmt.Errorf("unable to start transaction: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		var remoteUserID int64
@@ -581,31 +581,33 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			remoteUserID = remoteUser.ID
 		} else {
 			remoteUserID, err = apAddRemoteUser(app, t, fullActor)
-		}
-
-		// Add like
-		_, err = t.Exec("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", likePostID, remoteUserID)
-		if err != nil {
-			if !app.db.isDuplicateKeyErr(err) {
-				t.Rollback()
-				log.Error("Couldn't add like in DB: %v\n", err)
-				return fmt.Errorf("Couldn't add like in DB: %v", err)
-			} else {
-				t.Rollback()
-				log.Error("Couldn't add like in DB: %v\n", err)
-				return fmt.Errorf("Couldn't add like in DB: %v", err)
+			if err != nil {
+				// apAddRemoteUser has already rolled back.
+				log.Error("Couldn't add remote user for like: %v", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 			}
 		}
 
-		err = t.Commit()
+		// Add like. A peer that retries delivers the same Like twice; the
+		// second is already recorded, so it is a success, not a failure.
+		_, err = t.Exec("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", likePostID, remoteUserID)
 		if err != nil {
 			t.Rollback()
-			log.Error("Rolling back after Commit(): %v\n", err)
-			return fmt.Errorf("Rolling back after Commit(): %v\n", err)
+			if !app.db.isDuplicateKeyErr(err) {
+				log.Error("Couldn't add like in DB: %v\n", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
+			}
+		} else {
+			err = t.Commit()
+			if err != nil {
+				t.Rollback()
+				log.Error("Rolling back after Commit(): %v\n", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
+			}
 		}
 
 		if debugging {
-			log.Info("Successfully liked post %s by remote user %s", likePostID, remoteUser.URL)
+			log.Info("Successfully liked post %s by actor %s", likePostID, fullActor.ID)
 		}
 		impart.RenderActivityJSON(w, "", http.StatusOK)
 		return nil
@@ -613,7 +615,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
-			return fmt.Errorf("unable to start transaction: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		var remoteUserID int64
@@ -621,25 +623,30 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			remoteUserID = remoteUser.ID
 		} else {
 			remoteUserID, err = apAddRemoteUser(app, t, fullActor)
+			if err != nil {
+				// apAddRemoteUser has already rolled back.
+				log.Error("Couldn't add remote user for unlike: %v", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
+			}
 		}
 
-		// Remove like
+		// Remove like. Deleting a like that is already gone is not an error.
 		_, err = t.Exec("DELETE FROM remote_likes WHERE post_id = ? AND remote_user_id = ?", unlikePostID, remoteUserID)
 		if err != nil {
 			t.Rollback()
 			log.Error("Couldn't delete Like from DB: %v\n", err)
-			return fmt.Errorf("Couldn't delete Like from DB: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		err = t.Commit()
 		if err != nil {
 			t.Rollback()
 			log.Error("Rolling back after Commit(): %v\n", err)
-			return fmt.Errorf("Rolling back after Commit(): %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		if debugging {
-			log.Info("Successfully un-liked post %s by remote user %s", unlikePostID, remoteUser.URL)
+			log.Info("Successfully un-liked post %s by actor %s", unlikePostID, fullActor.ID)
 		}
 		impart.RenderActivityJSON(w, "", http.StatusOK)
 		return nil
