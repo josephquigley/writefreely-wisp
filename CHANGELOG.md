@@ -17,7 +17,7 @@ changes share a bullet. Detailed notes are on the corresponding
 ### Fixed
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
-- Tag pages escape regex characters in the tag, so a tag like `c++` matches only itself, and they work on MySQL 8.
+- Tag pages escape regex characters in the tag, work on MySQL 8, and return an error when the tag query fails instead of showing no posts.
 
 ### Security
 
