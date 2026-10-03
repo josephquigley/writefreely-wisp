@@ -43,7 +43,7 @@ func (db *datastore) GetCollectionPostsForOwner(collID int64, page int) (*[]Publ
 		return nil, 0, err
 	}
 
-	rows, err := db.Query("SELECT "+postListCols+" FROM posts WHERE collection_id = ? ORDER BY created DESC LIMIT ? OFFSET ?",
+	rows, err := db.Query("SELECT "+postListCols+" FROM posts WHERE collection_id = ? ORDER BY created DESC, id DESC LIMIT ? OFFSET ?",
 		collID, postListPageSize, (page-1)*postListPageSize)
 	if err != nil {
 		log.Error("get collection posts for owner: %v", err)
@@ -86,7 +86,7 @@ func (db *datastore) GetAllPostsForAdmin(page int) (*[]PublicPost, int, error) {
 
 	rows, err := db.Query("SELECT "+prefixedPostListCols+", c.alias FROM posts p "+
 		"INNER JOIN collections c ON c.id = p.collection_id "+
-		"ORDER BY p.created DESC LIMIT ? OFFSET ?",
+		"ORDER BY p.created DESC, p.id DESC LIMIT ? OFFSET ?",
 		postListPageSize, (page-1)*postListPageSize)
 	if err != nil {
 		log.Error("get all posts for admin: %v", err)

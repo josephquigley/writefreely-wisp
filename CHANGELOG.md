@@ -27,6 +27,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Successful invite lookups on SQLite no longer log a spurious error.
 - The Reader's tag filter matches tags literally instead of treating them as regular expressions.
 - Tag pages escape regex characters in the tag, work on MySQL 8, and return an error when a tag query fails, on collection tag pages too.
+- Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
 
 ## [0.20.0+wisp] - 2026-09-09
 
