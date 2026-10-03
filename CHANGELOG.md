@@ -14,13 +14,14 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ## [Unreleased]
 
-### Security
-
-- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
-
 ### Fixed
 
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
+- Re-pinning a post at the position it already holds is no longer refused as forbidden on MySQL and MariaDB.
+
+### Security
+
+- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
 
 ## [0.20.0+wisp] - 2026-09-09
 
