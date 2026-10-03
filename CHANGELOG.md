@@ -15,7 +15,7 @@ are on the corresponding [GitHub release](https://github.com/josephquigley/write
 
 ### Security
 
-- Access-token lookups and deletion now match with `=` instead of `LIKE`, closing a pre-auth bypass where a crafted wildcard token matched any user's token.
+- Access tokens now match exactly instead of via `LIKE`, closing a wildcard token bypass, and re-pinning a post at its current position is no longer refused on MySQL.
 
 ## [0.20.0+wisp] - 2026-09-09
 
