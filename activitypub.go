@@ -671,35 +671,26 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		}
 
 		if isFollow {
+			var followerID int64
+			if remoteUser != nil {
+				followerID = remoteUser.ID
+			} else {
+				// The actor was unknown when the Follow arrived, but another
+				// Follow from it may have stored it since.
+				followerID, err = addOrGetRemoteUser(app, fullActor)
+				if err != nil {
+					log.Error("Couldn't add new remoteuser in DB: %v\n", err)
+					return
+				}
+			}
+
 			t, err := app.db.Begin()
 			if err != nil {
 				log.Error("Unable to start transaction: %v", err)
 				return
 			}
 
-			var followerID int64
-
-			if remoteUser != nil {
-				followerID = remoteUser.ID
-			} else {
-				// TODO: use apAddRemoteUser() here, instead!
-				// Add follower locally, since it wasn't found before
-				res, err := t.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
-				if err != nil {
-					// if duplicate key, res will be nil and panic on
-					// res.LastInsertId below
-					t.Rollback()
-					log.Error("Couldn't add new remoteuser in DB: %v\n", err)
-					return
-				}
-
-				followerID, err = res.LastInsertId()
-				if err != nil {
-					t.Rollback()
-					log.Error("no lastinsertid for followers, rolling back: %v", err)
-					return
-				}
-
+			if remoteUser == nil {
 				// Add in key
 				_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
 				if err != nil {
@@ -1284,4 +1275,35 @@ func logOutgoingActivity(label string, activity any) {
 		return
 	}
 	log.Info("%s outgoing ActivityPub payload:\n%s", label, string(b))
+}
+
+// addOrGetRemoteUser stores fullActor as a remote user and returns its id, or
+// returns the id of the row already stored for it.
+//
+// Two Follows from an actor this instance has not seen before both reach the
+// inbox goroutine with no remote user, and both insert one; the second insert
+// meets the unique key on actor_id. That is not a failure: the actor is
+// stored, which is all the caller needs, so the existing row's id is read
+// back and the follow goes ahead. Without this, the second Follow was dropped
+// even though its Accept had been sent, which loses the follow outright when
+// the two Follows are for different blogs.
+//
+// The insert runs on its own rather than inside the caller's transaction so
+// that the read-back sees the row the other Follow committed, whatever the
+// isolation level. A plain INSERT is used rather than INSERT IGNORE so that
+// any other failure is still reported instead of being downgraded to a
+// warning.
+func addOrGetRemoteUser(app *App, fullActor *activitystreams.Person) (int64, error) {
+	res, err := app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
+	if err == nil {
+		return res.LastInsertId()
+	}
+	if !app.db.isDuplicateKeyErr(err) {
+		return 0, err
+	}
+	var id int64
+	if qErr := app.db.QueryRow("SELECT id FROM remoteusers WHERE actor_id = ?", fullActor.ID).Scan(&id); qErr != nil {
+		return 0, fmt.Errorf("%v; then couldn't read the existing remote user: %v", err, qErr)
+	}
+	return id, nil
 }
