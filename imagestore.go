@@ -365,10 +365,11 @@ func cleanImagePath(p string) (string, bool) {
 // holds the image, because remote instances have cached the ones already
 // published. The local store is served by http.FileServer, exactly as
 // before. Any other store is streamed through this server rather than
-// redirected to: a redirect would change what remote caches see and expose
-// the bucket.
+// redirected to the bucket, which would expose it. With [storage]
+// image_url_base set, the operator has put something in front of the bucket
+// on purpose, and /uploads/ redirects there instead; see redirectImages.
 func (app *App) uploadsHandler() http.Handler {
-	return uploadsHandlerFor(app.imageStore())
+	return uploadsHandlerFor(app.imageStore(), newImageURLs(app.Config()))
 }
 
 // uploadsHandlerFor is uploadsHandler for a given store. Cache-Control is
@@ -376,14 +377,56 @@ func (app *App) uploadsHandler() http.Handler {
 // strip it, but the streamed path's http.Error and http.NotFound do not, so
 // setting it up front would have browsers and CDNs keep a missing or failed
 // object for a week, immutable.
-func uploadsHandlerFor(store ImageStore) http.Handler {
+func uploadsHandlerFor(store ImageStore, urls imageURLs) http.Handler {
 	var h http.Handler
-	if ls, ok := store.(*localImageStore); ok {
+	if urls.on() {
+		h = redirectImages(urls)
+	} else if ls, ok := store.(*localImageStore); ok {
 		h = cacheControl(http.FileServer(http.Dir(ls.root())))
 	} else {
 		h = streamImages(store)
 	}
 	return uploadHeaders(http.StripPrefix("/"+uploadsDir+"/", h))
+}
+
+// imageRedirectCacheControl is how long the redirect from /uploads/ to
+// image_url_base may be kept. Unlike the image behind it, it is not
+// immutable: it says where the images are, which the operator may change,
+// and a week-long immutable redirect would keep sending readers to the old
+// place long after. A few minutes still lets a cache in front of this app
+// absorb a burst, such as a post's images being fetched by every server
+// that just received it.
+const imageRedirectCacheControl = "public, max-age=300"
+
+// redirectImages answers /uploads/<path> with a redirect to the image's URL
+// under image_url_base. That serves the copies of posts that left before the
+// base was set, or that carry /uploads/ URLs some other way, without this
+// app reading a single image byte.
+//
+// The store is not asked whether the image exists. That is the point: the
+// redirect costs nothing, and a missing image is the base's 404 to give.
+// The path is still checked the way streamImages checks it, so a request
+// that could not name an image is refused here, not passed along.
+func redirectImages(urls imageURLs) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		p, ok := cleanImagePath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		// uploadHeaders typed the response as the image it names; a
+		// redirect carries no image, and no body at all.
+		w.Header().Del("Content-Type")
+		w.Header().Del("Content-Disposition")
+		w.Header().Set("Cache-Control", imageRedirectCacheControl)
+		w.Header().Set("Location", urls.forPath(p))
+		w.WriteHeader(http.StatusFound)
+	})
 }
 
 // streamImages serves images out of store, with Range, conditional requests

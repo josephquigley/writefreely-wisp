@@ -62,7 +62,7 @@ func serveUploads(h http.Handler, method, target string) *httptest.ResponseRecor
 
 func TestStreamedUploadsCacheOnlySuccess(t *testing.T) {
 	store := &fakeImageStore{objects: map[string][]byte{"2026/01/01/a.png": tinyPNG(t)}}
-	h := uploadsHandlerFor(store)
+	h := uploadsHandlerFor(store, imageURLs{})
 
 	cases := []struct {
 		name   string
@@ -98,7 +98,7 @@ func TestStreamedUploadsCacheOnlySuccess(t *testing.T) {
 func TestLocalUploadsCacheOnlySuccess(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.png"), tinyPNG(t), 0o644))
-	h := uploadsHandlerFor(&localImageStore{root: func() string { return dir }})
+	h := uploadsHandlerFor(&localImageStore{root: func() string { return dir }}, imageURLs{})
 
 	rec := serveUploads(h, "GET", "/uploads/a.png")
 	assert.Equal(t, http.StatusOK, rec.Code)
