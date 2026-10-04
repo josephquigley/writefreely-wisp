@@ -219,9 +219,76 @@ func TestPostgresErrorClassifiers(t *testing.T) {
 	assert.False(t, pg.isDuplicateKeyErr(sql.ErrNoRows))
 	assert.True(t, pg.isHighLoadError(load))
 	assert.False(t, pg.isHighLoadError(dup))
+	assert.False(t, pg.isHighLoadError(other))
+	assert.False(t, pg.isHighLoadError(nil))
 	assert.False(t, pg.isIgnorableError(dup))
 	assert.False(t, pg.isIgnorableError(other))
 }
+
+// pgHighLoadCodes are the SQLSTATEs that mean "temporarily unavailable, try
+// again shortly".
+var pgHighLoadCodes = map[string]string{
+	"53300": "too_many_connections",
+	"53400": "configuration_limit_exceeded",
+	"57P03": "cannot_connect_now",
+	"53000": "insufficient_resources",
+}
+
+func TestPostgresHighLoadCodes(t *testing.T) {
+	pg := newDatastore(nil, driverPostgres)
+	for code, name := range pgHighLoadCodes {
+		t.Run(name, func(t *testing.T) {
+			bare := &pq.Error{Code: pq.ErrorCode(code)}
+			assert.True(t, pg.isHighLoadError(bare))
+			assert.True(t, pg.isHighLoadError(fmt.Errorf("wrapped: %w", bare)))
+		})
+	}
+	// Disk full and out of memory persist until an operator steps in, and a
+	// 503 would tell clients to retry something that will not clear.
+	for _, code := range []string{"53100", "53200", "42P01", "23505", "57014"} {
+		assert.Falsef(t, pg.isHighLoadError(&pq.Error{Code: pq.ErrorCode(code)}), code)
+	}
+}
+
+// pqErrDriver is a database/sql driver whose every query fails with a
+// *pq.Error carrying code.
+type pqErrDriver struct{ code string }
+
+func (d pqErrDriver) Open(string) (driver.Conn, error) { return pqErrConn(d), nil }
+
+type pqErrConn struct{ code string }
+
+func (c pqErrConn) Prepare(string) (driver.Stmt, error) {
+	return nil, &pq.Error{Code: pq.ErrorCode(c.code)}
+}
+func (c pqErrConn) Close() error              { return nil }
+func (c pqErrConn) Begin() (driver.Tx, error) { return nil, &pq.Error{Code: pq.ErrorCode(c.code)} }
+
+// TestPostgresGetCollectionByHighLoadCodes checks that each high-load code
+// reaches the caller as ErrUnavailable (a 503) rather than a logged 500.
+func TestPostgresGetCollectionByHighLoadCodes(t *testing.T) {
+	for code, name := range pgHighLoadCodes {
+		t.Run(name, func(t *testing.T) {
+			sdb := sql.OpenDB(pqErrConnector{code})
+			defer sdb.Close()
+			db := newDatastore(sdb, driverPostgres)
+			c, err := db.GetCollectionBy("alias = ?", "anything")
+			assert.Nil(t, c)
+			assert.Equal(t, ErrUnavailable, err)
+		})
+	}
+
+	sdb := sql.OpenDB(pqErrConnector{"42P01"})
+	defer sdb.Close()
+	_, err := newDatastore(sdb, driverPostgres).GetCollectionBy("alias = ?", "anything")
+	require.Error(t, err)
+	assert.NotEqual(t, ErrUnavailable, err)
+}
+
+type pqErrConnector struct{ code string }
+
+func (c pqErrConnector) Connect(context.Context) (driver.Conn, error) { return pqErrConn(c), nil }
+func (c pqErrConnector) Driver() driver.Driver                        { return pqErrDriver(c) }
 
 // TestPostgresConnection exercises the driver against a real server, in a
 // fresh database from the Postgres test harness (harness_pg_test.go). It runs

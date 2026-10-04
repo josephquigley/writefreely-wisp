@@ -125,15 +125,11 @@ func TestEmailSubscriberCaseInsensitive(t *testing.T) {
 		require.NotNil(t, found)
 		assert.Equal(t, first.ID, found.ID)
 
-		// Subscribing again in another case is the same subscriber. The
-		// duplicate-key path needs the sqlite build tag on SQLite, because
-		// isDuplicateKeyErr only recognises SQLite errors there.
-		if app.db.driverName != driverSQLite || SQLiteEnabled {
-			again, err := app.db.AddEmailSubscription(coll, 0, "foo@example.com", false)
-			require.NoError(t, err)
-			require.NotNil(t, again)
-			assert.Equal(t, first.ID, again.ID)
-		}
+		// Subscribing again in another case is the same subscriber.
+		again, err := app.db.AddEmailSubscription(coll, 0, "foo@example.com", false)
+		require.NoError(t, err)
+		require.NotNil(t, again)
+		assert.Equal(t, first.ID, again.ID)
 		assert.Equal(t, 1, countSubscribers(t, app, coll), "one row, whatever case the address arrived in")
 
 		// Unsubscribing in yet another case removes it.
@@ -157,6 +153,25 @@ func TestEmailSubscriberLegacyMixedCaseRow(t *testing.T) {
 		assert.Equal(t, "Legacy01", found.ID)
 		require.NoError(t, app.db.DeleteEmailSubscriberByUser("OLD@EXAMPLE.COM", 0, coll))
 		assert.Equal(t, 0, countSubscribers(t, app, coll))
+	})
+}
+
+// A legacy row stored as Foo@x has no unique index to collide with on SQLite,
+// so subscribing again as foo@x must find it first instead of adding a second
+// row (which would send the newsletter twice).
+func TestEmailSubscriberResubscribeFindsLegacyMixedCaseRow(t *testing.T) {
+	forEachCaseEngine(t, func(t *testing.T, app *App) {
+		owner := caseInsertUser(t, app, "legacyresub")
+		coll := caseInsertCollection(t, app, "legacyresub", owner)
+		_, err := app.db.Exec("INSERT INTO emailsubscribers (id, collection_id, email, subscribed, token, confirmed, allow_export) VALUES ('Legacy02', ?, 'Foo@Example.com', CURRENT_TIMESTAMP, 'LegacyToken00002', FALSE, FALSE)", coll)
+		require.NoError(t, err)
+
+		again, err := app.db.AddEmailSubscription(coll, 0, "foo@example.com", false)
+		require.NoError(t, err)
+		require.NotNil(t, again)
+		assert.Equal(t, "Legacy02", again.ID, "the existing row is returned")
+		assert.Equal(t, "LegacyToken00002", again.Token, "with its own token, as the resubscribe path does")
+		assert.Equal(t, 1, countSubscribers(t, app, coll), "no second row")
 	})
 }
 
