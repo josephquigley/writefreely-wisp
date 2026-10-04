@@ -20,6 +20,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - `writefreely settings list|get|set|export` changes settings without editing a file, and the admin page covers every database setting and refuses saves from a page older than the current settings.
 - Uploaded images can be kept in S3-compatible storage such as Garage through a new `[storage]` section, served at unchanged `/uploads/` URLs, and `writefreely images sync --to s3` copies existing images there.
 - Scheduled email publishing and the orphaned-image sweep take a database lock, so two app processes sharing one MySQL or Postgres database never email the same post twice.
+- `docs/postgres-ha.md` explains running behind a proxy that follows a Patroni primary, the HAProxy settings failover depends on, and what several processes sharing one database must agree on.
 
 ### Changed
 
@@ -42,6 +43,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
 - On MySQL and MariaDB, tokens, invite codes and remote actor addresses now match case-sensitively, and remote actors with non-Latin characters in their URLs save; the upgrade migration may take a while on large instances.
 - Saving, retitling or claiming a post, or creating a blog from a title alone, no longer fails when a random slug or alias suffix collides; each retries up to ten times.
+- A repeated inbound ActivityPub Like is accepted as already recorded, and a failed Like or Undo now returns an error status instead of an HTML error page with HTTP 200.
 
 ## [0.20.0+wisp] - 2026-09-09
 

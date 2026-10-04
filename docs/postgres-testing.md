@@ -128,6 +128,16 @@ Any other Postgres works the same way: set the two variables and run
 service container and the same two variables. It is required: a failure
 there fails the run, the same as the SQLite job.
 
+The job runs the suite twice: once in the runner's own zone, which is UTC,
+and once with `TZ=America/Detroit`, because Postgres timestamps are stored
+and compared as UTC instants and that only needs proving when the Go process
+is somewhere else. The second run first checks that Go really picked the zone
+up. To do the same locally:
+
+```sh
+TZ=America/Detroit make test-postgres GOTESTFLAGS='-tags sqlite'
+```
+
 ## Version
 
 Tests target **Postgres 18**. Older majors are not tested.

@@ -111,7 +111,7 @@ func handlePinnedPostAction(app *App, u *User, w http.ResponseWriter, r *http.Re
 	}
 
 	vars := mux.Vars(r)
-	postID := vars["post"]
+	postID := normalizePostID(vars["post"])
 	action := vars["action"]
 
 	if action != "up" && action != "down" && action != "remove" {
