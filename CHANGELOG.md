@@ -48,6 +48,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - RSS and Atom feeds return an error instead of crashing the request when the query for a blog's posts or tag fails.
 - Logs no longer contain subscribers' email addresses: re-subscribing, newsletter sends and failed deliveries now log subscriber IDs or the collection instead of the address.
 - Two Follows arriving together from a not-yet-known remote account are both stored and accepted, instead of the second being dropped on a duplicate remote-user insert.
+- Reusing an expired or already-used OAuth sign-in link returns a 400 with a plain message instead of a 500 showing raw database error text.
 
 ## [0.20.0+wisp] - 2026-09-09
 

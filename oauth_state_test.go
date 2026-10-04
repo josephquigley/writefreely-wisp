@@ -15,6 +15,7 @@ package writefreely
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -70,11 +71,11 @@ func TestValidateOAuthStateIsSingleUse(t *testing.T) {
 		t.Fatalf("first validation returned provider=%q clientID=%q", provider, clientID)
 	}
 
-	if _, _, _, _, err := ds.ValidateOAuthState(ctx, state); err == nil {
-		t.Fatal("second validation of the same state succeeded; want an error")
+	if _, _, _, _, err := ds.ValidateOAuthState(ctx, state); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second validation of the same state: got %v, want sql.ErrNoRows", err)
 	}
-	if _, _, _, _, err := ds.ValidateOAuthState(ctx, "no-such-state"); err == nil {
-		t.Fatal("validation of an unknown state succeeded; want an error")
+	if _, _, _, _, err := ds.ValidateOAuthState(ctx, "no-such-state"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("validation of an unknown state: got %v, want sql.ErrNoRows", err)
 	}
 }
 

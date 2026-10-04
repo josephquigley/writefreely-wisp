@@ -3243,7 +3243,9 @@ func (db *datastore) ValidateOAuthState(ctx context.Context, state string) (stri
 			return err
 		}
 		if rowsAffected != 1 {
-			return fmt.Errorf("state not found")
+			// Another caller consumed the state first: to this caller it is
+			// as gone as a state that never existed.
+			return sql.ErrNoRows
 		}
 		return nil
 	})
