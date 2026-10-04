@@ -102,7 +102,7 @@ func exportPostsZip(u *User, posts *[]PublicPost) []byte {
 
 func compileFullExport(app *App, u *User) *ExportUser {
 	exportUser := &ExportUser{
-		User: u,
+		User: u.forAPI(app.keys),
 	}
 
 	colls, err := app.db.GetCollections(u, app.Config().App.Host)
