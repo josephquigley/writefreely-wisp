@@ -75,7 +75,7 @@ import (
 // dbCopySchemaVersion is the only migration version this command knows how
 // to copy. Source, target and binary must all be at it. A new migration
 // means reviewing this command (its column rules below) and raising it.
-const dbCopySchemaVersion = 22
+const dbCopySchemaVersion = 23
 
 // dbCopyBatchRows is the most rows sent in one INSERT.
 const dbCopyBatchRows = 500

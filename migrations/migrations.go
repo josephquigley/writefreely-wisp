@@ -117,6 +117,7 @@ var migrations = []Migration{
 	New("exact-match collations on MySQL", exactMatchCollations),     // V19 -> V20
 	New("store settings in the database", supportAppSettings),        // V20 -> V21
 	New("index remote handle lookups", remoteHandleIndex),            // V21 -> V22
+	New("index email and language lookups", lowerEmailLanguageIndex), // V22 -> V23
 }
 
 // CurrentVer returns the current migration version the application is on

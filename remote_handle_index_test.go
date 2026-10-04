@@ -41,11 +41,16 @@ func insertRemoteHandles(t *testing.T, app *App, n int) {
 // getRemoteUserFromHandle runs, flattened to one string.
 func remoteHandlePlan(t *testing.T, app *App) string {
 	t.Helper()
-	q := app.db.remoteUserByHandleQuery()
-	const arg = "u7@peer7.example"
+	return explainPlan(t, app, app.db.remoteUserByHandleQuery(), "u7@peer7.example")
+}
+
+// explainPlan returns the plan the engine chooses for q, flattened to one
+// string.
+func explainPlan(t *testing.T, app *App, q string, args ...interface{}) string {
+	t.Helper()
 	switch app.db.driverName {
 	case driverSQLite:
-		return joinPlanRows(t, app.db, "EXPLAIN QUERY PLAN "+q, arg)
+		return joinPlanRows(t, app.db, "EXPLAIN QUERY PLAN "+q, args...)
 	case driverPostgres:
 		// A few dozen rows fit in one page, where a sequential scan is
 		// honestly cheaper; with it priced out, what is left shows whether
@@ -55,9 +60,9 @@ func remoteHandlePlan(t *testing.T, app *App) string {
 		defer tx.Rollback()
 		_, err = tx.Exec("SET LOCAL enable_seqscan = off")
 		require.NoError(t, err)
-		return joinPlanRows(t, tx, "EXPLAIN "+q, arg)
+		return joinPlanRows(t, tx, "EXPLAIN "+q, args...)
 	case driverMySQL:
-		return joinPlanRows(t, app.db, "EXPLAIN "+q, arg)
+		return joinPlanRows(t, app.db, "EXPLAIN "+q, args...)
 	}
 	t.Fatalf("no plan query for %s", app.db.driverName)
 	return ""
