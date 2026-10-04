@@ -36,19 +36,12 @@ import (
 //
 // Only the per-address verdict is shared. Both ask isPublicAddr.
 
-// ssrfGuardOptions carries the per-call knobs of the address check. nil
-// means "the strict ruleset, no exceptions".
-type ssrfGuardOptions struct {
-	// allowed are ranges the operator has reopened with
-	// [server] private_address_allowlist. config.ParsePrivateAddressAllowlist
-	// has already confined them to private, CGNAT and loopback space, and
-	// isPublicAddr refuses link-local, multicast and the unspecified
-	// address before it looks at them, so no entry can reach the cloud
-	// metadata endpoint at 169.254.169.254.
-	allowed []*net.IPNet
-}
-
 // ssrfAllowlist holds the ranges from [server] private_address_allowlist.
+// config.ParsePrivateAddressAllowlist has already confined them to private,
+// CGNAT and loopback space, and isPublicAddr refuses link-local, multicast
+// and the unspecified address before it looks at them, so no entry can reach
+// the cloud metadata endpoint at 169.254.169.254.
+//
 // It is package state rather than App state because safeDialContext sits
 // under package-level HTTP clients that have no App to ask.
 var ssrfAllowlist atomic.Pointer[[]*net.IPNet]
@@ -69,23 +62,22 @@ func initPrivateAddressAllowlist(cfg *config.Config) error {
 	return nil
 }
 
-// ssrfOptions returns the options both guards run with: the configured
-// allowlist, or nil when there is none.
-func ssrfOptions() *ssrfGuardOptions {
-	nets := ssrfAllowlist.Load()
-	if nets == nil || len(*nets) == 0 {
-		return nil
+// privateAddressAllowlist returns the ranges both guards let through, or
+// nil when none are configured.
+func privateAddressAllowlist() []*net.IPNet {
+	if nets := ssrfAllowlist.Load(); nets != nil {
+		return *nets
 	}
-	return &ssrfGuardOptions{allowed: *nets}
+	return nil
 }
 
 // isPublicAddr reports whether ip is safe to connect to, i.e. not a
 // loopback, private, link-local, CGNAT, multicast, or otherwise
 // special-purpose address that could be used to reach internal services or
-// cloud metadata endpoints via SSRF. An address inside one of opts' allowed
+// cloud metadata endpoints via SSRF. An address inside one of the allowed
 // ranges is reported safe, unless it is link-local, multicast or
-// unspecified, which nothing reopens. opts may be nil.
-func isPublicAddr(ip net.IP, opts *ssrfGuardOptions) bool {
+// unspecified, which nothing reopens. allowed may be nil.
+func isPublicAddr(ip net.IP, allowed []*net.IPNet) bool {
 	if ip == nil {
 		return false
 	}
@@ -96,11 +88,9 @@ func isPublicAddr(ip net.IP, opts *ssrfGuardOptions) bool {
 		// the allowlist so that no entry can ever reopen it.
 		return false
 	}
-	if opts != nil {
-		for _, n := range opts.allowed {
-			if n.Contains(ip) {
-				return true
-			}
+	for _, n := range allowed {
+		if n.Contains(ip) {
+			return true
 		}
 	}
 	return isStrictlyPublicAddr(ip)

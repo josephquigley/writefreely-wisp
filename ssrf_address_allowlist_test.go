@@ -38,21 +38,21 @@ func setPrivateAddressAllowlist(t *testing.T, value string) {
 	}
 }
 
-func mustCIDRs(t *testing.T, cidrs ...string) *ssrfGuardOptions {
+func mustCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
 	t.Helper()
-	opts := &ssrfGuardOptions{}
+	var nets []*net.IPNet
 	for _, c := range cidrs {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
 			t.Fatal(err)
 		}
-		opts.allowed = append(opts.allowed, n)
+		nets = append(nets, n)
 	}
-	return opts
+	return nets
 }
 
 func TestIsPublicAddrHonoursAllowlist(t *testing.T) {
-	opts := mustCIDRs(t, "100.64.0.0/10", "192.168.1.0/24", "127.0.0.0/8", "fd7a:115c:a1e0::/48")
+	allowed := mustCIDRs(t, "100.64.0.0/10", "192.168.1.0/24", "127.0.0.0/8", "fd7a:115c:a1e0::/48")
 	tests := []struct {
 		name string
 		ip   string
@@ -79,7 +79,7 @@ func TestIsPublicAddrHonoursAllowlist(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isPublicAddr(net.ParseIP(tc.ip), opts); got != tc.want {
+			if got := isPublicAddr(net.ParseIP(tc.ip), allowed); got != tc.want {
 				t.Errorf("isPublicAddr(%q) = %v, want %v", tc.ip, got, tc.want)
 			}
 		})
@@ -91,13 +91,13 @@ func TestIsPublicAddrHonoursAllowlist(t *testing.T) {
 // all. This test builds options the parser would never produce, to show the
 // second check holds without the first.
 func TestAllowlistNeverReopensMetadataOrMulticast(t *testing.T) {
-	opts := mustCIDRs(t, "0.0.0.0/0", "::/0")
+	allowed := mustCIDRs(t, "0.0.0.0/0", "::/0")
 	for _, ip := range []string{
 		"169.254.169.254", "169.254.10.1", "fe80::1",
 		"224.0.0.251", "239.1.2.3", "ff02::1", "ff01::1",
 		"0.0.0.0", "::",
 	} {
-		if isPublicAddr(net.ParseIP(ip), opts) {
+		if isPublicAddr(net.ParseIP(ip), allowed) {
 			t.Errorf("isPublicAddr(%q) = true with everything listed; it must stay refused", ip)
 		}
 	}
@@ -167,20 +167,20 @@ func TestInitPrivateAddressAllowlistRefusesBadValue(t *testing.T) {
 	if err := initPrivateAddressAllowlist(cfg); err == nil {
 		t.Fatal("initPrivateAddressAllowlist accepted the metadata endpoint")
 	}
-	if isPublicAddr(net.ParseIP("192.168.1.1"), ssrfOptions()) {
+	if isPublicAddr(net.ParseIP("192.168.1.1"), privateAddressAllowlist()) {
 		t.Error("a refused allowlist installed part of itself")
 	}
-	if !isPublicAddr(net.ParseIP("100.84.155.115"), ssrfOptions()) {
+	if !isPublicAddr(net.ParseIP("100.84.155.115"), privateAddressAllowlist()) {
 		t.Error("a refused allowlist removed the one already in force")
 	}
 }
 
 func TestEmptyAllowlistIsStrict(t *testing.T) {
 	setPrivateAddressAllowlist(t, "")
-	if ssrfOptions() != nil {
-		t.Error("an empty allowlist produced guard options")
+	if len(privateAddressAllowlist()) != 0 {
+		t.Error("an empty allowlist installed ranges")
 	}
-	if isPublicAddr(net.ParseIP("100.84.155.115"), ssrfOptions()) {
+	if isPublicAddr(net.ParseIP("100.84.155.115"), privateAddressAllowlist()) {
 		t.Error("an empty allowlist reopened CGNAT")
 	}
 }
