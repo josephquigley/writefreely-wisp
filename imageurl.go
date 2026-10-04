@@ -157,6 +157,7 @@ var objectStoreProviderSuffixes = []string{
 	".backblazeb2.com",
 	".linodeobjects.com",
 	".wasabisys.com",
+	".storage.googleapis.com",
 }
 
 // imageURLBaseWarning returns a warning to log at startup when base is on an

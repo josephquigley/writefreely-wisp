@@ -120,7 +120,7 @@ func (s *StorageCfg) validateImageURLBase(appHost string) error {
 		return bad
 	}
 	p := strings.TrimSuffix(u.Path, "/")
-	if u.Host == "" && p == "" {
+	if (u.Host == "" && p == "") || strings.HasSuffix(p, "/") {
 		return bad
 	}
 	if p != "" && path.Clean(p) != p {

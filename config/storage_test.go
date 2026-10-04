@@ -217,6 +217,8 @@ func TestStorageValidationOfImageURLBase(t *testing.T) {
 		"/media?x=1",
 		"/media/../uploads",
 		"/media//blog",
+		"https://media.example.org//",
+		"/media//",
 		// /uploads/ on this host is what redirects to the base, so a base
 		// there would redirect to itself.
 		"/uploads",

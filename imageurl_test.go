@@ -269,6 +269,7 @@ func TestObjectStoreProviderHost(t *testing.T) {
 		"https://s3.wasabisys.com/blog",
 		"https://storage.googleapis.com/blog",
 		"https://STORAGE.googleapis.com/blog",
+		"https://blog.storage.googleapis.com",
 	} {
 		assert.NotEmpty(t, imageURLBaseWarning(base), base)
 		assert.Contains(t, imageURLBaseWarning(base), "federated", base)
