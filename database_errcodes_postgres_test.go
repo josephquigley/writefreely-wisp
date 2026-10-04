@@ -231,7 +231,10 @@ func TestPostgresCreateCollectionDuplicate(t *testing.T) {
 	owner := errCodeInsertUser(t, db, "owner")
 	errCodeInsertCollection(t, db, "blog", owner)
 
-	_, err := db.CreateCollection(config.New(), "blog", "Blog", owner)
+	// No blog cap, so the duplicate alias is what gets refused.
+	cfg := config.New()
+	cfg.App.MaxBlogs = 0
+	_, err := db.CreateCollection(cfg, "blog", "Blog", owner)
 	assert.Equal(t, http.StatusConflict, errCodeStatus(t, err))
 	assert.Equal(t, "Collection already exists.", err.(impart.HTTPError).Message)
 }
