@@ -568,21 +568,26 @@ func insertIntoRest(d, insert string) string {
 // execBestEffort runs one statement inside t that is allowed to fail without
 // failing the transaction, by fencing it in a savepoint. On error the
 // statement's effects are rolled back to the savepoint, the error is logged
-// and returned, and t remains usable.
+// and swallowed, and t remains usable.
 //
-// On MySQL and SQLite a failed statement leaves the transaction usable
+// On MySQL and SQLite most failed statements leave the transaction usable
 // anyway, so this only makes that explicit; on Postgres any error aborts the
 // whole transaction (SQLSTATE 25P02 on every later statement, and Commit
 // rolls back), and the savepoint is what lets the caller carry on. All three
 // engines support SAVEPOINT inside a transaction. name must be a constant SQL
 // identifier: it is concatenated into the statement.
+//
+// A non-nil return means t itself is broken, and the caller must roll it
+// back and fail: the savepoint could not be set, rolled back to or released.
+// That happens when the statement took the whole transaction down with it,
+// as a MySQL deadlock (1213) does; every later statement would then
+// autocommit outside it.
 func execBestEffort(t *sql.Tx, name, query string, args ...interface{}) error {
 	if _, err := t.Exec("SAVEPOINT " + name); err != nil {
 		log.Error("Unable to set savepoint %s: %v", name, err)
 		return err
 	}
-	_, err := t.Exec(query, args...)
-	if err != nil {
+	if _, err := t.Exec(query, args...); err != nil {
 		log.Error("Best-effort statement failed (rolled back to savepoint %s): %v", name, err)
 		if _, rbErr := t.Exec("ROLLBACK TO SAVEPOINT " + name); rbErr != nil {
 			log.Error("Unable to roll back to savepoint %s: %v", name, rbErr)
@@ -593,5 +598,5 @@ func execBestEffort(t *sql.Tx, name, query string, args ...interface{}) error {
 		log.Error("Unable to release savepoint %s: %v", name, relErr)
 		return relErr
 	}
-	return err
+	return nil
 }
