@@ -356,6 +356,17 @@ type postgresDialect struct{}
 const (
 	pgErrUniqueViolation    = "23505"
 	pgErrTooManyConnections = "53300"
+	// pgErrInsufficientResources is the generic "out of a resource that
+	// frees up again" error. 53100 (disk_full) and 53200 (out_of_memory) are
+	// deliberately not treated as high load: they last until an operator
+	// intervenes, so a 503 would invite retries that cannot succeed.
+	pgErrInsufficientResources = "53000"
+	// pgErrConfigLimitExceeded is a per-role or per-database connection
+	// limit being reached.
+	pgErrConfigLimitExceeded = "53400"
+	// pgErrCannotConnectNow is returned while the server is starting up,
+	// shutting down or in recovery, such as during a failover.
+	pgErrCannotConnectNow = "57P03"
 )
 
 // postgresIntervalUnits are the units DateAdd and DateSub accept on
@@ -486,6 +497,16 @@ func (postgresDialect) TryJobLock(ctx context.Context, db *sql.DB, name string) 
 func isPostgresErrCode(err error, code string) bool {
 	var pqErr *pq.Error
 	return errors.As(err, &pqErr) && string(pqErr.Code) == code
+}
+
+// isPostgresHighLoadErr reports whether err is a Postgres error meaning the
+// database is temporarily unavailable or overloaded, so the caller should
+// answer 503 rather than 500.
+func isPostgresHighLoadErr(err error) bool {
+	return isPostgresErrCode(err, pgErrTooManyConnections) ||
+		isPostgresErrCode(err, pgErrConfigLimitExceeded) ||
+		isPostgresErrCode(err, pgErrCannotConnectNow) ||
+		isPostgresErrCode(err, pgErrInsufficientResources)
 }
 
 // --------------------------------------------------------------- shared --
