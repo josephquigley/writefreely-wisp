@@ -154,7 +154,14 @@ test:
 # including a failed test run and Ctrl-C. It is local Docker only; nothing
 # here takes a DOCKER_HOST or a remote context into account, so do not point
 # one at a server you care about.
+#
+# GOTAGS defaults to sqlite, as in CI: many app-level tests (signup, OAuth
+# state, settings, db copy) sit behind that build tag, and without it they are
+# not compiled at all, so a green run would silently skip them. It is kept
+# apart from GOTESTFLAGS so that overriding the flags cannot drop the tag;
+# GOTAGS= runs without it.
 PG_IMAGE ?= postgres:18
+GOTAGS ?= sqlite
 GOTESTFLAGS ?=
 test-postgres:
 	@set -eu; \
@@ -174,17 +181,17 @@ test-postgres:
 	echo "test-postgres: ready on 127.0.0.1:$$port"; \
 	WF_TEST_DB_TYPE=postgres \
 	WF_TEST_PG_DSN="postgres://writefreely:writefreely@127.0.0.1:$$port/writefreely?sslmode=disable" \
-		$(GOCMD) test -count=1 $(GOTESTFLAGS) ./...
+		$(GOCMD) test -count=1 -tags '$(GOTAGS)' $(GOTESTFLAGS) ./...
 
 # Run the test suite against a throwaway MySQL or MariaDB in local Docker,
 # the twin of test-postgres. See docs/database-testing.md.
 #
 #   make test-mysql
 #   make test-mysql MYSQL_IMAGE=mysql:8.4
-#   make test-mysql GOTESTFLAGS='-tags sqlite -run TestFoo -v'
+#   make test-mysql GOTESTFLAGS='-run TestFoo -v'
 #
 # Same guarantees as test-postgres: a random loopback port, removed on every
-# exit path, local Docker only. The tests connect as root, which they need
+# exit path, local Docker only, and the same GOTAGS default. The tests connect as root, which they need
 # to create and drop a database per test.
 MYSQL_IMAGE ?= mariadb:11
 test-mysql:
@@ -206,7 +213,7 @@ test-mysql:
 	echo "test-mysql: ready on 127.0.0.1:$$port"; \
 	WF_TEST_DB_TYPE=mysql \
 	WF_TEST_MYSQL_DSN="root:writefreely@tcp(127.0.0.1:$$port)/" \
-		$(GOCMD) test -count=1 $(GOTESTFLAGS) ./...
+		$(GOCMD) test -count=1 -tags '$(GOTAGS)' $(GOTESTFLAGS) ./...
 
 run:
 	$(GOINSTALL) -tags='netgo sqlite' ./...
