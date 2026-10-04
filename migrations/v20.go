@@ -38,7 +38,8 @@ package migrations
 // normalises itself. remoteusers.handle does not keep it: CONVERT TO changes
 // every string column of the table, so the handle becomes binary along with
 // the rest. That is safe because handles are stored lower-cased and looked up
-// as WHERE LOWER(handle) = ?, which matches either way. A new query that
+// as WHERE LOWER(handle) = ? (on MySQL, through the column V22 stores that
+// expression in), which matches either way. A new query that
 // compares it as plain handle = ? would be case-sensitive, so lower-case the
 // argument or keep using LOWER().
 //

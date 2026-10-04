@@ -56,7 +56,7 @@ func (db *datastore) isHighLoadError(err error) bool {
 			return mysqlErr.Number == mySQLErrMaxUserConns || mysqlErr.Number == mySQLErrTooManyConns
 		}
 	case driverPostgres:
-		return isPostgresErrCode(err, pgErrTooManyConnections)
+		return isPostgresHighLoadErr(err)
 	}
 
 	return false
