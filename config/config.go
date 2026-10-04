@@ -278,13 +278,13 @@ type (
 		// for a store that wants bucket.endpoint/key instead.
 		S3VirtualHost bool `ini:"s3_virtual_host,omitempty"`
 
-		// ImageURLBase is where readers fetch uploaded images from, when
-		// something other than this app serves the bucket: a CDN, or a
-		// reverse proxy reading it directly. An image's URL is then this
-		// base, a slash, and its object key, prefix included. Post bodies
-		// keep /uploads/ paths; only rendered and federated copies use the
-		// base, and /uploads/ redirects to it. Empty means images are
-		// streamed through the app, as before the key existed.
+		// ImageURLBase is where readers fetch uploaded images from, and
+		// is required with S3: the app writes images to the bucket and
+		// never serves them, so a CDN, or a reverse proxy reading the
+		// bucket, must answer here. An image's URL is this base, a slash,
+		// and its object key, prefix included. Post bodies keep /uploads/
+		// paths; rendered and federated copies use the base, and /uploads/
+		// redirects to it. Not allowed with local storage.
 		ImageURLBase string `ini:"image_url_base,omitempty"`
 	}
 
@@ -484,7 +484,7 @@ func Load(fname string) (*Config, error) {
 		}
 	}
 
-	if err := uc.Storage.validate(uc.App.Host); err != nil {
+	if err := uc.Storage.validate(); err != nil {
 		return nil, err
 	}
 

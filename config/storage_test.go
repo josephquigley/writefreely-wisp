@@ -40,6 +40,7 @@ s3_bucket = blog
 s3_prefix = /uploads/
 s3_access_key_id = ${WF_TEST_S3_KEY}
 s3_secret_access_key = ${WF_TEST_S3_SECRET}
+image_url_base = https://media.example.org
 `))
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -64,8 +65,9 @@ func TestStorageValidationRefusesBrokenS3WithoutLeakingSecrets(t *testing.T) {
 		S3Bucket:          "blog",
 		S3AccessKeyID:     "GK0123456789abcdef01234567",
 		S3SecretAccessKey: secret,
+		ImageURLBase:      "https://media.example.org",
 	}
-	if err := good.validate(""); err != nil {
+	if err := good.validate(); err != nil {
 		t.Fatalf("valid config refused: %v", err)
 	}
 
@@ -83,7 +85,7 @@ func TestStorageValidationRefusesBrokenS3WithoutLeakingSecrets(t *testing.T) {
 	} {
 		s := good
 		mutate(&s)
-		err := s.validate("")
+		err := s.validate()
 		if err == nil {
 			t.Errorf("%s: accepted", name)
 			continue
@@ -96,7 +98,10 @@ func TestStorageValidationRefusesBrokenS3WithoutLeakingSecrets(t *testing.T) {
 	for _, typ := range []string{"", "local", "LOCAL", " s3 "} {
 		s := good
 		s.Type = typ
-		if err := s.validate(""); err != nil {
+		if !s.UsesS3() {
+			s.ImageURLBase = ""
+		}
+		if err := s.validate(); err != nil {
 			t.Errorf("type %q refused: %v", typ, err)
 		}
 	}
@@ -114,6 +119,7 @@ s3_endpoint = http://localhost:3900
 s3_bucket = blog
 s3_access_key_id = ${WF_TEST_S3_KEY}
 s3_secret_access_key = ${WF_TEST_S3_SECRET}
+image_url_base = https://media.example.org
 `)
 	cfg, err := Load(p)
 	if err != nil {
@@ -171,7 +177,6 @@ image_url_base = ${WF_TEST_MEDIA}
 }
 
 func TestStorageValidationOfImageURLBase(t *testing.T) {
-	const host = "https://blog.example.org"
 	s3 := StorageCfg{
 		Type:              "s3",
 		S3Endpoint:        "https://s3.example.org",
@@ -181,21 +186,16 @@ func TestStorageValidationOfImageURLBase(t *testing.T) {
 	}
 
 	for in, want := range map[string]string{
-		"":                                   "",
-		"  ":                                 "",
 		"https://media.example.org":          "https://media.example.org",
 		"https://media.example.org/":         "https://media.example.org",
-		"http://localhost:3902":              "http://localhost:3902",
+		" https://media.example.org/ ":       "https://media.example.org",
 		"https://cdn.example.org/blog/":      "https://cdn.example.org/blog",
-		"/media":                             "/media",
-		"/media/":                            "/media",
-		" /media/blog ":                      "/media/blog",
-		"https://blog.example.org/media":     "https://blog.example.org/media",
+		"https://media.example.org:8443":     "https://media.example.org:8443",
 		"https://media.example.org/uploads/": "https://media.example.org/uploads",
 	} {
 		s := s3
 		s.ImageURLBase = in
-		if err := s.validate(host); err != nil {
+		if err := s.validate(); err != nil {
 			t.Errorf("%q refused: %v", in, err)
 			continue
 		}
@@ -205,30 +205,30 @@ func TestStorageValidationOfImageURLBase(t *testing.T) {
 	}
 
 	for _, in := range []string{
+		// S3 is served from the base and nowhere else, so there must be one.
+		"",
+		"  ",
+		// Not an absolute https URL with a host.
+		"http://media.example.org",
 		"media.example.org",
 		"ftp://media.example.org",
 		"https://",
 		"//media.example.org",
+		"/media",
+		"/media/",
 		"/",
 		"media",
+		// Nothing the key could not be appended to.
 		"https://user:pw@media.example.org",
 		"https://media.example.org/?v=1",
 		"https://media.example.org/#x",
-		"/media?x=1",
-		"/media/../uploads",
-		"/media//blog",
+		"https://media.example.org/a/../b",
+		"https://media.example.org/a//b",
 		"https://media.example.org//",
-		"/media//",
-		// /uploads/ on this host is what redirects to the base, so a base
-		// there would redirect to itself.
-		"/uploads",
-		"/uploads/media",
-		"https://blog.example.org/uploads",
-		"https://BLOG.example.org/uploads/x",
 	} {
 		s := s3
 		s.ImageURLBase = in
-		if err := s.validate(host); err == nil {
+		if err := s.validate(); err == nil {
 			t.Errorf("%q accepted", in)
 		} else if !strings.Contains(err.Error(), "image_url_base") {
 			t.Errorf("%q: error %q does not name the key", in, err)
@@ -238,7 +238,7 @@ func TestStorageValidationOfImageURLBase(t *testing.T) {
 	// Nothing but S3 can serve the files at the base.
 	for _, typ := range []string{"", "local"} {
 		s := StorageCfg{Type: typ, ImageURLBase: "https://media.example.org"}
-		if err := s.validate(host); err == nil || !strings.Contains(err.Error(), "type = s3") {
+		if err := s.validate(); err == nil || !strings.Contains(err.Error(), "type = s3") {
 			t.Errorf("type %q with image_url_base: got %v, want a refusal naming type = s3", typ, err)
 		}
 	}

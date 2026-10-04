@@ -28,12 +28,11 @@ func (s StorageCfg) UsesS3() bool {
 }
 
 // validate refuses a [storage] section that cannot work, at load rather than
-// at the first upload. appHost is [app] host, which image_url_base must not
-// point back into.
+// at the first upload.
 //
 // No message here may include a credential. They name the key that is wrong,
 // never its value, since a value is exactly where a secret would be.
-func (s *StorageCfg) validate(appHost string) error {
+func (s *StorageCfg) validate() error {
 	switch strings.ToLower(strings.TrimSpace(s.Type)) {
 	case "", StorageLocal:
 		if strings.TrimSpace(s.ImageURLBase) != "" {
@@ -46,7 +45,7 @@ func (s *StorageCfg) validate(appHost string) error {
 	default:
 		return fmt.Errorf("[storage] type must be %q or %q", StorageLocal, StorageS3)
 	}
-	if err := s.validateImageURLBase(appHost); err != nil {
+	if err := s.validateImageURLBase(); err != nil {
 		return err
 	}
 
@@ -85,49 +84,29 @@ func (s *StorageCfg) validate(appHost string) error {
 }
 
 // validateImageURLBase normalises image_url_base and refuses one that cannot
-// work. It is an absolute http(s) URL, or a path on this host such as /media
-// for a reverse proxy in front of the app that serves the bucket there. A
-// trailing slash is dropped, since the object key is joined on with one.
+// work. With S3 it is required: the app writes images to the bucket and never
+// serves them, so the base, a hostname whatever serves the bucket answers
+// on, is the only place readers can get them. A deployment that wants the
+// bucket private puts its own reverse proxy on that hostname.
 //
-// A query or fragment is refused because the key is appended to the path,
-// and a base inside /uploads/ on this host because that is where the app
-// redirects to the base from: it would redirect to itself.
-func (s *StorageCfg) validateImageURLBase(appHost string) error {
+// It must be an absolute https URL with a host, since it is copied into every
+// federated post. A trailing slash is dropped, because the object key is
+// joined on with one; a query, fragment or credentials are refused, and so is
+// a path that is not already clean, since the key is appended to it.
+func (s *StorageCfg) validateImageURLBase() error {
 	base := strings.TrimSpace(s.ImageURLBase)
 	if base == "" {
-		s.ImageURLBase = ""
-		return nil
+		return fmt.Errorf("[storage] type = s3 needs image_url_base, the https URL the bucket is served from, such as https://media.example.org")
 	}
-	bad := fmt.Errorf("[storage] image_url_base must be a URL such as https://media.example.org, or a path on this host such as /media")
+	bad := fmt.Errorf("[storage] image_url_base must be an https URL such as https://media.example.org")
 	u, err := url.Parse(base)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return bad
-	}
-	sameHost := false
-	switch {
-	case u.Scheme == "" && u.Host == "":
-		// A path, so it must be absolute: a relative one would resolve
-		// against each page's own address.
-		if !strings.HasPrefix(u.Path, "/") {
-			return bad
-		}
-		sameHost = true
-	case (u.Scheme == "http" || u.Scheme == "https") && u.Host != "":
-		if h, err := url.Parse(appHost); err == nil && strings.EqualFold(h.Host, u.Host) {
-			sameHost = true
-		}
-	default:
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return bad
 	}
 	p := strings.TrimSuffix(u.Path, "/")
-	if (u.Host == "" && p == "") || strings.HasSuffix(p, "/") {
+	if strings.HasSuffix(p, "/") || (p != "" && path.Clean(p) != p) {
 		return bad
-	}
-	if p != "" && path.Clean(p) != p {
-		return bad
-	}
-	if sameHost && (p == "/uploads" || strings.HasPrefix(p, "/uploads/")) {
-		return fmt.Errorf("[storage] image_url_base must not be under /uploads/ on this host, which redirects to it")
 	}
 	s.ImageURLBase = strings.TrimSuffix(base, "/")
 	return nil
