@@ -21,6 +21,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Uploaded images can be kept in S3-compatible storage such as Garage through a new `[storage]` section, served at unchanged `/uploads/` URLs, and `writefreely images sync --to s3` copies existing images there.
 - Scheduled email publishing and the orphaned-image sweep take a database lock, so two app processes sharing one MySQL or Postgres database never email the same post twice.
 - `docs/postgres-ha.md` explains running behind a proxy that follows a Patroni primary, the HAProxy settings failover depends on, and what several processes sharing one database must agree on.
+- `[storage] image_url_base` serves uploaded images from a CDN or proxy reading the S3 bucket, rewriting rendered and federated image URLs and redirecting `/uploads/`; `writefreely images metadata` backfills caching headers, and unset changes nothing.
 
 ### Changed
 
