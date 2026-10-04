@@ -25,18 +25,20 @@ import (
 // orphan sweep count as this instance's images, and no others.
 var imageURLPathPattern = regexp.MustCompile(`^` + imageURLPattern.String() + `$`)
 
-// imageURLs maps uploaded images to the URL readers fetch them from when
-// [storage] image_url_base is set: something other than this app, such as a
-// CDN or a reverse proxy, serves the bucket there.
+// imageURLs maps uploaded images to the URL readers fetch them from under
+// [storage] image_url_base, which S3 storage requires: the app writes to the
+// bucket and something else, a CDN or the operator's own reverse proxy,
+// serves it there.
 //
 // Post bodies are never changed. They keep the /uploads/<path> URLs the
 // editor inserted, which is what attachPostImages, the reference counts and
 // the orphan sweep all look for. The base is applied to copies on their way
-// out: rendered pages, feeds and ActivityPub objects. Turning it off, or
-// moving it, therefore needs no migration, and /uploads/ redirects to the
-// base for every copy that has already left.
+// out: rendered pages, feeds and ActivityPub objects. Moving the base
+// therefore needs no migration, and /uploads/ redirects to it for every copy
+// that has already left.
 //
-// The zero value is off, and everything it does is then a no-op.
+// The zero value, which is what local storage gets, is off, and everything it
+// does is then a no-op.
 type imageURLs struct {
 	base   string // image_url_base, validated, no trailing slash
 	prefix string // the bucket's key prefix, as s3KeyPrefix gives it

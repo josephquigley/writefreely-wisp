@@ -26,7 +26,6 @@ func TestFeedUsesImageURLBase(t *testing.T) {
 	}{
 		{"no base", "", "http://localhost:0/uploads/2026/09/02/pic.png"},
 		{"absolute base", "https://media.example.com", "https://media.example.com/feeds/2026/09/02/pic.png"},
-		{"path base", "/media", "http://localhost:0/media/feeds/2026/09/02/pic.png"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			app := newFeedTestApp(t)

@@ -115,16 +115,26 @@ func (db *datastore) allImageRefs() ([]imageRef, error) {
 	return refs, nil
 }
 
-// syncImages copies each image from src to dst, verifying both ends. Problems
-// with one image are reported and counted, and the rest still run.
-func syncImages(ctx context.Context, refs []imageRef, src, dst ImageStore, out io.Writer) imageSyncReport {
+// readableImageStore is a store whose images can be read back whole, which
+// the sync needs of its destination to check each copy against its recorded
+// SHA-256. Both stores are; it is not on ImageStore because nothing else
+// reads an image back.
+type readableImageStore interface {
+	ImageStore
+	ReadAll(ctx context.Context, relPath string) ([]byte, error)
+}
+
+// syncImages copies each image from src, a directory on this node, to dst,
+// verifying both ends. Problems with one image are reported and counted, and
+// the rest still run.
+func syncImages(ctx context.Context, refs []imageRef, src *localImageStore, dst readableImageStore, out io.Writer) imageSyncReport {
 	var r imageSyncReport
 	fail := func(p, why string) {
 		r.Failed++
 		fmt.Fprintf(out, "  FAILED %s: %s\n", p, why)
 	}
 	for _, ref := range refs {
-		b, err := readImage(ctx, src, ref.Path)
+		b, err := src.ReadAll(ctx, ref.Path)
 		if errors.Is(err, errImageNotFound) {
 			fail(ref.Path, "not in the uploads directory")
 			continue
@@ -138,7 +148,7 @@ func syncImages(ctx context.Context, refs []imageRef, src, dst ImageStore, out i
 			continue
 		}
 
-		existing, err := readImage(ctx, dst, ref.Path)
+		existing, err := dst.ReadAll(ctx, ref.Path)
 		switch {
 		case err == nil && sha256Hex(existing) == ref.Sum:
 			r.Present++
@@ -155,7 +165,7 @@ func syncImages(ctx context.Context, refs []imageRef, src, dst ImageStore, out i
 		}
 		// Read it back: a store that accepted the write is not proof it
 		// kept the bytes.
-		if got, err := readImage(ctx, dst, ref.Path); err != nil || sha256Hex(got) != ref.Sum {
+		if got, err := dst.ReadAll(ctx, ref.Path); err != nil || sha256Hex(got) != ref.Sum {
 			fail(ref.Path, "the copy does not match its recorded SHA-256 after writing")
 			continue
 		}
@@ -167,13 +177,4 @@ func syncImages(ctx context.Context, refs []imageRef, src, dst ImageStore, out i
 		}
 	}
 	return r
-}
-
-func readImage(ctx context.Context, s ImageStore, p string) ([]byte, error) {
-	img, err := s.Get(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	defer img.Close()
-	return io.ReadAll(img)
 }

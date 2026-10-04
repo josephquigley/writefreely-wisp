@@ -103,7 +103,7 @@ func TestS3ObjectMetadataEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, imageCacheControl, info.Metadata.Get("Cache-Control"))
 	assert.Equal(t, "image/png", info.ContentType)
-	got, err := readImage(ctx, s, "2026/10/04/b.png")
+	got, err := s.ReadAll(ctx, "2026/10/04/b.png")
 	require.NoError(t, err)
 	assert.Equal(t, "b", string(got))
 	assert.Equal(t, imageMetaReport{Current: 2}, refreshImageMetadata(ctx, refs, s, false, &out))

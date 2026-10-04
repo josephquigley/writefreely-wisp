@@ -81,7 +81,7 @@ func TestRewriteImageURL(t *testing.T) {
 // Every path imageURLPattern accepts is rewritten, and nothing it rejects is,
 // since the orphan sweep and the rewrite must agree on which URLs are images.
 func TestRewriteImageURLMatchesImageURLPattern(t *testing.T) {
-	u := newImageURLs(imageURLBaseConfig("/media", ""))
+	u := newImageURLs(imageURLBaseConfig("https://media.quigs.blog", ""))
 	for _, p := range []string{
 		"/uploads/2026/09/02/pic.png",
 		"/uploads/2026/09/02/img_1234.jpg",
@@ -122,7 +122,7 @@ func TestRewriteImageURLsLeavesHTMLAloneWithoutWork(t *testing.T) {
 	assert.False(t, newImageURLs(nil).on())
 
 	// A base, but nothing to rewrite: not even re-serialised.
-	on := newImageURLs(imageURLBaseConfig("/media", ""))
+	on := newImageURLs(imageURLBaseConfig("https://media.quigs.blog", ""))
 	plain := `<p>Just words<br></p>`
 	assert.Equal(t, plain, on.rewriteHTML(plain))
 	other := `<p><img src="https://other.example/uploads/2026/09/02/pic.png"><br></p>`
@@ -162,7 +162,6 @@ func TestActivityObjectUsesImageURLBase(t *testing.T) {
 	}{
 		{"no base", "", host + "/uploads/2026/09/02/pic.png"},
 		{"absolute base", "https://media.example.com", "https://media.example.com/2026/09/02/pic.png"},
-		{"path base", "/media", host + "/media/2026/09/02/pic.png"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			app, p := syndicatedPost(host)
@@ -205,30 +204,32 @@ func TestSyndicatedContentKeepsBaseAbsolute(t *testing.T) {
 	assert.Contains(t, got, `src="https://media.quigs.blog/2026/09/02/pic.png"`)
 }
 
+// With S3, /uploads/ always redirects: the app writes images to the bucket
+// and never reads them back to serve.
 func TestUploadsRedirectToImageURLBase(t *testing.T) {
-	store := &fakeImageStore{objects: map[string][]byte{"2026/01/01/a.png": tinyPNG(t)}}
-	u := newImageURLs(imageURLBaseConfig("https://media.quigs.blog", "blog"))
-	h := uploadsHandlerFor(store, u)
+	// Nothing listens there, so a request that reached the store would
+	// fail rather than redirect.
+	cfg := imageURLBaseConfig("https://media.quigs.blog", "blog")
+	cfg.Storage.S3Endpoint = refusingS3(t)
+	store, err := newS3ImageStore(cfg.Storage)
+	require.NoError(t, err)
+	h := uploadsHandlerFor(store, newImageURLs(cfg))
 
 	for _, method := range []string{"GET", "HEAD"} {
 		rec := serveUploads(h, method, "/uploads/2026/01/01/a.png")
 		assert.Equal(t, http.StatusFound, rec.Code, method)
 		assert.Equal(t, "https://media.quigs.blog/blog/2026/01/01/a.png", rec.Header().Get("Location"), method)
+		assert.Equal(t, imageRedirectCacheControl, rec.Header().Get("Cache-Control"), method)
 		assert.NotContains(t, rec.Header().Get("Cache-Control"), "immutable", method)
-		assert.NotEmpty(t, rec.Header().Get("Cache-Control"), method)
 		assert.Empty(t, rec.Body.String(), method)
+		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"), method)
 	}
-
-	// The store is never asked: the redirect is the whole answer, so even an
-	// image this node cannot see is sent to the base.
-	store.getErr = assert.AnError
-	rec := serveUploads(h, "GET", "/uploads/2026/01/01/a.png")
-	assert.Equal(t, http.StatusFound, rec.Code)
 
 	for _, bad := range []string{
 		"/uploads/2026/01/01/",
 		"/uploads/2026/01/01/.hidden.png",
 		"/uploads/2026//01/01/a.png",
+		"/uploads/2026/01/01/../01/a.png",
 		"/uploads/.writable-x",
 	} {
 		rec := serveUploads(h, "GET", bad)
@@ -236,25 +237,22 @@ func TestUploadsRedirectToImageURLBase(t *testing.T) {
 		assert.Empty(t, rec.Header().Get("Location"), bad)
 	}
 
-	rec = serveUploads(h, "POST", "/uploads/2026/01/01/a.png")
+	rec := serveUploads(h, "POST", "/uploads/2026/01/01/a.png")
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
 	assert.Empty(t, rec.Header().Get("Location"))
-
-	// A path base stays a path.
-	h = uploadsHandlerFor(store, newImageURLs(imageURLBaseConfig("/media", "")))
-	rec = serveUploads(h, "GET", "/uploads/2026/01/01/a.png")
-	assert.Equal(t, http.StatusFound, rec.Code)
-	assert.Equal(t, "/media/2026/01/01/a.png", rec.Header().Get("Location"))
 }
 
-func TestUploadsStreamWithoutImageURLBase(t *testing.T) {
-	store := &fakeImageStore{objects: map[string][]byte{"2026/01/01/a.png": tinyPNG(t)}}
-	h := uploadsHandlerFor(store, newImageURLs(imageURLBaseConfig("", "")))
-	rec := serveUploads(h, "GET", "/uploads/2026/01/01/a.png")
-	assert.Equal(t, http.StatusOK, rec.Code)
+// The redirect follows the store, not the setting: an S3 store is never
+// streamed, even by an App whose configuration skipped validation.
+func TestUploadsUnderS3NeverStream(t *testing.T) {
+	cfg := imageURLBaseConfig("", "")
+	cfg.Storage.S3Endpoint = refusingS3(t)
+	store, err := newS3ImageStore(cfg.Storage)
+	require.NoError(t, err)
+	rec := serveUploads(uploadsHandlerFor(store, newImageURLs(cfg)), "GET", "/uploads/2026/01/01/a.png")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Empty(t, rec.Header().Get("Location"))
-	assert.Equal(t, tinyPNG(t), rec.Body.Bytes())
 }
 
 func TestObjectStoreProviderHost(t *testing.T) {
@@ -276,7 +274,6 @@ func TestObjectStoreProviderHost(t *testing.T) {
 	}
 	for _, base := range []string{
 		"",
-		"/media",
 		"https://media.quigs.blog",
 		"https://notamazonaws.com",
 		"https://r2.dev.example.org",

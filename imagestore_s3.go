@@ -35,14 +35,10 @@ import (
 var (
 	// s3ProbeTimeout bounds the whole startup check, which is several calls.
 	s3ProbeTimeout = 15 * time.Second
-	// s3WriteTimeout bounds one Put, Delete or Exists. Images are capped at a
-	// few megabytes, so this is generous for a store that is answering.
+	// s3WriteTimeout bounds one Put, Delete, Exists or ReadAll. Images are
+	// capped at a few megabytes, so this is generous for a store that is
+	// answering.
 	s3WriteTimeout = 30 * time.Second
-	// s3GetTimeout bounds only getting the object, that is, until the store
-	// has answered with its headers. It does not bound reading the body: a
-	// large image on a slow client's connection is not a stall, and the
-	// request's own context ends that read when the client goes away.
-	s3GetTimeout = 30 * time.Second
 )
 
 // s3UnreachableError marks a failure to get any answer from the store, as
@@ -126,15 +122,12 @@ func (s *s3ImageStore) key(relPath string) string {
 	return s3ObjectKey(s.prefix, relPath)
 }
 
-// imageObjectMeta is the HTTP metadata an image object is stored with. Once
-// image_url_base is set, something other than this app serves the bucket,
-// and the object's own metadata is all it has to go on, so the headers this
-// app would have sent are kept on the object itself: the same Cache-Control
-// as a streamed image, and for SVG, Content-Disposition: attachment, which
-// stops a direct visit from loading it as a document (see uploadHeaders).
-//
-// It is set whether or not a base is configured, so that turning one on
-// later finds every image already carrying it.
+// imageObjectMeta is the HTTP metadata an image object is stored with.
+// Something other than this app serves the bucket, at image_url_base, and the
+// object's own metadata is all it has to go on, so the headers this app sends
+// for a local image are kept on the object itself: the same Cache-Control,
+// and for SVG, Content-Disposition: attachment, which stops a direct visit
+// from loading it as a document (see uploadHeaders).
 type imageObjectMeta struct {
 	ContentType        string
 	CacheControl       string
@@ -169,34 +162,22 @@ func (s *s3ImageStore) Put(ctx context.Context, relPath string, b []byte, mime s
 	return err
 }
 
-func (s *s3ImageStore) Get(ctx context.Context, relPath string) (*storedImage, error) {
-	// The deadline runs only until Stat has the object's headers; after that
-	// the body streams under the request's context alone, and closing the
-	// image releases it.
-	ctx, cancel := context.WithCancel(ctx)
-	timer := time.AfterFunc(s3GetTimeout, cancel)
+// ReadAll returns the bytes of the image at relPath, or errImageNotFound.
+// Nothing serves images from here; `writefreely images sync` uses it to check
+// each copy it makes against the SHA-256 recorded at upload.
+func (s *s3ImageStore) ReadAll(ctx context.Context, relPath string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, s3WriteTimeout)
+	defer cancel()
 	obj, err := s.client.GetObject(ctx, s.bucket, s.key(relPath), minio.GetObjectOptions{})
 	if err != nil {
-		timer.Stop()
-		cancel()
 		return nil, err
 	}
-	// GetObject is lazy; Stat is what finds out whether there is anything
-	// there.
-	info, err := obj.Stat()
-	if !timer.Stop() && err == nil {
-		// The deadline fired just as Stat succeeded; the stream is dead.
-		err = context.DeadlineExceeded
+	defer obj.Close()
+	b, err := io.ReadAll(obj)
+	if isNoSuchKey(err) {
+		return nil, errImageNotFound
 	}
-	if err != nil {
-		obj.Close()
-		cancel()
-		if isNoSuchKey(err) {
-			return nil, errImageNotFound
-		}
-		return nil, err
-	}
-	return &storedImage{ReadSeekCloser: cancelOnClose{obj, cancel}, Size: info.Size, ModTime: info.LastModified, MIME: mimeForPath(relPath)}, nil
+	return b, err
 }
 
 // Delete removes the object. S3 does not treat a missing key as an error on
@@ -247,15 +228,4 @@ func (s *s3ImageStore) Probe(ctx context.Context) error {
 		return probeFailure("S3 bucket "+s.bucket+" does not allow deletes", err)
 	}
 	return nil
-}
-
-// cancelOnClose releases the context an open image was fetched under.
-type cancelOnClose struct {
-	io.ReadSeekCloser
-	cancel context.CancelFunc
-}
-
-func (c cancelOnClose) Close() error {
-	defer c.cancel()
-	return c.ReadSeekCloser.Close()
 }

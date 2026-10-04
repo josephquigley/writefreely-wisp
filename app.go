@@ -532,11 +532,9 @@ func Initialize(apper Apper, debug bool) (*App, error) {
 	}
 	if st := apper.App().Config().Storage; st.UsesS3() {
 		log.Info("Uploaded images are kept in S3 bucket %s at %s", st.S3Bucket, st.S3Endpoint)
-		if st.ImageURLBase != "" {
-			log.Info("Uploaded images are served from %s; /uploads/ redirects there", st.ImageURLBase)
-			if w := imageURLBaseWarning(st.ImageURLBase); w != "" {
-				log.Error("WARNING: %s", w)
-			}
+		log.Info("Uploaded images are served from %s; /uploads/ redirects there", st.ImageURLBase)
+		if w := imageURLBaseWarning(st.ImageURLBase); w != "" {
+			log.Error("WARNING: %s", w)
 		}
 	}
 
