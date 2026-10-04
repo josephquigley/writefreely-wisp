@@ -23,6 +23,7 @@ var (
 		Usage: "uploaded image tools",
 		Subcommands: []*cli.Command{
 			&cmdImagesSync,
+			&cmdImagesMetadata,
 		},
 	}
 
@@ -42,9 +43,31 @@ var (
 		},
 		Action: imagesSyncAction,
 	}
+
+	cmdImagesMetadata cli.Command = cli.Command{
+		Name:  "metadata",
+		Usage: "Give images already in the object store the caching headers new uploads get",
+		Description: "Reads post_images and, for each image in the bucket named under [storage], sets\n" +
+			"Cache-Control and, for SVG, Content-Disposition: attachment, by copying the object\n" +
+			"onto itself. Content-Type and the bytes are kept. Run it once before serving the\n" +
+			"bucket directly with image_url_base. Safe to run again: images that already\n" +
+			"carry the headers are left alone.",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "dry-run",
+				Usage: "list what would change, and change nothing",
+			},
+		},
+		Action: imagesMetadataAction,
+	}
 )
 
 func imagesSyncAction(c *cli.Context) error {
 	app := writefreely.NewApp(c.String("c"))
 	return writefreely.SyncImages(app, c.String("to"), os.Stdout)
+}
+
+func imagesMetadataAction(c *cli.Context) error {
+	app := writefreely.NewApp(c.String("c"))
+	return writefreely.RefreshImageMetadata(app, c.Bool("dry-run"), os.Stdout)
 }
