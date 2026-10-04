@@ -271,7 +271,7 @@ func (c *readPublication) PrevPageURL(n int) string {
 // the user to the canonical post URL.
 func handlePostIDRedirect(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
-	postID := vars["post"]
+	postID := normalizePostID(vars["post"])
 	p, err := app.db.GetPost(postID, 0)
 	if err != nil {
 		return err

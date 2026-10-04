@@ -666,7 +666,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
-			return fmt.Errorf("unable to start transaction: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		var remoteUserID int64
@@ -674,31 +674,33 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			remoteUserID = remoteUser.ID
 		} else {
 			remoteUserID, err = apAddRemoteUser(app, t, fullActor)
+			if err != nil {
+				// apAddRemoteUser has already rolled back.
+				log.Error("Couldn't add remote user for like: %v", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
+			}
 		}
 
-		// Add like
-		_, err = t.Exec("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", likePostID, remoteUserID)
+		// Add like. A peer that retries delivers the same Like twice; the
+		// second is already recorded, so it is a success rather than a
+		// failure. insertIgnore, not a duplicate-key check after the fact:
+		// on Postgres a failed statement aborts the whole transaction.
+		_, err = t.Exec(app.db.insertIgnore("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")"), likePostID, remoteUserID)
 		if err != nil {
-			if !app.db.isDuplicateKeyErr(err) {
-				t.Rollback()
-				log.Error("Couldn't add like in DB: %v\n", err)
-				return fmt.Errorf("Couldn't add like in DB: %v", err)
-			} else {
-				t.Rollback()
-				log.Error("Couldn't add like in DB: %v\n", err)
-				return fmt.Errorf("Couldn't add like in DB: %v", err)
-			}
+			t.Rollback()
+			log.Error("Couldn't add like in DB: %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		err = t.Commit()
 		if err != nil {
 			t.Rollback()
 			log.Error("Rolling back after Commit(): %v\n", err)
-			return fmt.Errorf("Rolling back after Commit(): %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		if debugging {
-			log.Info("Successfully liked post %s by remote user %s", likePostID, remoteUser.URL)
+			log.Info("Successfully liked post %s by actor %s", likePostID, fullActor.ID)
 		}
 		impart.RenderActivityJSON(w, "", http.StatusOK)
 		return nil
@@ -706,7 +708,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
-			return fmt.Errorf("unable to start transaction: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		var remoteUserID int64
@@ -714,25 +716,30 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			remoteUserID = remoteUser.ID
 		} else {
 			remoteUserID, err = apAddRemoteUser(app, t, fullActor)
+			if err != nil {
+				// apAddRemoteUser has already rolled back.
+				log.Error("Couldn't add remote user for unlike: %v", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
+			}
 		}
 
-		// Remove like
+		// Remove like. Deleting a like that is already gone is not an error.
 		_, err = t.Exec("DELETE FROM remote_likes WHERE post_id = ? AND remote_user_id = ?", unlikePostID, remoteUserID)
 		if err != nil {
 			t.Rollback()
 			log.Error("Couldn't delete Like from DB: %v\n", err)
-			return fmt.Errorf("Couldn't delete Like from DB: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		err = t.Commit()
 		if err != nil {
 			t.Rollback()
 			log.Error("Rolling back after Commit(): %v\n", err)
-			return fmt.Errorf("Rolling back after Commit(): %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		if debugging {
-			log.Info("Successfully un-liked post %s by remote user %s", unlikePostID, remoteUser.URL)
+			log.Info("Successfully un-liked post %s by actor %s", unlikePostID, fullActor.ID)
 		}
 		impart.RenderActivityJSON(w, "", http.StatusOK)
 		return nil
@@ -1186,15 +1193,34 @@ func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 	return &u, nil
 }
 
+// remoteUserByHandleQuery is the query getRemoteUserFromHandle runs, taking
+// a handle already normalised by normalizeRemoteHandle.
+//
+// It compares LOWER(handle), so that a row cached before handles were
+// normalised is still found instead of costing a webfinger round trip every
+// time. On MySQL that is the generated column handle_lower, which V22 added
+// because neither MariaDB nor MySQL before 8.0.13 can index the expression;
+// the other engines index lower(handle) itself.
+func (db *datastore) remoteUserByHandleQuery() string {
+	const q = "SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE "
+	switch db.driverName {
+	case driverSQLite, driverPostgres:
+		return q + "LOWER(handle) = ?"
+	case driverMySQL:
+		return q + "handle_lower = ?"
+	default:
+		unsupportedDriver("remoteUserByHandleQuery", db.driverName)
+	}
+	return ""
+}
+
 // getRemoteUserFromHandle retrieves the profile page of a remote user
 // from the @user@server.tld handle
 func getRemoteUserFromHandle(app *App, handle string) (*RemoteUser, error) {
 	handle = normalizeRemoteHandle(handle)
 	u := RemoteUser{Handle: handle}
 	var urlVal sql.NullString
-	// LOWER(handle), so that a row cached before handles were normalised is
-	// still found instead of costing a webfinger round trip every time.
-	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE LOWER(handle) = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
+	err := app.db.QueryRow(app.db.remoteUserByHandleQuery(), handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, ErrRemoteUserNotFound
