@@ -26,6 +26,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - Emails, slugs, post IDs, language codes and remote handles now match case-insensitively on every database, invalid or oversized text is cleaned before storage, and blog renames replace stale redirects.
 - Settings now live in the database and leave config.ini on upgrade, which gains a `settings_location` marker; an older binary runs on zero values (a private instance turns public) until `settings export` is pasted back.
+- Subscriber confirmation checks and `/lang:` pages use new indexes instead of scanning; on MySQL and MariaDB the upgrade adds generated columns and rebuilds the `posts` table once.
 
 ### Security
 
