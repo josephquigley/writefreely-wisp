@@ -64,6 +64,13 @@ type followRaceFixture struct{ *followFixture }
 
 func newFollowRaceFixture(t *testing.T) followRaceFixture {
 	t.Helper()
+	// A build without `-tags sqlite` still links the SQLite driver (db copy
+	// reads SQLite files), so the harness can open one, but the datastore
+	// cannot classify SQLite errors there and the app itself refuses to run
+	// on SQLite. That configuration never serves a Follow.
+	if engine, _ := testDBEngine(); engine == driverSQLite && !SQLiteEnabled {
+		t.Skip("SQLite support not compiled in; run with `go test -tags sqlite` to run this test")
+	}
 	cfg := txTestConfig()
 	cfg.Database.Type = driverSQLite // replaced when WF_TEST_DB_TYPE selects another engine
 	app := &App{cfg: cfg}
