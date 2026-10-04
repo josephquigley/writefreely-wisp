@@ -127,6 +127,9 @@ func TestLengthBounds_SQLite(t *testing.T) {
 // silent truncation.
 func TestLengthBounds_Postgres(t *testing.T) {
 	cfg := config.New()
+	// No blog cap: config.New() allows one, CreateUser makes it, and
+	// CreateCollection enforces the cap since upstream GHSA fixes.
+	cfg.App.MaxBlogs = 0
 	cfg.App.Host = "http://localhost:8080"
 	cfg.Server.StaticParentDir = t.TempDir()
 	cfg.Uploads.Enabled = true

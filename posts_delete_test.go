@@ -47,6 +47,9 @@ func (s staticSessionStore) Save(*http.Request, http.ResponseWriter, *sessions.S
 func TestDeletePostRollsBackOnFailedDelete(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
 	cfg := config.New()
+	// No blog cap: config.New() allows one, CreateUser makes it, and
+	// CreateCollection enforces the cap since upstream GHSA fixes.
+	cfg.App.MaxBlogs = 0
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.SingleUser = false

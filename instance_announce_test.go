@@ -40,6 +40,9 @@ func newAnnounceTestApp(t *testing.T) *App {
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
 
 	cfg := config.New()
+	// No blog cap: config.New() allows one, CreateUser makes it, and
+	// CreateCollection enforces the cap since upstream GHSA fixes.
+	cfg.App.MaxBlogs = 0
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.Host = announceTestHost
@@ -360,6 +363,9 @@ func TestCollectionForAPRequestResolvesInstanceActor(t *testing.T) {
 // request happens to carry.
 func TestInstanceActorAliasComesFromConfig(t *testing.T) {
 	cfg := config.New()
+	// No blog cap: config.New() allows one, CreateUser makes it, and
+	// CreateCollection enforces the cap since upstream GHSA fixes.
+	cfg.App.MaxBlogs = 0
 	cfg.App.Host = "https://blog.example.org"
 
 	assert.Equal(t, "blog.example.org", instanceActorAlias(cfg))

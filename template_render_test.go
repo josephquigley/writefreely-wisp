@@ -59,6 +59,9 @@ func newTemplateTestApp(t *testing.T, mutate func(cfg *config.Config)) (*App, *m
 	dir := t.TempDir()
 
 	cfg := config.New()
+	// No blog cap: config.New() allows one, CreateUser makes it, and
+	// CreateCollection enforces the cap since upstream GHSA fixes.
+	cfg.App.MaxBlogs = 0
 	cfg.Server.TemplatesParentDir = ""
 	cfg.Server.PagesParentDir = ""
 	cfg.Server.StaticParentDir = "testdata"

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -24,6 +25,12 @@ type ScopedTestBody func(*sql.DB)
 func TestMain(m *testing.M) {
 	rand.Seed(time.Now().UTC().UnixNano())
 	gob.Register(&User{})
+
+	// Federation tests deliver to httptest servers on 127.0.0.1, which
+	// safeDialContext refuses. The ruleset itself is tested directly in
+	// ssrf_guard_test.go, and TestActivityPubClientRefusesLoopback checks
+	// the production dialer is wired in.
+	activityPubDialContext = (&net.Dialer{}).DialContext
 
 	if runMySQLTests() {
 		var err error
