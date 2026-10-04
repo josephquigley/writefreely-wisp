@@ -10,6 +10,62 @@
 
 package migrations
 
+// wispV2 changes columns that already hold data. Develop numbered its two
+// parts V19 and V20 before any release carried them; they were collapsed
+// into one migration when wisp moved to its own version table.
+//
+// Each part can run again, so a start that stops partway through finishes
+// on the next one.
+func wispV2(db *datastore) error {
+	return runEach(db, subscriberEmailCase, exactMatchCollations)
+}
+
+// subscriberEmailCase makes an email subscriber unique per blog
+// regardless of the case of the address.
+//
+// The application stores subscriber addresses lower-cased and compares
+// LOWER(email) when it looks one up (normalizeSubscriberEmail in the
+// writefreely package). This is the database's half of that, belt and
+// braces against a writer that forgets:
+//
+//   - MySQL: nothing to do. emailsubscribers.email has a case-insensitive
+//     collation, so the existing eu_coll_email key already treats Foo@x and
+//     foo@x as one address.
+//   - SQLite: nothing is changed. A unique index on lower(email) would fail
+//     to build on an existing database that already holds two rows differing
+//     only in case, and that would stop the instance from starting. Those
+//     rows stay as they are; the application's lower-cased lookups find them,
+//     and it no longer writes new mixed-case ones.
+//   - Postgres: eu_coll_email is replaced with a unique index on
+//     (collection_id, lower(email)). A Postgres database is new — created by
+//     `db init`, or filled by the data copy, which lower-cases addresses and
+//     collapses case duplicates — so there is nothing for the index to trip
+//     over. It also serves the application's LOWER(email) lookups.
+func subscriberEmailCase(db *datastore) error {
+	switch db.driverName {
+	case driverMySQL, driverSQLite:
+		return nil
+	case driverPostgres:
+		t, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		for _, q := range []string{
+			`ALTER TABLE emailsubscribers DROP CONSTRAINT IF EXISTS eu_coll_email`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS eu_coll_lower_email ON emailsubscribers (collection_id, lower(email))`,
+		} {
+			if _, err = t.Exec(q); err != nil {
+				t.Rollback()
+				return err
+			}
+		}
+		return t.Commit()
+	default:
+		unsupportedDriver("subscriberEmailCase", db.driverName)
+	}
+	return nil
+}
+
 // exactMatchCollations makes MySQL compare tokens, codes and remote IRIs
 // exactly, as SQLite and Postgres already do.
 //
@@ -34,11 +90,11 @@ package migrations
 // replaces, so no existing row can collide under a unique key afterwards.
 //
 // Columns that are meant to ignore case keep their collation:
-// emailsubscribers.email (see V19) and posts.slug, which the application
+// emailsubscribers.email (see subscriberEmailCase) and posts.slug, which the application
 // normalises itself. remoteusers.handle does not keep it: CONVERT TO changes
 // every string column of the table, so the handle becomes binary along with
 // the rest. That is safe because handles are stored lower-cased and looked up
-// as WHERE LOWER(handle) = ? (on MySQL, through the column V22 stores that
+// as WHERE LOWER(handle) = ? (on MySQL, through the column remoteHandleIndex in wisp_v3 stores that
 // expression in), which matches either way. A new query that
 // compares it as plain handle = ? would be case-sensitive, so lower-case the
 // argument or keep using LOWER().

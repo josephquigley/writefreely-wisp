@@ -22,7 +22,7 @@ import (
 	"github.com/writefreely/writefreely/migrations"
 )
 
-// V24 (migrations/v24.go): a publish job is claimed with one atomic UPDATE
+// wisp_v3 (migrations/wisp_v3.go): a publish job is claimed with one atomic UPDATE
 // before it is sent, so two workers that both selected it cannot both send
 // it, and a failed send gives the claim back.
 
@@ -184,10 +184,10 @@ func TestFailedPublishJobIsClaimableAgain(t *testing.T) {
 
 func TestPublishJobClaimsMigration(t *testing.T) {
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
-		// Back to V23, as an upgrade finds it, with a job queued.
+		// Back to before wisp_v3, as an upgrade finds it, with a job queued.
 		for _, q := range []string{
 			"ALTER TABLE publishjobs DROP COLUMN claimed_at",
-			"DELETE FROM appmigrations WHERE version >= 24",
+			"DELETE FROM wisp_migrations WHERE version >= 3",
 		} {
 			_, err := app.db.Exec(q)
 			require.NoError(t, err, q)
@@ -202,7 +202,7 @@ func TestPublishJobClaimsMigration(t *testing.T) {
 
 		// A migration that stopped after adding the column but before
 		// recording itself runs again on the next start.
-		_, err := app.db.Exec("DELETE FROM appmigrations WHERE version >= 24")
+		_, err := app.db.Exec("DELETE FROM wisp_migrations WHERE version >= 3")
 		require.NoError(t, err)
 		require.NoError(t, migrations.Migrate(mdb))
 	})

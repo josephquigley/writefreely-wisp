@@ -21,7 +21,7 @@ import (
 	"github.com/writefreely/writefreely/migrations"
 )
 
-// V22 (migrations/v22.go): the remote-handle lookup that every mention and
+// wisp_v3 (migrations/wisp_v3.go): the remote-handle lookup that every mention and
 // reply delegate goes through is served by an index on every engine, instead
 // of reading the whole remoteusers table.
 
@@ -95,7 +95,7 @@ func joinPlanRows(t *testing.T, q interface {
 	return strings.Join(out, " ")
 }
 
-// remoteHandleIndexName is the index V22 creates on each engine.
+// remoteHandleIndexName is the index wisp_v3 creates on each engine.
 func remoteHandleIndexName(driverName string) string {
 	if driverName == driverMySQL {
 		return "remoteusers_handle_lower"
@@ -107,14 +107,14 @@ func TestRemoteHandleLookupUsesIndex(t *testing.T) {
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		insertRemoteHandles(t, app, 50)
 		plan := remoteHandlePlan(t, app)
-		assert.Contains(t, plan, remoteHandleIndexName(app.db.driverName), "the handle lookup should use V22's index; plan: %s", plan)
+		assert.Contains(t, plan, remoteHandleIndexName(app.db.driverName), "the handle lookup should use wisp_v3's index; plan: %s", plan)
 		if app.db.driverName == driverMySQL {
 			assert.Contains(t, plan, "key="+remoteHandleIndexName(driverMySQL), plan)
 		}
 	})
 }
 
-// undoRemoteHandleIndex takes a database back to V21, as an upgrade finds it.
+// undoRemoteHandleIndex takes a database back to before wisp_v3, as an upgrade finds it.
 func undoRemoteHandleIndex(t *testing.T, app *App) {
 	t.Helper()
 	var qs []string
@@ -124,7 +124,7 @@ func undoRemoteHandleIndex(t *testing.T, app *App) {
 	case driverMySQL:
 		qs = []string{"ALTER TABLE remoteusers DROP COLUMN handle_lower"}
 	}
-	qs = append(qs, "DELETE FROM appmigrations WHERE version >= 22")
+	qs = append(qs, "DELETE FROM wisp_migrations WHERE version >= 3")
 	for _, q := range qs {
 		_, err := app.db.Exec(q)
 		require.NoError(t, err, q)
@@ -139,7 +139,7 @@ func TestRemoteHandleIndexMigration(t *testing.T) {
 			require.NotContains(t, remoteHandlePlan(t, app), remoteHandleIndexName(app.db.driverName))
 		}
 
-		// Rows cached before V22, one in the case its owner typed.
+		// Rows cached before wisp_v3, one in the case its owner typed.
 		insertRemoteHandles(t, app, 50)
 		_, err := app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, handle) VALUES (?, ?, ?, ?)",
 			"https://social.example/users/Bob", "https://social.example/users/Bob/inbox", "https://social.example/inbox", "Bob@Social.Example")
@@ -159,7 +159,7 @@ func TestRemoteHandleIndexMigration(t *testing.T) {
 
 		// A migration that stopped after its schema change but before
 		// recording itself runs again on the next start.
-		_, err = app.db.Exec("DELETE FROM appmigrations WHERE version >= 22")
+		_, err = app.db.Exec("DELETE FROM wisp_migrations WHERE version >= 3")
 		require.NoError(t, err)
 		require.NoError(t, migrations.Migrate(mdb))
 		assert.Contains(t, remoteHandlePlan(t, app), remoteHandleIndexName(app.db.driverName))

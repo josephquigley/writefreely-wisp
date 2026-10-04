@@ -157,14 +157,14 @@ func writeTestINI(t *testing.T, path, body string) {
 	}
 }
 
-// V21 must survive being run again over what an earlier, interrupted run
+// wisp_v3 must survive being run again over what an earlier, interrupted run
 // left: MySQL commits each DDL statement as it goes, so a crash can leave
 // the tables, with or without the version row, and no appmigrations entry.
 func TestSettingsMigrationIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	run := func(a *App) {
 		t.Helper()
-		if _, err := a.db.ExecContext(ctx, "DELETE FROM appmigrations WHERE version >= 21"); err != nil {
+		if _, err := a.db.ExecContext(ctx, "DELETE FROM wisp_migrations WHERE version >= 3"); err != nil {
 			t.Fatal(err)
 		}
 		if err := migrations.Migrate(migrations.NewDatastore(a.db.DB, a.db.driverName)); err != nil {
