@@ -258,9 +258,7 @@ var txSemanticsScenarios = []struct {
 
 func txTestConfig() *config.Config {
 	cfg := config.New()
-	// No blog cap: config.New() allows one, CreateUser makes it, and
-	// CreateCollection enforces the cap since upstream GHSA fixes.
-	cfg.App.MaxBlogs = 0
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "https://local.example"
 	return cfg
 }

@@ -123,9 +123,7 @@ func TestPostgresQuerySyntax(t *testing.T) {
 
 func querySyntaxSuite(t *testing.T, db *datastore) {
 	cfg := config.New()
-	// No blog cap: config.New() allows one, CreateUser makes it, and
-	// CreateCollection enforces the cap since upstream GHSA fixes.
-	cfg.App.MaxBlogs = 0
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "http://localhost:0"
 	cfg.App.DefaultVisibility = "public"
 	app := &App{db: db, cfg: cfg}

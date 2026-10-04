@@ -22,6 +22,12 @@ var testDB *sql.DB
 type ScopedTestBody func(*sql.DB)
 
 // TestMain provides testing infrastructure within this package.
+// testMaxBlogs is the blog cap test configs use. config.New() allows one
+// blog, which the one CreateUser makes already fills, and CreateCollection
+// enforces the cap, so fixtures that create blogs need room. It stays finite
+// so the cap is still in force in those tests.
+const testMaxBlogs = 10
+
 func TestMain(m *testing.M) {
 	rand.Seed(time.Now().UTC().UnixNano())
 	gob.Register(&User{})
