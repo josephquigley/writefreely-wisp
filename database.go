@@ -3417,6 +3417,21 @@ func normalizeSubscriberEmail(email string) string {
 
 func (db *datastore) AddEmailSubscription(collID, userID int64, email string, confirmed bool) (*EmailSubscriber, error) {
 	email = normalizeSubscriberEmail(email)
+
+	// Look for an existing subscriber first, comparing case-insensitively.
+	// Only Postgres (V19) has a unique index that is case-insensitive, and
+	// MySQL's collation is; on SQLite a legacy row stored as Foo@x would not
+	// conflict with an insert of foo@x, and the reader would get every post
+	// twice. The duplicate-key handling below still covers a concurrent insert.
+	existing, err := db.FetchEmailSubscriber(email, userID, collID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		log.Info("Existing subscriber for email %s, user %d; returning existing subscriber", email, userID)
+		return existing, nil
+	}
+
 	friendlyChars := "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz"
 	subID := id.GenerateRandomString(friendlyChars, 8)
 	token := id.GenerateRandomString(friendlyChars, 16)
@@ -3429,7 +3444,7 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 		Valid: userID > 0,
 	}
 
-	_, err := db.Exec("INSERT INTO emailsubscribers (id, collection_id, user_id, email, subscribed, token, confirmed) VALUES (?, ?, ?, ?, "+db.now()+", ?, ?)", subID, collID, userIDVal, emailVal, token, confirmed)
+	_, err = db.Exec("INSERT INTO emailsubscribers (id, collection_id, user_id, email, subscribed, token, confirmed) VALUES (?, ?, ?, ?, "+db.now()+", ?, ?)", subID, collID, userIDVal, emailVal, token, confirmed)
 	if err != nil {
 		if db.isDuplicateKeyErr(err) {
 			// Duplicate, so just return existing subscriber information
