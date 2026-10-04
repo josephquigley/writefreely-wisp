@@ -566,7 +566,7 @@ func login(app *App, w http.ResponseWriter, r *http.Request) error {
 
 	// Send success
 	if reqJSON {
-		return impart.WriteSuccess(w, &AuthUser{User: u}, http.StatusOK)
+		return impart.WriteSuccess(w, &AuthUser{User: u.forAPI(app.keys)}, http.StatusOK)
 	}
 	log.Info("Login: Redirecting to %s", redirectTo)
 	w.Header().Set("Location", redirectTo)
@@ -577,7 +577,7 @@ func login(app *App, w http.ResponseWriter, r *http.Request) error {
 func getVerboseAuthUser(app *App, token string, u *User, verbose bool) *AuthUser {
 	resUser := &AuthUser{
 		AccessToken: token,
-		User:        u,
+		User:        u.forAPI(app.keys),
 	}
 
 	// Fetch verbose user data if requested
@@ -997,7 +997,7 @@ func updateSettings(app *App, w http.ResponseWriter, r *http.Request) error {
 	} else {
 		// Successful update.
 		if reqJSON {
-			return impart.WriteSuccess(w, u, http.StatusOK)
+			return impart.WriteSuccess(w, u.forAPI(app.keys), http.StatusOK)
 		}
 
 		if s.IsLogOut {
