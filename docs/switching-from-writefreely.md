@@ -18,7 +18,7 @@ migration, and the one step that must not be skipped is the backup.
 |---|---|---|
 | Binary name | `writefreely` | `writefreely` |
 | Config file | `config.ini` | `config.ini`, plus an optional `[uploads]` section |
-| Database schema | through migration V17 | V17 plus V18, which adds `post_images` |
+| Database schema | through migration V17 | V17, then this edition's own migrations, recorded in `wisp_migrations` |
 | Software name in nodeinfo, the `Server` header and the outbound user agent | `WriteFreely` | `WriteFreely`, deliberately unchanged |
 | Name shown to people | WriteFreely | WriteFreely (Wisp Edition) |
 | Update checks | on | off, see the README |
@@ -28,8 +28,12 @@ V1 through V17 unmodified, so an instance running an older release
 migrates straight through in one step, exactly as an upstream upgrade
 would.
 
-Migration V18 only creates a table. Nothing existing is altered or
-dropped. The reordering of pinned posts uses `posts.pinned_position`,
+This edition's own migrations are numbered separately, wisp_v1 onwards,
+and recorded in their own `wisp_migrations` table; `appmigrations` keeps
+upstream's numbering. wisp_v1 only creates a table, `post_images`. wisp_v2
+gives tokens, codes and remote IRIs exact-match collations on MySQL, and
+wisp_v3 adds the settings tables, lookup indexes and a `publishjobs`
+column. Nothing existing is dropped. The reordering of pinned posts uses `posts.pinned_position`,
 which upstream already has, and multiple verification links are stored in
 the `verification_link` attribute upstream already has, one per line.
 
@@ -200,7 +204,7 @@ this, and the app reaches it by service name as before. Add `PUID` and
 [docker.md](docker.md).
 
 `docker compose up -d` then starts the new image, and the entrypoint
-applies migration V18.
+applies this edition's migrations.
 
 The entrypoint migrates before the server starts, and it does not undo the
 migration if the server then fails to boot. A container that crash-loops
@@ -285,14 +289,14 @@ is uploaded in between, so nothing is missed.
 
 ## Going back to upstream
 
-Installing upstream over this edition mostly works. The `post_images`
-table is simply unused, and every other table is upstream's own.
+Installing upstream over this edition mostly works. The tables this
+edition adds (`post_images`, `app_settings`, `app_settings_version` and
+`wisp_migrations`) are simply unused, and so are the columns and indexes
+it adds to upstream's tables.
 
-The exception is the migration counter. This edition leaves
-`appmigrations` recording version 18, and upstream's next migration will
-also be numbered 18, so upstream would consider it already applied and
-skip it. Going back means dropping `post_images` and setting that version
-back to 17 by hand, before running upstream's `--migrate`.
+The migration counter needs nothing done by hand. `appmigrations` only
+ever records upstream's own migrations, so upstream reads the version it
+would have reached itself and runs its next migration as usual.
 
 Uploaded images are files on disk, and upstream has nowhere to serve them
 from. Posts referencing them will show broken images.

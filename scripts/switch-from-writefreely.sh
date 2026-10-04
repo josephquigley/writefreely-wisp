@@ -17,12 +17,12 @@
 #	it under the terms of the GNU Affero General Public License, included
 #	in the LICENSE file in this source code package.
 #
-# The switch is a drop-in: same binary name, same config file, and one
-# additive migration (V18, post_images). What differs is where a container
-# keeps its state. Upstream's image works out of /go, with the config bind
-# mounted as a single file and the keys in a named volume. This image works
-# out of /data, where one directory holds the config, the keys, the
-# SQLite database if there is one, and uploads.
+# The switch is a drop-in: same binary name, same config file, and this
+# edition's own migrations (wisp_v1 on, starting with post_images). What
+# differs is where a container keeps its state. Upstream's image works out
+# of /go, with the config bind mounted as a single file and the keys in a
+# named volume. This image works out of /data, where one directory holds
+# the config, the keys, the SQLite database if there is one, and uploads.
 #
 # So the docker half of this script is a file move, and the bare metal half
 # is a migration and a restart.
