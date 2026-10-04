@@ -277,6 +277,15 @@ type (
 		// because Garage and most other non-AWS stores need it. Set this
 		// for a store that wants bucket.endpoint/key instead.
 		S3VirtualHost bool `ini:"s3_virtual_host,omitempty"`
+
+		// ImageURLBase is where readers fetch uploaded images from, when
+		// something other than this app serves the bucket: a CDN, or a
+		// reverse proxy reading it directly. An image's URL is then this
+		// base, a slash, and its object key, prefix included. Post bodies
+		// keep /uploads/ paths; only rendered and federated copies use the
+		// base, and /uploads/ redirects to it. Empty means images are
+		// streamed through the app, as before the key existed.
+		ImageURLBase string `ini:"image_url_base,omitempty"`
 	}
 
 	// Config holds the complete configuration for running a writefreely instance
@@ -475,7 +484,7 @@ func Load(fname string) (*Config, error) {
 		}
 	}
 
-	if err := uc.Storage.validate(); err != nil {
+	if err := uc.Storage.validate(uc.App.Host); err != nil {
 		return nil, err
 	}
 

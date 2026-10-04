@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -27,17 +28,26 @@ func (s StorageCfg) UsesS3() bool {
 }
 
 // validate refuses a [storage] section that cannot work, at load rather than
-// at the first upload.
+// at the first upload. appHost is [app] host, which image_url_base must not
+// point back into.
 //
 // No message here may include a credential. They name the key that is wrong,
 // never its value, since a value is exactly where a secret would be.
-func (s *StorageCfg) validate() error {
+func (s *StorageCfg) validate(appHost string) error {
 	switch strings.ToLower(strings.TrimSpace(s.Type)) {
 	case "", StorageLocal:
+		if strings.TrimSpace(s.ImageURLBase) != "" {
+			// A local directory is served by this app and nothing else,
+			// so a base would send readers somewhere with no images.
+			return fmt.Errorf("[storage] image_url_base needs type = s3: with local storage nothing but this server can serve the images")
+		}
 		return nil
 	case StorageS3:
 	default:
 		return fmt.Errorf("[storage] type must be %q or %q", StorageLocal, StorageS3)
+	}
+	if err := s.validateImageURLBase(appHost); err != nil {
+		return err
 	}
 
 	u, err := url.Parse(strings.TrimSpace(s.S3Endpoint))
@@ -71,5 +81,54 @@ func (s *StorageCfg) validate() error {
 	if strings.Contains(s.S3Prefix, "//") || strings.Contains("/"+s.S3Prefix+"/", "/../") {
 		return fmt.Errorf("[storage] s3_prefix must be a plain path such as blog/uploads")
 	}
+	return nil
+}
+
+// validateImageURLBase normalises image_url_base and refuses one that cannot
+// work. It is an absolute http(s) URL, or a path on this host such as /media
+// for a reverse proxy in front of the app that serves the bucket there. A
+// trailing slash is dropped, since the object key is joined on with one.
+//
+// A query or fragment is refused because the key is appended to the path,
+// and a base inside /uploads/ on this host because that is where the app
+// redirects to the base from: it would redirect to itself.
+func (s *StorageCfg) validateImageURLBase(appHost string) error {
+	base := strings.TrimSpace(s.ImageURLBase)
+	if base == "" {
+		s.ImageURLBase = ""
+		return nil
+	}
+	bad := fmt.Errorf("[storage] image_url_base must be a URL such as https://media.example.org, or a path on this host such as /media")
+	u, err := url.Parse(base)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return bad
+	}
+	sameHost := false
+	switch {
+	case u.Scheme == "" && u.Host == "":
+		// A path, so it must be absolute: a relative one would resolve
+		// against each page's own address.
+		if !strings.HasPrefix(u.Path, "/") {
+			return bad
+		}
+		sameHost = true
+	case (u.Scheme == "http" || u.Scheme == "https") && u.Host != "":
+		if h, err := url.Parse(appHost); err == nil && strings.EqualFold(h.Host, u.Host) {
+			sameHost = true
+		}
+	default:
+		return bad
+	}
+	p := strings.TrimSuffix(u.Path, "/")
+	if u.Host == "" && p == "" {
+		return bad
+	}
+	if p != "" && path.Clean(p) != p {
+		return bad
+	}
+	if sameHost && (p == "/uploads" || strings.HasPrefix(p, "/uploads/")) {
+		return fmt.Errorf("[storage] image_url_base must not be under /uploads/ on this host, which redirects to it")
+	}
+	s.ImageURLBase = strings.TrimSuffix(base, "/")
 	return nil
 }
