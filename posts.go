@@ -1377,7 +1377,7 @@ func (p *PublicPost) ActivityObject(app *App) *activitystreams.Object {
 	}
 	// Mastodon strips <img> from content and renders media only from the
 	// attachment array, so an inline-only image does not display there.
-	o.Attachment = imageAttachments(syndicated, p.Images, extractImageAltText(p.Content), o.URL)
+	o.Attachment = imageAttachments(syndicated, p.Images, extractImageAltText(p.Content), o.URL, newImageURLs(cfg))
 	// Find mentioned users
 	mentionedUsers := make(map[string]string)
 

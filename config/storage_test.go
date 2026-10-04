@@ -40,6 +40,7 @@ s3_bucket = blog
 s3_prefix = /uploads/
 s3_access_key_id = ${WF_TEST_S3_KEY}
 s3_secret_access_key = ${WF_TEST_S3_SECRET}
+image_url_base = https://media.example.org
 `))
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -64,6 +65,7 @@ func TestStorageValidationRefusesBrokenS3WithoutLeakingSecrets(t *testing.T) {
 		S3Bucket:          "blog",
 		S3AccessKeyID:     "GK0123456789abcdef01234567",
 		S3SecretAccessKey: secret,
+		ImageURLBase:      "https://media.example.org",
 	}
 	if err := good.validate(); err != nil {
 		t.Fatalf("valid config refused: %v", err)
@@ -96,6 +98,9 @@ func TestStorageValidationRefusesBrokenS3WithoutLeakingSecrets(t *testing.T) {
 	for _, typ := range []string{"", "local", "LOCAL", " s3 "} {
 		s := good
 		s.Type = typ
+		if !s.UsesS3() {
+			s.ImageURLBase = ""
+		}
 		if err := s.validate(); err != nil {
 			t.Errorf("type %q refused: %v", typ, err)
 		}
@@ -114,6 +119,7 @@ s3_endpoint = http://localhost:3900
 s3_bucket = blog
 s3_access_key_id = ${WF_TEST_S3_KEY}
 s3_secret_access_key = ${WF_TEST_S3_SECRET}
+image_url_base = https://media.example.org
 `)
 	cfg, err := Load(p)
 	if err != nil {
@@ -138,5 +144,102 @@ s3_secret_access_key = ${WF_TEST_S3_SECRET}
 	b, _ = os.ReadFile(p)
 	if strings.Contains(string(b), "s3_") {
 		t.Errorf("save invented storage keys:\n%s", b)
+	}
+}
+
+func TestLoadImageURLBase(t *testing.T) {
+	t.Setenv("WF_TEST_S3_KEY", "GK0123456789abcdef01234567")
+	t.Setenv("WF_TEST_S3_SECRET", "secret")
+	t.Setenv("WF_TEST_MEDIA", "https://media.example.org/")
+	cfg, err := Load(writeConfig(t, storageTestHost+`
+[storage]
+type = s3
+s3_endpoint = http://localhost:3900
+s3_bucket = blog
+s3_access_key_id = ${WF_TEST_S3_KEY}
+s3_secret_access_key = ${WF_TEST_S3_SECRET}
+image_url_base = ${WF_TEST_MEDIA}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Storage.ImageURLBase; got != "https://media.example.org" {
+		t.Errorf("image_url_base = %q, want it read from the environment with the trailing slash stripped", got)
+	}
+
+	cfg, err = Load(writeConfig(t, storageTestHost))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Storage.ImageURLBase != "" {
+		t.Errorf("image_url_base = %q with no [storage] section, want empty", cfg.Storage.ImageURLBase)
+	}
+}
+
+func TestStorageValidationOfImageURLBase(t *testing.T) {
+	s3 := StorageCfg{
+		Type:              "s3",
+		S3Endpoint:        "https://s3.example.org",
+		S3Bucket:          "blog",
+		S3AccessKeyID:     "GK0123456789abcdef01234567",
+		S3SecretAccessKey: "secret",
+	}
+
+	for in, want := range map[string]string{
+		"https://media.example.org":          "https://media.example.org",
+		"https://media.example.org/":         "https://media.example.org",
+		" https://media.example.org/ ":       "https://media.example.org",
+		"https://cdn.example.org/blog/":      "https://cdn.example.org/blog",
+		"https://media.example.org:8443":     "https://media.example.org:8443",
+		"https://media.example.org/uploads/": "https://media.example.org/uploads",
+	} {
+		s := s3
+		s.ImageURLBase = in
+		if err := s.validate(); err != nil {
+			t.Errorf("%q refused: %v", in, err)
+			continue
+		}
+		if s.ImageURLBase != want {
+			t.Errorf("%q normalised to %q, want %q", in, s.ImageURLBase, want)
+		}
+	}
+
+	for _, in := range []string{
+		// S3 is served from the base and nowhere else, so there must be one.
+		"",
+		"  ",
+		// Not an absolute https URL with a host.
+		"http://media.example.org",
+		"media.example.org",
+		"ftp://media.example.org",
+		"https://",
+		"//media.example.org",
+		"/media",
+		"/media/",
+		"/",
+		"media",
+		// Nothing the key could not be appended to.
+		"https://user:pw@media.example.org",
+		"https://media.example.org/?v=1",
+		"https://media.example.org/#x",
+		"https://media.example.org/a/../b",
+		"https://media.example.org/a//b",
+		"https://media.example.org//",
+	} {
+		s := s3
+		s.ImageURLBase = in
+		if err := s.validate(); err == nil {
+			t.Errorf("%q accepted", in)
+		} else if !strings.Contains(err.Error(), "image_url_base") {
+			t.Errorf("%q: error %q does not name the key", in, err)
+		}
+	}
+
+	// Nothing but S3 can serve the files at the base.
+	for _, typ := range []string{"", "local"} {
+		s := StorageCfg{Type: typ, ImageURLBase: "https://media.example.org"}
+		if err := s.validate(); err == nil || !strings.Contains(err.Error(), "type = s3") {
+			t.Errorf("type %q with image_url_base: got %v, want a refusal naming type = s3", typ, err)
+		}
 	}
 }

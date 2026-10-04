@@ -179,6 +179,10 @@ func applyMarkdownSpecial(data []byte, baseURL string, cfg *config.Config, skipN
 	outHTML = blockReg.ReplaceAllString(outHTML, "<$1>")
 	outHTML = endBlockReg.ReplaceAllString(outHTML, "</$1></$2>")
 	outHTML = disableYoutubeAutoplay(outHTML)
+	// After sanitising, so the policy never needs to know the base's host.
+	// Every page, feed and ActivityPub object that shows a post body renders
+	// it here.
+	outHTML = newImageURLs(cfg).rewriteHTML(outHTML)
 	return outHTML
 }
 

@@ -32,9 +32,9 @@ import (
 func shortS3Timeouts(t *testing.T) time.Duration {
 	t.Helper()
 	d := 300 * time.Millisecond
-	oldProbe, oldPut, oldGet := s3ProbeTimeout, s3WriteTimeout, s3GetTimeout
-	s3ProbeTimeout, s3WriteTimeout, s3GetTimeout = d, d, d
-	t.Cleanup(func() { s3ProbeTimeout, s3WriteTimeout, s3GetTimeout = oldProbe, oldPut, oldGet })
+	oldProbe, oldWrite := s3ProbeTimeout, s3WriteTimeout
+	s3ProbeTimeout, s3WriteTimeout = d, d
+	t.Cleanup(func() { s3ProbeTimeout, s3WriteTimeout = oldProbe, oldWrite })
 	return d
 }
 
@@ -115,7 +115,7 @@ func TestS3PutAndDeleteAreBounded(t *testing.T) {
 	assert.Less(t, time.Since(start), 5*d)
 
 	start = time.Now()
-	_, err = s.Get(context.Background(), "a/b.png")
+	_, err = s.ReadAll(context.Background(), "a/b.png")
 	assert.Error(t, err)
 	assert.Less(t, time.Since(start), 5*d)
 }
@@ -139,17 +139,6 @@ func TestWriteUploadedImageFailsPromptlyWhenS3IsDown(t *testing.T) {
 	start := time.Now()
 	err := app.writeUploadedImage(context.Background(), "a/b.png", []byte("x"))
 	assert.Error(t, err)
-	assert.Less(t, time.Since(start), 5*d)
-}
-
-func TestStreamImagesAnswers502WhenS3IsDown(t *testing.T) {
-	d := shortS3Timeouts(t)
-	s, err := newS3ImageStore(s3CfgFor(hangingS3(t)))
-	require.NoError(t, err)
-	rec := httptest.NewRecorder()
-	start := time.Now()
-	streamImages(s).ServeHTTP(rec, httptest.NewRequest("GET", "/a/b.png", nil))
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
 	assert.Less(t, time.Since(start), 5*d)
 }
 

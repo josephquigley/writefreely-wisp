@@ -20,7 +20,6 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
-	"io"
 	"net/http"
 	"os"
 	"path"
@@ -216,13 +215,15 @@ func (app *App) uploadsRoot() string {
 
 // ImageStore keeps the bytes of uploaded images. Every path is relative to
 // the uploads root and is what post_images.path holds, so the same path names
-// the same image in every store, and /uploads/<path> is its URL in all of them.
+// the same image in every store, and /uploads/<path> is its URL in post
+// bodies whichever store holds it.
+//
+// Nothing here reads an image back to serve it. The local store is served
+// from its directory by http.FileServer, and an S3 bucket by whatever answers
+// at [storage] image_url_base; see uploadsHandlerFor.
 type ImageStore interface {
 	// Put stores b at path, replacing anything already there.
 	Put(ctx context.Context, path string, b []byte, mime string) error
-	// Get opens the image at path. It returns errImageNotFound if there is
-	// none. The caller closes it.
-	Get(ctx context.Context, path string) (*storedImage, error)
 	// Delete removes the image at path. One that is already gone is not an
 	// error.
 	Delete(ctx context.Context, path string) error
@@ -231,15 +232,6 @@ type ImageStore interface {
 	// Probe checks that the store can be written to, so that a store that
 	// cannot is reported at startup rather than at the first upload.
 	Probe(ctx context.Context) error
-}
-
-// storedImage is an open image: a stream that can seek, which is what lets
-// http.ServeContent answer Range requests from either store.
-type storedImage struct {
-	io.ReadSeekCloser
-	Size    int64
-	ModTime time.Time
-	MIME    string
 }
 
 var errImageNotFound = errors.New("image not found")
@@ -275,7 +267,6 @@ func (app *App) initImageStore() error {
 type brokenImageStore struct{ err error }
 
 func (b brokenImageStore) Put(context.Context, string, []byte, string) error { return b.err }
-func (b brokenImageStore) Get(context.Context, string) (*storedImage, error) { return nil, b.err }
 func (b brokenImageStore) Delete(context.Context, string) error              { return b.err }
 func (b brokenImageStore) Exists(context.Context, string) (bool, error)      { return false, b.err }
 func (b brokenImageStore) Probe(context.Context) error                       { return b.err }
@@ -319,7 +310,7 @@ func (app *App) checkUploadsAtStartup() error {
 	}
 	if s3Unreachable(err) {
 		st := app.Config().Storage
-		log.Error("uploaded images are unavailable: S3 at %s/%s did not answer: %v; the blog is starting without them", st.S3Endpoint, st.S3Bucket, err)
+		log.Error("image uploads are unavailable: S3 at %s/%s did not answer: %v; the blog is starting without them", st.S3Endpoint, st.S3Bucket, err)
 		return nil
 	}
 	return err
@@ -362,33 +353,55 @@ func cleanImagePath(p string) (string, bool) {
 }
 
 // uploadsHandler serves /uploads/<path>. The URL is the same whichever store
-// holds the image, because remote instances have cached the ones already
-// published. The local store is served by http.FileServer, exactly as
-// before. Any other store is streamed through this server rather than
-// redirected to: a redirect would change what remote caches see and expose
-// the bucket.
+// holds the image, because post bodies and the copies remote servers have
+// cached carry it. The local store is served by http.FileServer, exactly as
+// before S3 existed. An S3 bucket is never read back by this app: /uploads/
+// redirects to the image under [storage] image_url_base, which is where
+// rendered and federated copies already point; see redirectImages.
 func (app *App) uploadsHandler() http.Handler {
-	return uploadsHandlerFor(app.imageStore())
+	return uploadsHandlerFor(app.imageStore(), newImageURLs(app.Config()))
 }
 
 // uploadsHandlerFor is uploadsHandler for a given store. Cache-Control is
 // set only on a response that carries an image: http.FileServer's errors
-// strip it, but the streamed path's http.Error and http.NotFound do not, so
-// setting it up front would have browsers and CDNs keep a missing or failed
-// object for a week, immutable.
-func uploadsHandlerFor(store ImageStore) http.Handler {
+// strip it, so a missing file is not kept for a week, immutable.
+//
+// Which branch runs follows the store, not the setting, so an S3 store is
+// never streamed. Without a base, which a loaded configuration cannot have
+// with S3, there is nowhere to send readers, and every request is a 404.
+func uploadsHandlerFor(store ImageStore, urls imageURLs) http.Handler {
 	var h http.Handler
-	if ls, ok := store.(*localImageStore); ok {
+	switch ls, isLocal := store.(*localImageStore); {
+	case isLocal:
 		h = cacheControl(http.FileServer(http.Dir(ls.root())))
-	} else {
-		h = streamImages(store)
+	case urls.on():
+		h = redirectImages(urls)
+	default:
+		h = http.NotFoundHandler()
 	}
 	return uploadHeaders(http.StripPrefix("/"+uploadsDir+"/", h))
 }
 
-// streamImages serves images out of store, with Range, conditional requests
-// and Content-Length handled by http.ServeContent.
-func streamImages(store ImageStore) http.Handler {
+// imageRedirectCacheControl is how long the redirect from /uploads/ to
+// image_url_base may be kept. Unlike the image behind it, it is not
+// immutable: it says where the images are, which the operator may change,
+// and a week-long immutable redirect would keep sending readers to the old
+// place long after. A few minutes still lets a cache in front of this app
+// absorb a burst, such as a post's images being fetched by every server
+// that just received it.
+const imageRedirectCacheControl = "public, max-age=300"
+
+// redirectImages answers /uploads/<path> with a redirect to the image's URL
+// under image_url_base. Rendered pages and federated copies already use the
+// base, so this serves what still carries /uploads/: copies of posts that
+// left while their images were on local disk, before they were moved with
+// `writefreely images sync`, and anything else that kept a body's own URL.
+//
+// The store is not asked whether the image exists. That is the point: the
+// redirect costs nothing, and a missing image is the base's 404 to give.
+// The path is still checked with cleanImagePath, so a request that could
+// not name an image is refused here, not passed along.
+func redirectImages(urls imageURLs) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
@@ -400,26 +413,13 @@ func streamImages(store ImageStore) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		img, err := store.Get(r.Context(), p)
-		if errors.Is(err, errImageNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		if err != nil {
-			log.Error("Unable to read image %s: %v", p, err)
-			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-			return
-		}
-		defer img.Close()
-		// Only an image is cached; the errors above must not be.
-		w.Header().Set("Cache-Control", imageCacheControl)
-		// uploadHeaders has already set SVG's type; the rest are set here,
-		// from the extension the server gave the file, never the store's
-		// own idea of it.
-		if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", mimeForPath(p))
-		}
-		http.ServeContent(w, r, "", img.ModTime, img)
+		// uploadHeaders typed the response as the image it names; a
+		// redirect carries no image, and no body at all.
+		w.Header().Del("Content-Type")
+		w.Header().Del("Content-Disposition")
+		w.Header().Set("Cache-Control", imageRedirectCacheControl)
+		w.Header().Set("Location", urls.forPath(p))
+		w.WriteHeader(http.StatusFound)
 	})
 }
 
@@ -442,24 +442,16 @@ func (s *localImageStore) Put(_ context.Context, relPath string, b []byte, _ str
 	return os.WriteFile(full, b, 0644)
 }
 
-func (s *localImageStore) Get(_ context.Context, relPath string) (*storedImage, error) {
-	f, err := os.Open(s.full(relPath))
-	if os.IsNotExist(err) {
+// ReadAll returns the bytes of the image at relPath, or errImageNotFound.
+func (s *localImageStore) ReadAll(_ context.Context, relPath string) ([]byte, error) {
+	fi, err := os.Stat(s.full(relPath))
+	if os.IsNotExist(err) || (err == nil && fi.IsDir()) {
 		return nil, errImageNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	if fi.IsDir() {
-		f.Close()
-		return nil, errImageNotFound
-	}
-	return &storedImage{ReadSeekCloser: f, Size: fi.Size(), ModTime: fi.ModTime(), MIME: mimeForPath(relPath)}, nil
+	return os.ReadFile(s.full(relPath))
 }
 
 func (s *localImageStore) Delete(_ context.Context, relPath string) error {

@@ -247,8 +247,10 @@ decoders compiled in, and is not configurable.
 ### Keeping images in object storage
 
 Images can live in an S3-compatible store such as Garage or MinIO instead of
-`dir`. Every node pointed at the same bucket then serves the same images,
-which a directory on one machine cannot do:
+`dir`. Every node pointed at the same bucket then sees the same images, which
+a directory on one machine cannot do. The app only writes to the bucket;
+readers fetch images from `image_url_base`, a hostname that serves the
+bucket, and the app never handles an image byte once it is stored:
 
 ```ini
 [storage]
@@ -259,20 +261,44 @@ s3_bucket            = blog
 s3_prefix            = uploads
 s3_access_key_id     = ${WF_S3_ACCESS_KEY_ID}
 s3_secret_access_key = ${WF_S3_SECRET_ACCESS_KEY}
+image_url_base       = https://media.example.org
 ```
 
-Without the section, or with `type = local`, nothing changes. The endpoint's
-scheme decides whether TLS is used. Addressing is path-style, which Garage
-needs; set `s3_virtual_host = true` for a store that wants bucket subdomains.
-The bucket can stay private: images are still served at `/uploads/...` and
-streamed through the app, never redirected to the bucket, so URLs that other
-servers have cached keep working. At startup the server checks that it can
-write to and delete from the bucket, and refuses to start if the store answers
-and says no (a missing bucket, a rejected key). If the store does not answer
-within 15 seconds, the blog starts anyway and logs "uploaded images are
-unavailable"; pages render, `/uploads/` returns 502 for images and uploads fail
-with a 503 until the store is back. Each S3 call is bounded (30 seconds to
-write or delete, 30 seconds to start fetching an image).
+Without the section, or with `type = local`, nothing changes: images stay in
+`dir` and the app serves them at `/uploads/`. `image_url_base` is required
+with `type = s3` and refused without it. It must be an `https://` URL.
+
+The endpoint's scheme decides whether TLS is used. Addressing is path-style,
+which Garage needs; set `s3_virtual_host = true` for a store that wants bucket
+subdomains.
+
+An image's URL is the base, a slash, and its object key, `s3_prefix`
+included: `https://media.example.org/uploads/2026/10/04/photo.png` with the
+example above. Post bodies are not changed. They keep `/uploads/` URLs, and
+pages, feeds and ActivityPub objects are given the base when they are
+rendered, so the base can be moved later without touching a post. `/uploads/`
+answers with a redirect to the base, which keeps working the copies of posts
+that federated while their images were still on disk.
+
+Whatever answers at the base serves the bucket: a CDN, the store's own public
+website endpoint, or your own reverse proxy reading a private bucket. The
+last is how to keep the bucket private; to the app they are all the same. It
+should send `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`,
+which the app sends for `/uploads/` and an object cannot carry. Objects do
+carry their `Cache-Control`, and SVGs `Content-Disposition: attachment`.
+
+Use a hostname you own. Image URLs are copied into federated posts and kept
+by the servers that received them, so a base on a provider's own hostname
+(`*.r2.dev`, `*.amazonaws.com` and the like) breaks every one of them if the
+images ever move. The server logs a warning at startup when it sees one.
+
+At startup the server checks that it can write to and delete from the
+bucket, and refuses to start if the store answers and says no (a missing
+bucket, a rejected key). If the store does not answer within 15 seconds, the
+blog starts anyway and logs "image uploads are unavailable"; pages render,
+and uploads fail with a 503 until the store is back. Each S3 call is bounded
+at 30 seconds.
 
 Existing images are copied in with:
 
@@ -286,6 +312,14 @@ safe to run again: images already in the bucket are left alone, and a damaged
 one is replaced. It reads the bucket from the `[storage]` section, so the order
 is: stop the server, add the section, run the sync, start the server. Nothing
 is uploaded in between, so nothing is missed.
+
+Objects written by a development build from before the caching headers were
+stored are given them with:
+
+```sh
+writefreely images metadata --dry-run
+writefreely images metadata
+```
 
 ## Going back to upstream
 

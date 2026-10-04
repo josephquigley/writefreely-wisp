@@ -57,6 +57,7 @@ func s3TestConfig(t *testing.T) config.StorageCfg {
 		S3Prefix:          "test/" + strings.ToLower(t.Name()) + "-" + hex.EncodeToString(nonce),
 		S3AccessKeyID:     os.Getenv("WF_TEST_S3_ACCESS_KEY_ID"),
 		S3SecretAccessKey: os.Getenv("WF_TEST_S3_SECRET_ACCESS_KEY"),
+		ImageURLBase:      "https://media.example.test",
 	}
 	return cfg
 }
@@ -82,10 +83,10 @@ func countS3Objects(t *testing.T, s *s3ImageStore) int {
 
 // imageStores returns every store this machine can test: always the local
 // one, and S3 when a test store is configured.
-func imageStores(t *testing.T) map[string]ImageStore {
+func imageStores(t *testing.T) map[string]readableImageStore {
 	t.Helper()
 	dir := t.TempDir()
-	stores := map[string]ImageStore{"local": &localImageStore{root: func() string { return dir }}}
+	stores := map[string]readableImageStore{"local": &localImageStore{root: func() string { return dir }}}
 	if os.Getenv("WF_TEST_S3_ENDPOINT") != "" {
 		stores["s3"] = newTestS3Store(t)
 	}
@@ -103,7 +104,7 @@ func TestImageStoreContract(t *testing.T) {
 			ok, err := s.Exists(ctx, p)
 			require.NoError(t, err)
 			assert.False(t, ok)
-			_, err = s.Get(ctx, p)
+			_, err = s.ReadAll(ctx, p)
 			assert.ErrorIs(t, err, errImageNotFound)
 			assert.NoError(t, s.Delete(ctx, p), "deleting a missing image is not an error")
 
@@ -113,27 +114,12 @@ func TestImageStoreContract(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, ok)
 
-			img, err := s.Get(ctx, p)
+			got, err := s.ReadAll(ctx, p)
 			require.NoError(t, err)
-			assert.Equal(t, int64(len(body)), img.Size)
-			assert.Equal(t, "image/png", img.MIME)
-			got, err := io.ReadAll(img)
-			require.NoError(t, err)
-			img.Close()
 			assert.Equal(t, body, got)
 
-			// Seeking is what Range requests are served with.
-			img, err = s.Get(ctx, p)
-			require.NoError(t, err)
-			_, err = img.Seek(4, io.SeekStart)
-			require.NoError(t, err)
-			tail, err := io.ReadAll(img)
-			require.NoError(t, err)
-			img.Close()
-			assert.Equal(t, body[4:], tail)
-
 			require.NoError(t, s.Put(ctx, p, []byte("replaced"), "image/png"))
-			got, err = readImage(ctx, s, p)
+			got, err = s.ReadAll(ctx, p)
 			require.NoError(t, err)
 			assert.Equal(t, "replaced", string(got))
 
@@ -141,53 +127,6 @@ func TestImageStoreContract(t *testing.T) {
 			ok, err = s.Exists(ctx, p)
 			require.NoError(t, err)
 			assert.False(t, ok)
-		})
-	}
-}
-
-func TestStreamImagesServesRangesAndRefusesTraversal(t *testing.T) {
-	for name, s := range imageStores(t) {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			body := []byte("0123456789abcdef")
-			require.NoError(t, s.Put(ctx, "2026/10/03/a.png", body, "image/png"))
-			h := http.StripPrefix("/uploads/", streamImages(s))
-
-			get := func(method, target string, hdr map[string]string) *httptest.ResponseRecorder {
-				req := httptest.NewRequest(method, target, nil)
-				for k, v := range hdr {
-					req.Header.Set(k, v)
-				}
-				rec := httptest.NewRecorder()
-				h.ServeHTTP(rec, req)
-				return rec
-			}
-
-			rec := get("GET", "/uploads/2026/10/03/a.png", nil)
-			assert.Equal(t, http.StatusOK, rec.Code)
-			assert.Equal(t, "image/png", rec.Header().Get("Content-Type"))
-			assert.Equal(t, "16", rec.Header().Get("Content-Length"))
-			assert.Equal(t, body, rec.Body.Bytes())
-
-			rec = get("GET", "/uploads/2026/10/03/a.png", map[string]string{"Range": "bytes=2-5"})
-			assert.Equal(t, http.StatusPartialContent, rec.Code)
-			assert.Equal(t, "2345", rec.Body.String())
-			assert.Equal(t, "bytes 2-5/16", rec.Header().Get("Content-Range"))
-
-			rec = get("HEAD", "/uploads/2026/10/03/a.png", nil)
-			assert.Equal(t, http.StatusOK, rec.Code)
-			assert.Equal(t, "16", rec.Header().Get("Content-Length"))
-
-			assert.Equal(t, http.StatusMethodNotAllowed, get("POST", "/uploads/2026/10/03/a.png", nil).Code)
-			for _, bad := range []string{
-				"/uploads/2026/10/03/missing.png",
-				"/uploads/2026/10/03/",
-				"/uploads/2026/10/03/../03/a.png",
-				"/uploads/2026//10/03/a.png",
-				"/uploads/.writable-x",
-			} {
-				assert.Equal(t, http.StatusNotFound, get("GET", bad, nil).Code, bad)
-			}
 		})
 	}
 }
@@ -226,7 +165,7 @@ func newS3ImageTestApp(t *testing.T) (*App, http.Handler, *User, *s3ImageStore) 
 	return app, router, u, s
 }
 
-func TestS3UploadServeDedupeDelete(t *testing.T) {
+func TestS3UploadRedirectDedupeDelete(t *testing.T) {
 	app, router, u, store := newS3ImageTestApp(t)
 	png := tinyPNG(t)
 
@@ -237,18 +176,16 @@ func TestS3UploadServeDedupeDelete(t *testing.T) {
 	assert.Equal(t, 1, countS3Objects(t, store))
 	assert.Equal(t, 0, countUploadedFiles(t, app), "nothing is written to local disk")
 
-	// Served through this server, with the same hardening as local files.
-	got := httptest.NewRecorder()
-	router.ServeHTTP(got, httptest.NewRequest("GET", url, nil))
-	assert.Equal(t, http.StatusOK, got.Code)
-	assert.Equal(t, "nosniff", got.Header().Get("X-Content-Type-Options"))
-	assert.Equal(t, "inline", got.Header().Get("Content-Disposition"))
-	assert.Equal(t, "image/png", got.Header().Get("Content-Type"))
-	assert.NotEmpty(t, got.Header().Get("Cache-Control"))
-	assert.Empty(t, got.Header().Get("Location"), "never a redirect to the bucket")
+	// Never served by this server: /uploads/ sends readers to the base.
 	img, err := app.db.GetPostImage(imgID)
 	require.NoError(t, err)
-	assert.Equal(t, img.Sum, sha256Hex(got.Body.Bytes()))
+	got := httptest.NewRecorder()
+	router.ServeHTTP(got, httptest.NewRequest("GET", url, nil))
+	assert.Equal(t, http.StatusFound, got.Code)
+	assert.Equal(t, "https://media.example.test/"+store.key(img.RelPath()), got.Header().Get("Location"))
+	stored, err := store.ReadAll(context.Background(), img.RelPath())
+	require.NoError(t, err)
+	assert.Equal(t, img.Sum, sha256Hex(stored))
 
 	// The same bytes again resolve to the stored image.
 	rec, _ = doUpload(t, app, u, uploadRequest(t, "again.png", "image/png", png))
@@ -260,23 +197,23 @@ func TestS3UploadServeDedupeDelete(t *testing.T) {
 	_, status = doDelete(t, app, u, imgID)
 	assert.Equal(t, http.StatusNoContent, status)
 	assert.Equal(t, 0, countS3Objects(t, store))
-	got = httptest.NewRecorder()
-	router.ServeHTTP(got, httptest.NewRequest("GET", url, nil))
-	assert.Equal(t, http.StatusNotFound, got.Code)
 }
 
-func TestS3ServesSVGAsAttachment(t *testing.T) {
-	app, router, u, _ := newS3ImageTestApp(t)
+func TestS3StoresSVGAsAttachment(t *testing.T) {
+	app, _, u, store := newS3ImageTestApp(t)
 	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>`)
 	rec, status := doUpload(t, app, u, uploadRequest(t, "a.svg", "image/svg+xml", svg))
 	require.Equal(t, http.StatusOK, status, rec.Body.String())
-	_, url := uploadedURL(t, rec)
+	imgID, _ := uploadedURL(t, rec)
+	img, err := app.db.GetPostImage(imgID)
+	require.NoError(t, err)
 
-	got := httptest.NewRecorder()
-	router.ServeHTTP(got, httptest.NewRequest("GET", url, nil))
-	assert.Equal(t, http.StatusOK, got.Code)
-	assert.Equal(t, svgMIME, got.Header().Get("Content-Type"))
-	assert.Equal(t, "attachment", got.Header().Get("Content-Disposition"))
+	// Whatever serves the bucket sends what the object carries.
+	info, err := store.client.StatObject(context.Background(), store.bucket, store.key(img.RelPath()), minio.StatObjectOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, svgMIME, info.ContentType)
+	assert.Equal(t, "attachment", info.Metadata.Get("Content-Disposition"))
+	assert.Equal(t, imageCacheControl, info.Metadata.Get("Cache-Control"))
 }
 
 func TestS3OrphanSweepRemovesOldUnattachedImages(t *testing.T) {
@@ -330,7 +267,7 @@ func TestS3ProbeRefusesMissingBucketAndBadKey(t *testing.T) {
 
 // syncFixture writes images into a local store and returns their refs, as
 // post_images would list them.
-func syncFixture(t *testing.T, src ImageStore) []imageRef {
+func syncFixture(t *testing.T, src *localImageStore) []imageRef {
 	t.Helper()
 	ctx := context.Background()
 	var refs []imageRef
@@ -344,7 +281,7 @@ func syncFixture(t *testing.T, src ImageStore) []imageRef {
 
 func TestImageSyncCopiesOnceAndRepairs(t *testing.T) {
 	dstDir := t.TempDir()
-	dests := map[string]ImageStore{"local": &localImageStore{root: func() string { return dstDir }}}
+	dests := map[string]readableImageStore{"local": &localImageStore{root: func() string { return dstDir }}}
 	if os.Getenv("WF_TEST_S3_ENDPOINT") != "" {
 		dests["s3"] = newTestS3Store(t)
 	}
@@ -359,7 +296,7 @@ func TestImageSyncCopiesOnceAndRepairs(t *testing.T) {
 			r := syncImages(ctx, refs, src, dst, &out)
 			assert.Equal(t, imageSyncReport{Copied: 3}, r, out.String())
 			for _, ref := range refs {
-				got, err := readImage(ctx, dst, ref.Path)
+				got, err := dst.ReadAll(ctx, ref.Path)
 				require.NoError(t, err)
 				assert.Equal(t, ref.Sum, sha256Hex(got))
 			}
@@ -374,7 +311,7 @@ func TestImageSyncCopiesOnceAndRepairs(t *testing.T) {
 			r = syncImages(ctx, refs, src, dst, &out)
 			assert.Equal(t, imageSyncReport{Present: 2, Repaired: 1}, r)
 			assert.Contains(t, out.String(), refs[1].Path)
-			got, err := readImage(ctx, dst, refs[1].Path)
+			got, err := dst.ReadAll(ctx, refs[1].Path)
 			require.NoError(t, err)
 			assert.Equal(t, refs[1].Sum, sha256Hex(got))
 
@@ -387,7 +324,7 @@ func TestImageSyncCopiesOnceAndRepairs(t *testing.T) {
 			assert.Equal(t, imageSyncReport{Present: 1, Failed: 2}, r)
 			assert.Contains(t, out.String(), "does not match its recorded SHA-256")
 			assert.Contains(t, out.String(), "not in the uploads directory")
-			got, err = readImage(ctx, dst, refs[0].Path)
+			got, err = dst.ReadAll(ctx, refs[0].Path)
 			require.NoError(t, err)
 			assert.Equal(t, refs[0].Sum, sha256Hex(got), "the good copy is untouched")
 		})
@@ -414,7 +351,9 @@ func TestImageSyncListsEveryRecordedImage(t *testing.T) {
 	dstDir := t.TempDir()
 	dst := &localImageStore{root: func() string { return dstDir }}
 	var out bytes.Buffer
-	r := syncImages(context.Background(), refs, app.imageStore(), dst, &out)
+	src, ok := app.imageStore().(*localImageStore)
+	require.True(t, ok)
+	r := syncImages(context.Background(), refs, src, dst, &out)
 	assert.Equal(t, imageSyncReport{Copied: 2}, r, out.String())
 }
 
