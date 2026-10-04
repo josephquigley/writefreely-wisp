@@ -3690,6 +3690,31 @@ func (db *datastore) DeleteJob(id int64) error {
 	return nil
 }
 
+// ClaimJob takes publish job id for this worker, and reports whether it got
+// it. The claim is one UPDATE that only changes an unclaimed row, so of two
+// workers claiming the same job at once exactly one sees its row change:
+// SQLite runs one write at a time, and MySQL and Postgres make the second
+// UPDATE wait for the first and then re-check claimed_at IS NULL against
+// the row the first one wrote.
+func (db *datastore) ClaimJob(id int64) (bool, error) {
+	res, err := db.Exec("UPDATE publishjobs SET claimed_at = "+db.now()+" WHERE id = ? AND claimed_at IS NULL", id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// ReleaseJob gives back the claim on publish job id, so that a later run
+// can retry it.
+func (db *datastore) ReleaseJob(id int64) error {
+	_, err := db.Exec("UPDATE publishjobs SET claimed_at = NULL WHERE id = ?", id)
+	return err
+}
+
 func (db *datastore) DeleteJobByPost(postID string) error {
 	_, err := db.Exec("DELETE FROM publishjobs WHERE post_id = ?", postID)
 	if err != nil {
@@ -3718,7 +3743,7 @@ func (db *datastore) GetJobsToRun(action string) ([]*PostJob, error) {
 		FROM publishjobs pj
 		INNER JOIN posts p
 			ON post_id = p.id
-		WHERE action = ? AND `+timeWhere+`
+		WHERE action = ? AND pj.claimed_at IS NULL AND `+timeWhere+`
 		ORDER BY created ASC`, action)
 	if err != nil {
 		log.Error("Failed selecting from publishjobs: %v", err)

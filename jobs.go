@@ -97,11 +97,35 @@ func runPublishJobs(app *App) {
 	}
 }
 
+// runJobs sends each job's post. A job is claimed first (see ClaimJob), so
+// another worker that selected the same job skips it instead of sending it
+// again. A job that fails gives its claim back and stays queued for the next
+// tick; one that succeeds is deleted while still claimed.
+//
+// A claim is never taken back on a timer. A worker that dies part way
+// through a send leaves its job claimed, and so unsent rather than sent
+// twice to the subscribers it had already reached.
 func runJobs(app *App, jobs []*PostJob, reqColl bool) error {
 	for _, j := range jobs {
+		claimed, err := app.db.ClaimJob(j.ID)
+		if err != nil {
+			log.Error("[job #%d] Unable to claim: %s", j.ID, err)
+			continue
+		}
+		if !claimed {
+			log.Info("[job #%d] Claimed by another worker - Skipping.", j.ID)
+			continue
+		}
+		release := func() {
+			if err := app.db.ReleaseJob(j.ID); err != nil {
+				log.Error("[job #%d] Unable to release claim: %s", j.ID, err)
+			}
+		}
+
 		p, err := app.db.GetPost(j.PostID, 0)
 		if err != nil {
 			log.Info("[job #%d] Unable to get post: %s", j.ID, err)
+			release()
 			continue
 		}
 		if !p.CollectionID.Valid && reqColl {
@@ -112,6 +136,7 @@ func runJobs(app *App, jobs []*PostJob, reqColl bool) error {
 		coll, err := app.db.GetCollectionByID(p.CollectionID.Int64)
 		if err != nil {
 			log.Info("[job #%d] Unable to get collection: %s", j.ID, err)
+			release()
 			continue
 		}
 		coll.hostName = app.Config().App.Host
@@ -120,6 +145,7 @@ func runJobs(app *App, jobs []*PostJob, reqColl bool) error {
 		err = jobEmailPost(app, p, p.Collection.ID)
 		if err != nil {
 			log.Error("[job #%d] Failed to email post %s", j.ID, p.ID)
+			release()
 			continue
 		}
 		log.Info("[job #%d] Success for post %s.", j.ID, p.ID)

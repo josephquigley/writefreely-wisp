@@ -118,6 +118,7 @@ var migrations = []Migration{
 	New("store settings in the database", supportAppSettings),        // V20 -> V21
 	New("index remote handle lookups", remoteHandleIndex),            // V21 -> V22
 	New("index email and language lookups", lowerEmailLanguageIndex), // V22 -> V23
+	New("claim publish jobs", publishJobClaims),                      // V23 -> V24
 }
 
 // CurrentVer returns the current migration version the application is on

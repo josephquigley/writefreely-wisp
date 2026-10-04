@@ -228,6 +228,11 @@ func buildDBCopyFixture(t *testing.T) *dbCopyFixture {
 	if err := ds.InsertJob(&PostJob{PostID: scheduled, Action: "email", Delay: 5}); err != nil {
 		t.Fatalf("InsertJob: %v", err)
 	}
+	// V24: one claimed by a worker, one not.
+	if err := ds.InsertJob(&PostJob{PostID: pinned, Action: "email", Delay: 7}); err != nil {
+		t.Fatalf("InsertJob: %v", err)
+	}
+	exec("UPDATE publishjobs SET claimed_at = '2025-04-05 06:07:08' WHERE delay = 7")
 	_ = anon
 	return fx
 }
@@ -355,6 +360,19 @@ func TestDBCopy_Postgres(t *testing.T) {
 		}
 		if email != "case@example.com" || !confirmed {
 			t.Errorf("kept subscriber = %q confirmed=%v", email, confirmed)
+		}
+		var claimedAt sql.NullTime
+		if err := pg.db.QueryRow("SELECT claimed_at FROM publishjobs WHERE delay = 7").Scan(&claimedAt); err != nil {
+			t.Fatalf("claimed publish job: %v", err)
+		}
+		if want := time.Date(2025, 4, 5, 6, 7, 8, 0, time.UTC); !claimedAt.Valid || !claimedAt.Time.Equal(want) {
+			t.Errorf("publishjobs.claimed_at = %v, want %v", claimedAt, want)
+		}
+		if err := pg.db.QueryRow("SELECT claimed_at FROM publishjobs WHERE delay = 5").Scan(&claimedAt); err != nil {
+			t.Fatalf("unclaimed publish job: %v", err)
+		}
+		if claimedAt.Valid {
+			t.Errorf("unclaimed job's claimed_at became %v", claimedAt.Time)
 		}
 		var remoteID string
 		pg.db.QueryRow("SELECT remote_user_id FROM oauth_users WHERE user_id = ?", fx.oauthUser.ID).Scan(&remoteID)
