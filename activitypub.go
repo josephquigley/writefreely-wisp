@@ -1193,15 +1193,34 @@ func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 	return &u, nil
 }
 
+// remoteUserByHandleQuery is the query getRemoteUserFromHandle runs, taking
+// a handle already normalised by normalizeRemoteHandle.
+//
+// It compares LOWER(handle), so that a row cached before handles were
+// normalised is still found instead of costing a webfinger round trip every
+// time. On MySQL that is the generated column handle_lower, which V22 added
+// because neither MariaDB nor MySQL before 8.0.13 can index the expression;
+// the other engines index lower(handle) itself.
+func (db *datastore) remoteUserByHandleQuery() string {
+	const q = "SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE "
+	switch db.driverName {
+	case driverSQLite, driverPostgres:
+		return q + "LOWER(handle) = ?"
+	case driverMySQL:
+		return q + "handle_lower = ?"
+	default:
+		unsupportedDriver("remoteUserByHandleQuery", db.driverName)
+	}
+	return ""
+}
+
 // getRemoteUserFromHandle retrieves the profile page of a remote user
 // from the @user@server.tld handle
 func getRemoteUserFromHandle(app *App, handle string) (*RemoteUser, error) {
 	handle = normalizeRemoteHandle(handle)
 	u := RemoteUser{Handle: handle}
 	var urlVal sql.NullString
-	// LOWER(handle), so that a row cached before handles were normalised is
-	// still found instead of costing a webfinger round trip every time.
-	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE LOWER(handle) = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
+	err := app.db.QueryRow(app.db.remoteUserByHandleQuery(), handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, ErrRemoteUserNotFound
