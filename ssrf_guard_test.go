@@ -47,10 +47,9 @@ func TestIsPublicAddr(t *testing.T) {
 		{"IPv6 unique local", "fd00::1", false},
 
 		// 169.254.0.0/16 is link-local unicast, and the cloud metadata
-		// endpoint lives inside it. A later change adds a per-host
-		// allowlist exemption to this checker; this range must never be
-		// exempted, so it gets its own case rather than riding along on
-		// the generic link-local one.
+		// endpoint lives inside it. No private_address_allowlist entry
+		// may reopen it (see ssrf_address_allowlist_test.go), so it gets
+		// its own case rather than riding along on the generic one.
 		{"link-local unicast", "169.254.10.1", false},
 		{"cloud metadata endpoint", "169.254.169.254", false},
 		{"IPv6 link-local unicast", "fe80::1", false},
@@ -95,7 +94,7 @@ func TestIsPublicAddr(t *testing.T) {
 					t.Fatalf("test case has an unparseable address %q", tc.ip)
 				}
 			}
-			if got := isPublicAddr(ip, "host.example", nil); got != tc.want {
+			if got := isPublicAddr(ip, nil); got != tc.want {
 				t.Errorf("isPublicAddr(%q) = %v, want %v", tc.ip, got, tc.want)
 			}
 		})

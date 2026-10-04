@@ -223,6 +223,11 @@ func (app *App) LoadConfig() error {
 		os.Exit(1)
 		return err
 	}
+	if err := initPrivateAddressAllowlist(cfg); err != nil {
+		log.Error("Unable to load configuration: %v", err)
+		os.Exit(1)
+		return err
+	}
 	return nil
 }
 
