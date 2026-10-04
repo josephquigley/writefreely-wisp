@@ -38,6 +38,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Re-pinning a post at the position it already holds is no longer refused as forbidden on MySQL and MariaDB.
 - A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
 - Successful invite lookups on SQLite no longer log a spurious error.
+- A username change that hits a database deadlock while updating blog redirects now fails with an error, instead of being lost while reported as saved.
 - The Reader's tag filter matches tags literally instead of treating them as regular expressions.
 - Tag pages escape regex characters in the tag, work on MySQL 8, and return an error when a tag query fails, on collection tag pages too.
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
