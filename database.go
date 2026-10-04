@@ -2485,12 +2485,25 @@ func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 		// savepoint, because on Postgres a failed statement would otherwise
 		// abort the transaction and the Commit below would roll back the
 		// username and alias change while the user is told it succeeded.
-		// Errors are logged by execBestEffort.
-		execBestEffort(t, "redirect_remove", "DELETE FROM collectionredirects WHERE prev_alias = ?", newUsername)
-		execBestEffort(t, "redirect_repoint", "UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", newUsername, u.Username)
-		// An existing redirect from the old name (left by an earlier owner
-		// of it) is replaced, so the old name now points here.
-		execBestEffort(t, "redirect_add", "INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?) "+db.upsert("prev_alias")+" new_alias = ?", u.Username, newUsername, newUsername)
+		// Errors are logged by execBestEffort; one it returns means the
+		// transaction itself is gone, so the rename fails.
+		redirects := []struct {
+			name, query string
+			args        []interface{}
+		}{
+			{"redirect_remove", "DELETE FROM collectionredirects WHERE prev_alias = ?", []interface{}{newUsername}},
+			{"redirect_repoint", "UPDATE collectionredirects SET new_alias = ? WHERE new_alias = ?", []interface{}{newUsername, u.Username}},
+			// An existing redirect from the old name (left by an earlier owner
+			// of it) is replaced, so the old name now points here.
+			{"redirect_add", "INSERT INTO collectionredirects (prev_alias, new_alias) VALUES (?, ?) " + db.upsert("prev_alias") + " new_alias = ?", []interface{}{u.Username, newUsername, newUsername}},
+		}
+		for _, r := range redirects {
+			if err = execBestEffort(t, r.name, r.query, r.args...); err != nil {
+				t.Rollback()
+				log.Error("Unable to update collection redirects: %v", err)
+				return ErrInternalGeneral
+			}
+		}
 
 		err = t.Commit()
 		if err != nil {
