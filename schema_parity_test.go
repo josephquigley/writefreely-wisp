@@ -57,16 +57,21 @@ func TestPostgresInit(t *testing.T) {
 	assert.True(t, db.DatabaseInitialized())
 
 	var ver, rows int
-	require.NoError(t, db.QueryRow("SELECT COALESCE(MAX(version), 0), COUNT(*) FROM appmigrations").Scan(&ver, &rows))
+	require.NoError(t, db.QueryRow("SELECT COALESCE(MAX(version), 0), COUNT(*) FROM wisp_migrations").Scan(&ver, &rows))
 	assert.Equal(t, migrations.CurrentVer(), ver, "a fresh Postgres database is at the current version")
-	// One row for the V18 base that init records (V1 to V18 never run on
-	// Postgres), plus one per migration init then runs on top of it.
+	// One row for the wisp_v1 base that init records (it and upstream's V1
+	// to V17 never run on Postgres), plus one per migration init then runs
+	// on top of it.
 	wantRows := 1 + migrations.CurrentVer() - migrations.PostgresBaseVersion
 	assert.Equal(t, wantRows, rows, "init records the base version, then one row per later migration")
+	var up, upRows int
+	require.NoError(t, db.QueryRow("SELECT COALESCE(MAX(version), 0), COUNT(*) FROM appmigrations").Scan(&up, &upRows))
+	assert.Equal(t, migrations.UpstreamVer(), up, "appmigrations records upstream's version")
+	assert.Equal(t, 1, upRows, "init records upstream's V17 base alone")
 
 	// db migrate is a no-op.
 	require.NoError(t, migrations.Migrate(migrations.NewDatastore(db.DB, driverPostgres)))
-	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM appmigrations").Scan(&rows))
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM wisp_migrations").Scan(&rows))
 	assert.Equal(t, wantRows, rows)
 
 	types := map[string]string{}
@@ -106,6 +111,7 @@ func TestPostgresInit(t *testing.T) {
 		"remoteusers.handle":         "text",
 		"publishjobs.delay":          "smallint",
 		"appmigrations.migrated":     "timestamp with time zone",
+		"wisp_migrations.migrated":   "timestamp with time zone",
 	} {
 		assert.Equal(t, want, types[col], col)
 	}
@@ -140,8 +146,9 @@ func TestPostgresInitIsAtomic(t *testing.T) {
 	assert.False(t, db.DatabaseInitialized(), "a failed init must not leave tables behind")
 }
 
-// TestMigrateRefusesPostgresBeforeBase checks that migrations V1 to V18
-// cannot run on Postgres, whether appmigrations is missing or behind.
+// TestMigrateRefusesPostgresBeforeBase checks that upstream's V1 to V17 and
+// wisp_v1 cannot run on Postgres, whether appmigrations is missing or
+// behind.
 func TestMigrateRefusesPostgresBeforeBase(t *testing.T) {
 	db := newEmptyPostgresDatastore(t)
 	mdb := migrations.NewDatastore(db.DB, driverPostgres)
@@ -156,7 +163,7 @@ func TestMigrateRefusesPostgresBeforeBase(t *testing.T) {
 	require.NoError(t, err)
 	err = migrations.Migrate(mdb)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "start at V18")
+	assert.Contains(t, err.Error(), "start at V17 and wisp_v1")
 }
 
 func newInitializedPostgresApp(t *testing.T) *App {

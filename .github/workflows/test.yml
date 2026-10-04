@@ -156,7 +156,7 @@ jobs:
   # same thing locally, and with MYSQL_IMAGE=mysql:8.4 against MySQL.
   #
   # Required: a failure here fails the run. It was continue-on-error until
-  # migration V20 gave tokens, codes and remote IRIs binary collations and
+  # migration wisp_v2 gave tokens, codes and remote IRIs binary collations and
   # remoteusers utf8mb4, which cleared the last known MySQL failures.
   test-mysql:
     name: test-mysql

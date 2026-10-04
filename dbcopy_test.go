@@ -218,7 +218,7 @@ func buildDBCopyFixture(t *testing.T) *dbCopyFixture {
 	exec("INSERT INTO remoteusers (id, actor_id, inbox, shared_inbox, url, handle) VALUES (7, 'https://remote.example/users/Zed', 'https://remote.example/users/Zed/inbox', 'https://remote.example/inbox', 'https://remote.example/@Zed', 'Zed@Remote.Example')")
 	exec("INSERT INTO remoteusers (id, actor_id, inbox, shared_inbox, url, handle) VALUES (9, 'https://other.example/u/amy', 'https://other.example/u/amy/inbox', '', NULL, NULL)")
 	exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES ('https://remote.example/users/Zed#main-key', 7, ?)", []byte("-----BEGIN PUBLIC KEY-----\nzed\n-----END PUBLIC KEY-----\n"))
-	// V21: a saved setting and its version, so the copy replaces the seed row.
+	// wisp_v3: a saved setting and its version, so the copy replaces the seed row.
 	exec("INSERT INTO app_settings (name, value) VALUES (?, ?)", "app.site_name", "Fixture")
 	exec("UPDATE app_settings_version SET version = 3 WHERE id = 1")
 	exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, 7, 1700000000)", fx.aliceColl.ID)
@@ -228,7 +228,7 @@ func buildDBCopyFixture(t *testing.T) *dbCopyFixture {
 	if err := ds.InsertJob(&PostJob{PostID: scheduled, Action: "email", Delay: 5}); err != nil {
 		t.Fatalf("InsertJob: %v", err)
 	}
-	// V24: one claimed by a worker, one not.
+	// wisp_v3: one claimed by a worker, one not.
 	if err := ds.InsertJob(&PostJob{PostID: pinned, Action: "email", Delay: 7}); err != nil {
 		t.Fatalf("InsertJob: %v", err)
 	}
@@ -501,12 +501,13 @@ func TestDBCopyRefusals_Postgres(t *testing.T) {
 	t.Run("source behind", func(t *testing.T) {
 		fx := buildDBCopyFixture(t)
 		pg := newPostgresTestApp(t, nil)
-		if _, err := fx.app.db.Exec("DELETE FROM appmigrations WHERE version > 17"); err != nil {
+		// Upstream's V17 with nothing of wisp's run yet.
+		if _, err := fx.app.db.Exec("DELETE FROM wisp_migrations"); err != nil {
 			t.Fatal(err)
 		}
 		_, err := dbCopyRun(t, fx, pg.db.DB, DBCopyOptions{})
-		if err == nil || !strings.Contains(err.Error(), "V17") || !strings.Contains(err.Error(), "db migrate") {
-			t.Fatalf("V17 source: err = %v", err)
+		if err == nil || !strings.Contains(err.Error(), "wisp_v0") || !strings.Contains(err.Error(), "db migrate") {
+			t.Fatalf("wisp_v0 source: err = %v", err)
 		}
 	})
 
@@ -572,13 +573,13 @@ func TestDBCopyVersionRefusals_Postgres(t *testing.T) {
 	newer, older := dbCopySchemaVersion+1, dbCopySchemaVersion-1
 	addVersion := func(t *testing.T, db *sql.DB, v int) {
 		t.Helper()
-		if _, err := db.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, CURRENT_TIMESTAMP, '')", v); err != nil {
+		if _, err := db.Exec("INSERT INTO wisp_migrations (version, migrated, result) VALUES (?, CURRENT_TIMESTAMP, '')", v); err != nil {
 			t.Fatal(err)
 		}
 	}
 	dropAbove := func(t *testing.T, db *sql.DB, v int) {
 		t.Helper()
-		if _, err := db.Exec("DELETE FROM appmigrations WHERE version > ?", v); err != nil {
+		if _, err := db.Exec("DELETE FROM wisp_migrations WHERE version > ?", v); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -591,18 +592,18 @@ func TestDBCopyVersionRefusals_Postgres(t *testing.T) {
 		{
 			name:   "source newer",
 			setup:  func(t *testing.T, src, _ *sql.DB) { addVersion(t, src, newer) },
-			want:   []string{"source database", fmt.Sprintf("V%d", newer), fmt.Sprintf("newer than the V%d", dbCopySchemaVersion)},
+			want:   []string{"source database", fmt.Sprintf("wisp_v%d", newer), fmt.Sprintf("newer than the wisp_v%d", dbCopySchemaVersion)},
 			reject: "db migrate",
 		},
 		{
 			name:  "target newer",
 			setup: func(t *testing.T, _, dst *sql.DB) { addVersion(t, dst, newer) },
-			want:  []string{"target database", fmt.Sprintf("V%d, not V%d", newer, dbCopySchemaVersion), "db init"},
+			want:  []string{"target database", fmt.Sprintf("wisp_v%d, not wisp_v%d", newer, dbCopySchemaVersion), "db init"},
 		},
 		{
 			name:  "target behind",
 			setup: func(t *testing.T, _, dst *sql.DB) { dropAbove(t, dst, older) },
-			want:  []string{"target database", fmt.Sprintf("V%d, not V%d", older, dbCopySchemaVersion), "db init"},
+			want:  []string{"target database", fmt.Sprintf("wisp_v%d, not wisp_v%d", older, dbCopySchemaVersion), "db init"},
 		},
 	} {
 		for _, dry := range []bool{false, true} {
@@ -614,7 +615,7 @@ func TestDBCopyVersionRefusals_Postgres(t *testing.T) {
 				fx := buildDBCopyFixture(t)
 				pg := newPostgresTestApp(t, nil)
 				c.setup(t, fx.app.db.DB, pg.db.DB)
-				migsBefore := dbCopyCount(t, pg.db, "appmigrations")
+				migsBefore := dbCopyCount(t, pg.db, "wisp_migrations")
 
 				out, err := dbCopyRun(t, fx, pg.db.DB, DBCopyOptions{DryRun: dry})
 				if err == nil {
@@ -636,8 +637,8 @@ func TestDBCopyVersionRefusals_Postgres(t *testing.T) {
 						t.Errorf("refused copy left %d rows in %s", n, tb)
 					}
 				}
-				if n := dbCopyCount(t, pg.db, "appmigrations"); n != migsBefore {
-					t.Errorf("appmigrations has %d rows, had %d before the copy", n, migsBefore)
+				if n := dbCopyCount(t, pg.db, "wisp_migrations"); n != migsBefore {
+					t.Errorf("wisp_migrations has %d rows, had %d before the copy", n, migsBefore)
 				}
 			})
 		}
@@ -657,7 +658,7 @@ func TestDBCopyFlagConflict(t *testing.T) {
 
 func TestDBCopyVersionPin(t *testing.T) {
 	if v := migrations.CurrentVer(); v != dbCopySchemaVersion {
-		t.Fatalf("migrations are at V%d but db copy knows V%d: review dbcopy.go's column rules for the new migrations, then raise dbCopySchemaVersion", v, dbCopySchemaVersion)
+		t.Fatalf("migrations are at wisp_v%d but db copy knows wisp_v%d: review dbcopy.go's column rules for the new migrations, then raise dbCopySchemaVersion", v, dbCopySchemaVersion)
 	}
 }
 

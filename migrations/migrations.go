@@ -10,18 +10,26 @@
 
 // Package migrations contains database migrations for WriteFreely.
 //
-// # Rule for V19 and later
+// Upstream's migrations (vN.go, listed in migrations) are left exactly as
+// upstream has them. Migrate runs upstream's V1 to V17, then
+// wispMigrations, which this edition versions in its own table; see
+// WispTable in wisp.go, which also says what to do when an upstream merge
+// adds a migration.
 //
-// Every migration added from V19 on runs on MySQL, SQLite and Postgres, and
+// # Rule for wisp migrations
+//
+// Every migration in wispMigrations runs on MySQL, SQLite and Postgres, and
 // must be correct on all three. Write column types with the helpers in
 // drivers.go (typeInt, typeVarChar, typeBool, typeDateTime, …), never as a
 // literal type, and put any statement that cannot be written portably in a
 // `switch db.driverName` with a case for each engine and a default that
-// panics. Test it against all three before merging.
+// panics. Make each statement safe to run again: MySQL commits DDL as it
+// goes, so a migration that stops part way runs again from the start. Test
+// it against all three before merging.
 //
-// Migrations V1 to V18 predate Postgres support and are MySQL and SQLite
-// only. A Postgres database is created by `writefreely db init` from
-// postgres.sql, which already describes the V18 schema, and starts at
+// Upstream's V1 to V17 and wisp_v1 predate Postgres support and are MySQL
+// and SQLite only. A Postgres database is created by `writefreely db init`
+// from postgres.sql, which already describes that schema, and starts at
 // PostgresBaseVersion; Migrate refuses to run anything older on Postgres.
 // When you add a migration, do not also edit postgres.sql: Migrate applies
 // the new migration to fresh Postgres databases right after init.
@@ -58,11 +66,11 @@ func unsupportedDriver(fn, driverName string) {
 	panic(fmt.Sprintf("migrations.%s: not implemented for database driver %q", fn, driverName))
 }
 
-// errBeforePostgresBase is returned by a migration from before
-// PostgresBaseVersion if it is ever asked to run on Postgres. Migrate refuses
-// before it gets that far; this is the second line of defence.
+// errBeforePostgresBase is returned by an upstream migration if it is ever
+// asked to run on Postgres. Migrate refuses before it gets that far; this is
+// the second line of defence.
 func errBeforePostgresBase(fn string) error {
-	return fmt.Errorf("migrations.%s: predates V%d and must not run on Postgres", fn, PostgresBaseVersion)
+	return fmt.Errorf("migrations.%s: predates Postgres support and must not run on Postgres", fn)
 }
 
 // TODO: use these consts from writefreely pkg
@@ -112,36 +120,12 @@ var migrations = []Migration{
 	New("speed up blog post retrieval", addPostRetrievalIndex),       // V14 -> V15
 	New("support ActivityPub likes", supportRemoteLikes),             // V15 -> V16 (v0.16.0)
 	New("fix post signature character set", fixPostSignatureCharset), // V16 -> V17 (v0.17.0)
-	New("support post images", supportPostImages),                    // V17 -> V18
-	New("case-insensitive subscriber email", subscriberEmailCase),    // V18 -> V19
-	New("exact-match collations on MySQL", exactMatchCollations),     // V19 -> V20
-	New("store settings in the database", supportAppSettings),        // V20 -> V21
-	New("index remote handle lookups", remoteHandleIndex),            // V21 -> V22
-	New("index email and language lookups", lowerEmailLanguageIndex), // V22 -> V23
-	New("claim publish jobs", publishJobClaims),                      // V23 -> V24
 }
 
-// CurrentVer returns the current migration version the application is on
+// CurrentVer returns the wisp version the application is on: the number of
+// wispMigrations. See WispTable.
 func CurrentVer() int {
-	return len(migrations)
-}
-
-// PostgresBaseVersion is the migration version postgres.sql describes. A
-// Postgres database starts here: migrations up to and including it never
-// run on Postgres. It never changes once Postgres databases exist.
-const PostgresBaseVersion = 18
-
-// InitialVersion returns the migration version that the schema file `db
-// init` loads for driverName describes: V1 for schema.sql and sqlite.sql,
-// PostgresBaseVersion for postgres.sql.
-func InitialVersion(driverName string) int {
-	switch driverName {
-	case driverMySQL, driverSQLite:
-		return 1
-	case driverPostgres:
-		return PostgresBaseVersion
-	}
-	panic(unknownDriver("InitialVersion", driverName))
+	return len(wispMigrations)
 }
 
 // Execer is satisfied by *sql.DB and *sql.Tx.
@@ -149,22 +133,40 @@ type Execer interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
 }
 
-// SetInitialMigrations records, in a freshly created schema, the migration
-// version that schema is at; see InitialVersion.
+// SetInitialMigrations records, in a freshly created schema, the versions
+// that schema is at.
 func SetInitialMigrations(db *datastore) error {
 	return SetInitialMigrationsOn(db, db.driverName)
 }
 
 // SetInitialMigrationsOn is SetInitialMigrations through ex, which may be a
-// transaction that also created the schema.
+// transaction that also created the schema. schema.sql and sqlite.sql
+// describe upstream's V1; postgres.sql describes upstream's V17 and
+// PostgresBaseVersion.
 func SetInitialMigrationsOn(ex Execer, driverName string) error {
-	d := &datastore{driverName: driverName}
-	_, err := ex.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, "+d.now()+", ?)", InitialVersion(driverName), "")
-	return err
+	up, w := 1, 0
+	switch driverName {
+	case driverMySQL, driverSQLite:
+	case driverPostgres:
+		up, w = upstreamBaseVersion, PostgresBaseVersion
+	default:
+		panic(unknownDriver("SetInitialMigrationsOn", driverName))
+	}
+	if err := insertVersion(ex, "appmigrations", driverName, up); err != nil {
+		return err
+	}
+	if err := createWispTable(ex, driverName); err != nil {
+		return err
+	}
+	if w > 0 {
+		return insertVersion(ex, WispTable, driverName, w)
+	}
+	return nil
 }
 
+// Migrate runs upstream's V1 to V17 that db has not, recording each in
+// appmigrations, then the wispMigrations it has not; see WispTable.
 func Migrate(db *datastore) error {
-	var version int
 	var err error
 	isPostgres := false
 	switch db.driverName {
@@ -175,17 +177,11 @@ func Migrate(db *datastore) error {
 		unsupportedDriver("Migrate", db.driverName)
 	}
 
-	if db.tableExists("appmigrations") {
-		// MAX is NULL on an empty table.
-		err = db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM appmigrations").Scan(&version)
-		if err != nil {
-			return err
+	if !db.tableExists("appmigrations") {
+		if isPostgres {
+			return fmt.Errorf("no appmigrations table: a Postgres database must be created with `writefreely db init`, which starts it at wisp_v%d", PostgresBaseVersion)
 		}
-	} else if isPostgres {
-		return fmt.Errorf("no appmigrations table: a Postgres database must be created with `writefreely db init`, which starts it at V%d", PostgresBaseVersion)
-	} else {
 		log.Info("Initializing appmigrations table...")
-		version = 0
 		_, err = db.Exec(`CREATE TABLE appmigrations (
 			version ` + db.typeInt() + ` NOT NULL,
 			migrated ` + db.typeDateTime() + ` NOT NULL,
@@ -195,27 +191,49 @@ func Migrate(db *datastore) error {
 			return err
 		}
 	}
-
-	if isPostgres && version < PostgresBaseVersion {
-		return fmt.Errorf("database is at V%d, but Postgres databases start at V%d: migrations before V%d are MySQL and SQLite only. Create the database with `writefreely db init`", version, PostgresBaseVersion, PostgresBaseVersion+1)
+	up, err := db.maxVersion("appmigrations")
+	if err != nil {
+		return err
+	}
+	w, converted, err := db.wispVersion(up)
+	if err != nil {
+		return err
 	}
 
-	if len(migrations[version:]) > 0 {
-		for i, m := range migrations[version:] {
-			curVer := version + i + 1
-			log.Info("Migrating to V%d: %s", curVer, m.Description())
-			err = m.Migrate(db)
-			if err != nil {
-				return err
-			}
+	if isPostgres && (up < upstreamBaseVersion || w < PostgresBaseVersion) {
+		return fmt.Errorf("database is at V%d and wisp_v%d, but Postgres databases start at V%d and wisp_v%d: migrations before those are MySQL and SQLite only. Create the database with `writefreely db init`", up, w, upstreamBaseVersion, PostgresBaseVersion)
+	}
 
-			// Update migrations table
-			_, err = db.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, "+db.now()+", ?)", curVer, "")
-			if err != nil {
-				return err
-			}
+	if !converted {
+		if err = convertToWispTable(db, w); err != nil {
+			return err
 		}
-	} else {
+	}
+
+	ran := false
+	for v := up + 1; v <= upstreamBaseVersion; v++ {
+		m := migrations[v-1]
+		log.Info("Migrating to V%d: %s", v, m.Description())
+		if err = m.Migrate(db); err != nil {
+			return err
+		}
+		if err = insertVersion(db, "appmigrations", db.driverName, v); err != nil {
+			return err
+		}
+		ran = true
+	}
+	for v := w + 1; v <= len(wispMigrations); v++ {
+		m := wispMigrations[v-1]
+		log.Info("Migrating to wisp_v%d: %s", v, m.Description())
+		if err = m.Migrate(db); err != nil {
+			return err
+		}
+		if err = recordWispVersion(db, v); err != nil {
+			return err
+		}
+		ran = true
+	}
+	if !ran {
 		log.Info("Database up-to-date. No migrations to run.")
 	}
 

@@ -743,13 +743,12 @@ func ConnectToDatabase(app *App) error {
 	}
 
 	// Ensure the database schema is up-to-date
-	var dbVer int
-	err = app.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM appmigrations").Scan(&dbVer)
+	pending, err := migrations.PendingMigrations(migrations.NewDatastore(app.db.DB, app.db.driverName))
 	if err != nil {
 		log.Error("Unable to read migrations version: %v", err)
-	} else if dbVer < migrations.CurrentVer() {
+	} else if pending > 0 {
 		log.Info("+--------------------------------------------------------------------------+")
-		log.Info("| IMPORTANT! There are pending migrations (%d). Run: writefreely db migrate |", migrations.CurrentVer()-dbVer)
+		log.Info("| IMPORTANT! There are pending migrations (%d). Run: writefreely db migrate |", pending)
 		log.Info("+--------------------------------------------------------------------------+")
 	}
 
@@ -1247,8 +1246,9 @@ var schemaSql string
 //go:embed sqlite.sql
 var sqliteSql string
 
-// postgresSql describes the whole schema at migrations.PostgresBaseVersion,
-// not V1 like the other two; see the comment at its top.
+// postgresSql describes the whole schema at upstream's V17 and
+// migrations.PostgresBaseVersion, not V1 like the other two; see the comment
+// at its top.
 //
 //go:embed postgres.sql
 var postgresSql string
@@ -1314,7 +1314,7 @@ func adminInitDatabase(app *App) error {
 	}
 
 	// Set up migrations table
-	log.Info("Initializing appmigrations table...")
+	log.Info("Initializing migration tables...")
 	err := migrations.SetInitialMigrationsOn(ex, app.db.driverName)
 	if err != nil {
 		return fmt.Errorf("Unable to set initial migrations: %v", err)

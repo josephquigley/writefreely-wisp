@@ -19,11 +19,11 @@ import (
 	"github.com/writefreely/writefreely/migrations"
 )
 
-// V23 (migrations/v23.go): the case-insensitive subscriber-email lookups that
+// wisp_v3 (migrations/wisp_v3.go): the case-insensitive subscriber-email lookups that
 // span every blog, and a blog's language lookups, are served by an index on
 // every engine.
 
-// lowerLookupIndexes are the indexes V23 creates on each engine.
+// lowerLookupIndexes are the indexes wisp_v3 creates on each engine.
 func lowerLookupIndexes(driverName string) (email, language string) {
 	if driverName == driverMySQL {
 		return "emailsubscribers_email_lower", "posts_coll_language_lower"
@@ -71,7 +71,7 @@ func analyzeLookupTables(t *testing.T, app *App) {
 	}
 }
 
-// lowerLookupPlans returns the plan of each query V23 serves, by name.
+// lowerLookupPlans returns the plan of each query wisp_v3 serves, by name.
 func lowerLookupPlans(t *testing.T, app *App, collID int64) map[string]string {
 	t.Helper()
 	const email = "reader7@site3.example"
@@ -94,7 +94,7 @@ func assertLowerLookupsIndexed(t *testing.T, app *App, collID int64) {
 		if app.db.driverName == driverMySQL {
 			want = "key=" + want
 		}
-		assert.Contains(t, plan, want, "%s should use V23's index; plan: %s", name, plan)
+		assert.Contains(t, plan, want, "%s should use wisp_v3's index; plan: %s", name, plan)
 	}
 }
 
@@ -105,7 +105,7 @@ func TestLowerEmailLanguageLookupsUseIndex(t *testing.T) {
 	})
 }
 
-// undoLowerEmailLanguageIndex takes a database back to V22, as an upgrade
+// undoLowerEmailLanguageIndex takes a database back to before wisp_v3, as an upgrade
 // finds it.
 func undoLowerEmailLanguageIndex(t *testing.T, app *App) {
 	t.Helper()
@@ -121,7 +121,7 @@ func undoLowerEmailLanguageIndex(t *testing.T, app *App) {
 			"ALTER TABLE posts DROP INDEX posts_coll_language_lower, DROP COLUMN language_lower",
 		}
 	}
-	qs = append(qs, "DELETE FROM appmigrations WHERE version >= 23")
+	qs = append(qs, "DELETE FROM wisp_migrations WHERE version >= 3")
 	for _, q := range qs {
 		_, err := app.db.Exec(q)
 		require.NoError(t, err, q)
@@ -132,7 +132,7 @@ func TestLowerEmailLanguageIndexMigration(t *testing.T) {
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		undoLowerEmailLanguageIndex(t, app)
 
-		// Rows written before V23, some in the case their writer sent.
+		// Rows written before wisp_v3, some in the case their writer sent.
 		collID := insertLookupRows(t, app)
 		_, err := app.db.Exec("INSERT INTO emailsubscribers (id, collection_id, email, subscribed, token, confirmed, allow_export) VALUES ('Legacy23', ?, 'Mixed@Example.COM', CURRENT_TIMESTAMP, 'LegacyToken00023', TRUE, FALSE)", collID)
 		require.NoError(t, err)
@@ -153,7 +153,7 @@ func TestLowerEmailLanguageIndexMigration(t *testing.T) {
 
 		// A migration that stopped after its schema change but before
 		// recording itself runs again on the next start.
-		_, err = app.db.Exec("DELETE FROM appmigrations WHERE version >= 23")
+		_, err = app.db.Exec("DELETE FROM wisp_migrations WHERE version >= 3")
 		require.NoError(t, err)
 		require.NoError(t, migrations.Migrate(mdb))
 		assertLowerLookupsIndexed(t, app, collID)

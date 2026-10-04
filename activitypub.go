@@ -1215,7 +1215,7 @@ func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 //
 // It compares LOWER(handle), so that a row cached before handles were
 // normalised is still found instead of costing a webfinger round trip every
-// time. On MySQL that is the generated column handle_lower, which V22 added
+// time. On MySQL that is the generated column handle_lower, which wisp_v3 added
 // because neither MariaDB nor MySQL before 8.0.13 can index the expression;
 // the other engines index lower(handle) itself.
 func (db *datastore) remoteUserByHandleQuery() string {

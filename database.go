@@ -1664,7 +1664,7 @@ func normalizeLangCode(lang string) string {
 }
 
 // postLanguageLower is what a lookup compares with a normalizeLangCode code:
-// LOWER(language), which V23 indexes, or on MySQL the generated column V23
+// LOWER(language), which wisp_v3 indexes, or on MySQL the generated column wisp_v3
 // stores it in, because neither MariaDB nor MySQL before 8.0.13 can index
 // the expression.
 func (db *datastore) postLanguageLower() string {
@@ -3471,7 +3471,7 @@ func (db *datastore) AddEmailSubscription(collID, userID int64, email string, co
 	email = normalizeSubscriberEmail(email)
 
 	// Look for an existing subscriber first, comparing case-insensitively.
-	// Only Postgres (V19) has a unique index that is case-insensitive, and
+	// Only Postgres (wisp_v2) has a unique index that is case-insensitive, and
 	// MySQL's collation is; on SQLite a legacy row stored as Foo@x would not
 	// conflict with an insert of foo@x, and the reader would get every post
 	// twice. The duplicate-key handling below still covers a concurrent insert.
@@ -3633,8 +3633,8 @@ func (db *datastore) DeleteEmailSubscriberByUser(email string, userID, collID in
 }
 
 // subscriberEmailLower is what a lookup across every blog compares with a
-// normalizeSubscriberEmail address: LOWER(email), which V23 indexes, or on
-// MySQL the generated column V23 stores it in, because neither MariaDB nor
+// normalizeSubscriberEmail address: LOWER(email), which wisp_v3 indexes, or on
+// MySQL the generated column wisp_v3 stores it in, because neither MariaDB nor
 // MySQL before 8.0.13 can index the expression. Lookups within one blog keep
 // comparing LOWER(email) beside collection_id, which narrows them already.
 func (db *datastore) subscriberEmailLower() string {

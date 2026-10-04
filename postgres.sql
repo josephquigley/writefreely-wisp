@@ -3,9 +3,10 @@
 --
 -- Unlike schema.sql and sqlite.sql, which describe the V1 schema and rely on
 -- migrations V2 onwards to bring it up to date, this file describes the whole
--- schema as it stands after migration V18. `writefreely db init` runs it in a
--- single transaction and records V18 in appmigrations, so a Postgres database
--- never runs migrations V1 to V18. Migrations from V19 on run on every engine.
+-- schema as it stands after upstream's migration V17 and this edition's
+-- wisp_v1. `writefreely db init` runs it in a single transaction and records
+-- V17 in appmigrations and wisp_v1 in wisp_migrations, so a Postgres database
+-- never runs either. Migrations from wisp_v2 on run on every engine.
 --
 -- It was translated from the table definitions MariaDB reports for a
 -- database built by `db init` (schema.sql plus every migration), with these

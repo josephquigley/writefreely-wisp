@@ -72,10 +72,10 @@ import (
 	"github.com/writefreely/writefreely/migrations"
 )
 
-// dbCopySchemaVersion is the only migration version this command knows how
-// to copy. Source, target and binary must all be at it. A new migration
+// dbCopySchemaVersion is the only wisp migration version (see
+// migrations.WispTable) this command knows how to copy. Source, target and binary must all be at it. A new migration
 // means reviewing this command (its column rules below) and raising it.
-const dbCopySchemaVersion = 24
+const dbCopySchemaVersion = 3
 
 // dbCopyBatchRows is the most rows sent in one INSERT.
 const dbCopyBatchRows = 500
@@ -244,12 +244,12 @@ func copySQLiteToPostgres(ctx context.Context, src, dst *sql.DB, opts DBCopyOpti
 	}
 
 	if v := migrations.CurrentVer(); v != dbCopySchemaVersion {
-		return fmt.Errorf("this binary's schema is V%d, but db copy only knows V%d: update the copy command's column rules for the new migrations before using it", v, dbCopySchemaVersion)
+		return fmt.Errorf("this binary's schema is wisp_v%d, but db copy only knows wisp_v%d: update the copy command's column rules for the new migrations before using it", v, dbCopySchemaVersion)
 	}
-	if err := dbCopyCheckVersion(ctx, src, "source", dbCopySchemaVersion); err != nil {
+	if err := dbCopyCheckVersion(src, driverSQLite, "source", dbCopySchemaVersion); err != nil {
 		return err
 	}
-	if err := dbCopyCheckVersion(ctx, dst, "target", dbCopySchemaVersion); err != nil {
+	if err := dbCopyCheckVersion(dst, driverPostgres, "target", dbCopySchemaVersion); err != nil {
 		return err
 	}
 
@@ -290,7 +290,7 @@ func copySQLiteToPostgres(ctx context.Context, src, dst *sql.DB, opts DBCopyOpti
 	if err := dbCopyCheckEmpty(ctx, tx, tables); err != nil {
 		return err
 	}
-	// Clear V21's seed row so the source's counter row can take its place.
+	// Clear wisp_v3's seed row so the source's counter row can take its place.
 	if _, err := tx.ExecContext(ctx, "DELETE FROM app_settings_version WHERE id = 1 AND version = 0"); err != nil {
 		return fmt.Errorf("clear the settings version seed: %v", dbCopyErr(err))
 	}
@@ -327,9 +327,9 @@ func copySQLiteToPostgres(ctx context.Context, src, dst *sql.DB, opts DBCopyOpti
 	return nil
 }
 
-func dbCopyCheckVersion(ctx context.Context, q dbCopyQuerier, which string, want int) error {
-	var v int
-	if err := q.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM appmigrations").Scan(&v); err != nil {
+func dbCopyCheckVersion(db *sql.DB, driverName, which string, want int) error {
+	v, err := migrations.DatabaseVersion(migrations.NewDatastore(db, driverName))
+	if err != nil {
 		return fmt.Errorf("read the %s's migration version: %v", which, err)
 	}
 	if v == want {
@@ -337,11 +337,11 @@ func dbCopyCheckVersion(ctx context.Context, q dbCopyQuerier, which string, want
 	}
 	if which == "source" {
 		if v < want {
-			return fmt.Errorf("the source database is at migration V%d, not V%d: run `writefreely db migrate` against it first, with a configuration that points at the SQLite file (db copy does not migrate its source)", v, want)
+			return fmt.Errorf("the source database is at migration wisp_v%d, not wisp_v%d: run `writefreely db migrate` against it first, with a configuration that points at the SQLite file (db copy does not migrate its source)", v, want)
 		}
-		return fmt.Errorf("the source database is at migration V%d, newer than the V%d this binary copies", v, want)
+		return fmt.Errorf("the source database is at migration wisp_v%d, newer than the wisp_v%d this binary copies", v, want)
 	}
-	return fmt.Errorf("the target database is at migration V%d, not V%d: initialise an empty Postgres database with `writefreely db init` using this binary", v, want)
+	return fmt.Errorf("the target database is at migration wisp_v%d, not wisp_v%d: initialise an empty Postgres database with `writefreely db init` using this binary", v, want)
 }
 
 // dbCopyTables lists every table to copy, with its Postgres columns, and
@@ -350,7 +350,7 @@ func dbCopyTables(ctx context.Context, src, dst *sql.DB) ([]*dbCopyTable, error)
 	rows, err := dst.QueryContext(ctx, `SELECT c.table_name, c.column_name, c.data_type, COALESCE(c.character_maximum_length, 0), c.is_nullable = 'YES', c.is_identity = 'YES'
 FROM information_schema.columns c
 JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE' AND c.table_name <> 'appmigrations'
+WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE' AND c.table_name NOT IN ('appmigrations', 'wisp_migrations')
 ORDER BY c.table_name, c.ordinal_position`)
 	if err != nil {
 		return nil, fmt.Errorf("read target schema: %v", err)
@@ -380,7 +380,7 @@ ORDER BY c.table_name, c.ordinal_position`)
 	}
 
 	srcTables := map[string]bool{}
-	srows, err := src.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' AND name <> 'appmigrations'`)
+	srows, err := src.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' AND name NOT IN ('appmigrations', 'wisp_migrations')`)
 	if err != nil {
 		return nil, fmt.Errorf("read source schema: %v", err)
 	}
@@ -443,7 +443,7 @@ func dbCopyCheckEmpty(ctx context.Context, q dbCopyQuerier, tables []*dbCopyTabl
 	var full []string
 	for _, t := range tables {
 		var exists bool
-		// Migration V21 seeds app_settings_version with (1, 0), so a freshly
+		// Migration wisp_v3 seeds app_settings_version with (1, 0), so a freshly
 		// initialised database is not empty there. The seed does not count.
 		where := ""
 		if t.name == "app_settings_version" {

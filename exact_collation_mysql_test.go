@@ -19,12 +19,12 @@ import (
 	"github.com/writefreely/writefreely/migrations"
 )
 
-// V20 (migrations/v20.go) on MySQL. The behaviour it buys is pinned by the
+// wisp_v2 (migrations/wisp_v2.go) on MySQL. The behaviour it buys is pinned by the
 // TestExactMatch* tests in case_normalisation_test.go, which run on every
 // engine; these tests pin the schema itself, and that an existing database
 // comes through the migration with its rows intact.
 
-// exactMatchColumns is every column V20 gives a binary collation, with the
+// exactMatchColumns is every column wisp_v2 gives a binary collation, with the
 // collation it should end up with.
 var exactMatchColumns = []struct{ table, column, collation string }{
 	{"userinvites", "id", "latin1_bin"},
@@ -52,7 +52,7 @@ func mysqlColumnCollation(t *testing.T, app *App, table, column string) string {
 	return c
 }
 
-// wideKeyTables are the tables V20 gives a 1020-byte utf8mb4 key
+// wideKeyTables are the tables wisp_v2 gives a 1020-byte utf8mb4 key
 // (oauth_client_states.state, remoteuserkeys.id, remoteusers.actor_id).
 var wideKeyTables = []string{"oauth_client_states", "remoteusers", "remoteuserkeys"}
 
@@ -68,19 +68,19 @@ func TestMySQLExactMatchCollations(t *testing.T) {
 	for _, c := range exactMatchColumns {
 		assert.Equal(t, c.collation, mysqlColumnCollation(t, app, c.table, c.column), "%s.%s", c.table, c.column)
 	}
-	// V21's tables hold any Unicode and are keyed by exact name.
+	// wisp_v3's tables hold any Unicode and are keyed by exact name.
 	assert.Equal(t, "utf8mb4_bin", mysqlColumnCollation(t, app, "app_settings", "name"))
 	assert.Equal(t, "utf8mb4_bin", mysqlColumnCollation(t, app, "app_settings", "value"))
-	// Meant to ignore case, and left alone (see V19).
+	// Meant to ignore case, and left alone (see subscriberEmailCase).
 	assert.Equal(t, "utf8mb4_unicode_ci", mysqlColumnCollation(t, app, "emailsubscribers", "email"))
 }
 
-// TestMySQLExactMatchCollationsUpgrade puts the V19 definitions back, fills
-// the tables, and runs V20 over them as an upgrade would.
+// TestMySQLExactMatchCollationsUpgrade puts the definitions from before wisp_v2 back, fills
+// the tables, and runs wisp_v2 over them as an upgrade would.
 func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 	app := newMySQLTestApp(t, nil)
 
-	// The V19 schema on a fresh MySQL, as information_schema reports it.
+	// The schema before wisp_v2 on a fresh MySQL, as information_schema reports it.
 	for _, q := range []string{
 		`ALTER TABLE userinvites MODIFY id CHAR(6) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL`,
 		`ALTER TABLE usersinvited MODIFY invite_id CHAR(6) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL`,
@@ -98,11 +98,11 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 		`ALTER TABLE oauth_client_states ROW_FORMAT=COMPACT`,
 		`ALTER TABLE remoteusers ROW_FORMAT=COMPACT`,
 		`ALTER TABLE remoteuserkeys ROW_FORMAT=COMPACT`,
-		// V21 (settings tables) is undone too, so Migrate runs V20 and then
-		// V21 again, as it would on a V19 database.
+		// wisp_v3 (settings tables) is undone too, so Migrate runs wisp_v2 and then
+		// wisp_v3 again, as it would on a wisp_v1 database.
 		`DROP TABLE app_settings`,
 		`DROP TABLE app_settings_version`,
-		`DELETE FROM appmigrations WHERE version >= 20`,
+		`DELETE FROM wisp_migrations WHERE version >= 2`,
 	} {
 		_, err := app.db.Exec(q)
 		require.NoError(t, err, q)
@@ -115,7 +115,7 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 	owner := caseInsertUser(t, app, "upgrader")
 	_, err := app.db.Exec("INSERT INTO userinvites (id, owner_id, max_uses, created, expires, inactive) VALUES ('BcDfGh', ?, 0, CURRENT_TIMESTAMP, NULL, FALSE)", owner)
 	require.NoError(t, err)
-	// é is in latin1, so a V19 database can hold it; it must survive the
+	// é is in latin1, so a wisp_v1 database can hold it; it must survive the
 	// conversion to utf8mb4 unchanged.
 	const profile = "https://social.example/@Café"
 	_, err = app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url, handle) VALUES (?, ?, ?, ?, ?)",
@@ -162,7 +162,7 @@ func TestMySQLExactMatchCollationsUpgrade(t *testing.T) {
 
 	// Running it again is harmless: a migration interrupted part way is
 	// finished by running it again.
-	for _, q := range []string{"DROP TABLE app_settings", "DROP TABLE app_settings_version", "DELETE FROM appmigrations WHERE version >= 20"} {
+	for _, q := range []string{"DROP TABLE app_settings", "DROP TABLE app_settings_version", "DELETE FROM wisp_migrations WHERE version >= 2"} {
 		_, err = app.db.Exec(q)
 		require.NoError(t, err, q)
 	}
