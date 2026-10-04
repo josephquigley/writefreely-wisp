@@ -21,6 +21,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Uploaded images can be kept in S3-compatible storage such as Garage through a new `[storage]` section, served at unchanged `/uploads/` URLs, and `writefreely images sync --to s3` copies existing images there.
 - Scheduled email publishing and the orphaned-image sweep take a database lock, so two app processes sharing one MySQL or Postgres database never email the same post twice.
 - `docs/postgres-ha.md` explains running behind a proxy that follows a Patroni primary, the HAProxy settings failover depends on, and what several processes sharing one database must agree on.
+- `[server] private_address_allowlist` lets ActivityPub and webfinger requests reach listed private, CGNAT or loopback ranges, such as a Tailscale tailnet or a local test server; link-local and metadata addresses stay refused.
 
 ### Changed
 
