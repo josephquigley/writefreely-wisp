@@ -55,6 +55,20 @@ type (
 
 		GopherPort int `ini:"gopher_port"`
 
+		// PrivateAddressAllowlist is a comma-separated list of CIDR ranges
+		// (or bare addresses) that outbound federation and webfinger
+		// requests may connect to even though the SSRF guard refuses them
+		// by default, e.g. "100.64.0.0/10" for peers on a tailnet. Only
+		// private, CGNAT and loopback ranges may be listed; link-local,
+		// and so the cloud metadata endpoint, is never reachable. Empty
+		// keeps the guard strict.
+		//
+		// It lives in config.ini, not the database, because it describes
+		// this node's network and widens what the server can be made to
+		// connect to: that is for whoever runs the machine, not for anyone
+		// who can reach the admin settings page.
+		PrivateAddressAllowlist string `ini:"private_address_allowlist"`
+
 		Dev bool `ini:"-"`
 	}
 

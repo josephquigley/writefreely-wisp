@@ -16,6 +16,31 @@ server sharing the database uses the same values. A change made on one
 takes effect on the others with their next request. Turning image uploads off
 also stops serving images already uploaded, until they are turned back on.
 
+## Peers on private addresses
+
+Outbound ActivityPub and webfinger requests refuse private, CGNAT, loopback,
+link-local and multicast addresses, so that a crafted actor or object URL
+cannot make the server fetch from your internal network. That also refuses
+peers that legitimately live there: an instance on a Tailscale tailnet
+(`100.64.0.0/10`), or a test server on your LAN or this machine.
+
+List the ranges you trust in `config.ini`, then restart:
+
+    [server]
+    private_address_allowlist = 100.64.0.0/10, 192.168.1.0/24
+
+Entries are CIDR ranges or single addresses, comma-separated. Only RFC 1918
+(`10/8`, `172.16/12`, `192.168/16`), IPv6 unique local (`fc00::/7`), CGNAT
+(`100.64.0.0/10`) and loopback (`127/8`, `::1`) ranges may be listed. An entry
+outside them, such as a link-local or public range, stops the server from
+starting. Link-local addresses, including the cloud metadata endpoint at
+`169.254.169.254`, stay refused whatever the list says.
+
+Anything that resolves into a listed range is reachable, from any hostname,
+including a URL a remote server sent. List the narrowest ranges that hold your
+peers. The setting stays in `config.ini` and is not editable from the admin
+page.
+
 ## Changing settings
 
 From the browser: **Admin → Settings**.

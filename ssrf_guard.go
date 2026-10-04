@@ -10,7 +10,13 @@
 
 package writefreely
 
-import "net"
+import (
+	"net"
+	"sync/atomic"
+
+	"github.com/writeas/web-core/log"
+	"github.com/writefreely/writefreely/config"
+)
 
 // This file holds the one SSRF ruleset in the package. It used to be two:
 // the webfinger client's dial-time check refused CGNAT and plain multicast,
@@ -30,45 +36,74 @@ import "net"
 //
 // Only the per-address verdict is shared. Both ask isPublicAddr.
 
-// ssrfGuardOptions carries the per-call knobs of the address check. There
-// are none in use yet: every caller passes nil, which means "the strict
-// ruleset, no exceptions".
+// ssrfAllowlist holds the ranges from [server] private_address_allowlist.
+// config.ParsePrivateAddressAllowlist has already confined them to private,
+// CGNAT and loopback space, and isPublicAddr refuses link-local, multicast
+// and the unspecified address before it looks at them, so no entry can reach
+// the cloud metadata endpoint at 169.254.169.254.
 //
-// It exists so that a caller can later hand in a per-host exemption — a
-// federation allowlist, say, whose peers legitimately live on addresses the
-// strict ruleset refuses — without reshaping the call sites again.
-type ssrfGuardOptions struct {
-	// hostAllowed, when non-nil, is consulted for the hostname an address
-	// was resolved from. It is a seam and nothing more today: no caller
-	// sets it, and isPublicAddr's verdict does not yet depend on it.
-	//
-	// Whatever eventually reads it must keep 169.254.0.0/16 refused
-	// unconditionally. That range carries the cloud metadata endpoint at
-	// 169.254.169.254, which hands out instance credentials to anything
-	// that asks, and no allowlist entry is worth reaching it — an
-	// exemption is a statement about a *peer*, and any host at all can
-	// name that address.
-	hostAllowed func(host string) bool
+// It is package state rather than App state because safeDialContext sits
+// under package-level HTTP clients that have no App to ask.
+var ssrfAllowlist atomic.Pointer[[]*net.IPNet]
+
+// initPrivateAddressAllowlist installs cfg's private address allowlist. A
+// value that fails to parse installs nothing and fails startup: an operator
+// who wrote an allowlist must not find out it was ignored from a peer that
+// silently stopped receiving posts.
+func initPrivateAddressAllowlist(cfg *config.Config) error {
+	nets, err := config.ParsePrivateAddressAllowlist(cfg.Server.PrivateAddressAllowlist)
+	if err != nil {
+		return err
+	}
+	ssrfAllowlist.Store(&nets)
+	if len(nets) > 0 {
+		log.Info("SSRF guard: outbound requests may reach %s (private_address_allowlist)", cfg.Server.PrivateAddressAllowlist)
+	}
+	return nil
+}
+
+// privateAddressAllowlist returns the ranges both guards let through, or
+// nil when none are configured.
+func privateAddressAllowlist() []*net.IPNet {
+	if nets := ssrfAllowlist.Load(); nets != nil {
+		return *nets
+	}
+	return nil
 }
 
 // isPublicAddr reports whether ip is safe to connect to, i.e. not a
 // loopback, private, link-local, CGNAT, multicast, or otherwise
 // special-purpose address that could be used to reach internal services or
-// cloud metadata endpoints via SSRF.
-//
-// host is the hostname ip was resolved from, or "" when there isn't one; it
-// is only here for opts. opts may be nil, and is nil everywhere today.
-func isPublicAddr(ip net.IP, host string, opts *ssrfGuardOptions) bool {
+// cloud metadata endpoints via SSRF. An address inside one of the allowed
+// ranges is reported safe, unless it is link-local, multicast or
+// unspecified, which nothing reopens. allowed may be nil.
+func isPublicAddr(ip net.IP, allowed []*net.IPNet) bool {
 	if ip == nil {
 		return false
 	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		// IsLinkLocalUnicast covers 169.254.0.0/16, and so covers the
+		// cloud metadata address 169.254.169.254. It is checked before
+		// the allowlist so that no entry can ever reopen it.
+		return false
+	}
+	for _, n := range allowed {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return isStrictlyPublicAddr(ip)
+}
+
+// isStrictlyPublicAddr is the default ruleset, with no allowlist. The
+// allowlist matches only the address actually dialled, never an IPv4
+// address embedded in an IPv6 transition address, so the recursion below
+// stays strict.
+func isStrictlyPublicAddr(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
 		ip.IsMulticast() || ip.IsUnspecified() {
-		// IsLinkLocalUnicast covers 169.254.0.0/16, and so covers the
-		// cloud metadata address 169.254.169.254. Keep it refused: see
-		// ssrfGuardOptions.hostAllowed for why no exemption may ever
-		// reach it.
 		return false
 	}
 	if ip4 := ip.To4(); ip4 != nil {
@@ -84,7 +119,7 @@ func isPublicAddr(ip net.IP, host string, opts *ssrfGuardOptions) bool {
 	// again on it. The recursion ends because embeddedIPv4 returns nil for
 	// an IPv4 address.
 	if embedded := embeddedIPv4(ip); embedded != nil {
-		if !isPublicAddr(embedded, host, opts) {
+		if !isStrictlyPublicAddr(embedded) {
 			return false
 		}
 	}

@@ -881,6 +881,8 @@ func makeActivityPost(app *App, p *activitystreams.Person, url string, m interfa
 // endpoints like 169.254.169.254), CGNAT, multicast and unspecified
 // addresses. That list is isPublicAddr's, not its own: this used to carry a
 // second, weaker copy that let 100.64.0.0/10 and plain multicast through.
+// Ranges listed in [server] private_address_allowlist are let through here
+// as they are at dial time.
 func isPublicIRI(iri string) error {
 	u, err := url.Parse(iri)
 	if err != nil {
@@ -901,7 +903,7 @@ func isPublicIRI(iri string) error {
 		// Shared with the webfinger client's dial-time check; the
 		// ruleset lives in ssrf_guard.go. This one stays a pre-flight
 		// check so an IRI is refused before anything is signed or sent.
-		if !isPublicAddr(ip, host, nil) {
+		if !isPublicAddr(ip, privateAddressAllowlist()) {
 			return fmt.Errorf("host %q resolves to disallowed address %s", host, ip)
 		}
 	}
