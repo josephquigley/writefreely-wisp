@@ -55,12 +55,66 @@ func TestRebindPostgres(t *testing.T) {
 		{"tagged dollar quoted", "SELECT $x$ ? $$ ? $x$, ?", "SELECT $x$ ? $$ ? $x$, $1"},
 		{"unterminated literal", "SELECT ?, 'oops ?", "SELECT $1, 'oops ?"},
 		{"multibyte text", "SELECT 'ünï ?', ? -- ✓", "SELECT 'ünï ?', $1 -- ✓"},
+		{"native placeholders only", "SELECT a FROM t WHERE b = $1 AND c = $2", "SELECT a FROM t WHERE b = $1 AND c = $2"},
+		{"$1 in single quotes", "SELECT '$1', ?", "SELECT '$1', $1"},
+		{"$1 in E-string", `SELECT E'\'$1', ?`, `SELECT E'\'$1', $1`},
+		{"$1 in double quotes", `SELECT "a$1" FROM t WHERE a = ?`, `SELECT "a$1" FROM t WHERE a = $1`},
+		{"$1 in line comment", "SELECT ? -- not $1\nFROM t", "SELECT $1 -- not $1\nFROM t"},
+		{"$1 in block comment", "SELECT /* $1 /* $2 */ */ ?", "SELECT /* $1 /* $2 */ */ $1"},
+		{"$1 in dollar quoted", "SELECT $$ $1 $$, ?", "SELECT $$ $1 $$, $1"},
+		{"$1 in tagged dollar quoted", "SELECT $x$ $1 $x$, ?", "SELECT $x$ $1 $x$, $1"},
+		{"$ inside identifier", "SELECT a$1 FROM t WHERE b = ?", "SELECT a$1 FROM t WHERE b = $1"},
+		{"bare $ not followed by a digit", "SELECT $ , ?", "SELECT $ , $1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, rebindPostgres(tt.in))
+			got, err := rebindPostgres(tt.in)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestRebindPostgresRefusesMixedPlaceholders: a `?` would be numbered $1
+// whatever $n the query already holds, so the two would silently collide.
+func TestRebindPostgresRefusesMixedPlaceholders(t *testing.T) {
+	tests := []struct {
+		name, in string
+	}{
+		{"$1 then ?", "SELECT a FROM t WHERE b = $1 AND c = ?"},
+		{"? then $1", "SELECT a FROM t WHERE b = ? AND c = $1"},
+		{"? then $2", "SELECT a FROM t WHERE b = ? AND c = $2"},
+		{"multi-digit $n", "SELECT ? , $12"},
+		{"adjacent", "VALUES ($1,?)"},
+		{"$1 after a quoted ?", "SELECT '?', $1, ?"},
+		{"$1 after a comment", "SELECT ? /* x */ $1"},
+		{"cast after $1", "SELECT $1::int, ?"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rebindPostgres(tt.in)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), driverPostgresRebind)
+			assert.Empty(t, got)
+		})
+	}
+
+	pg := newDatastore(nil, driverPostgres)
+	assert.Panics(t, func() { pg.dialect.Rebind("SELECT $1, ?") })
+
+	// rebindConn refuses before it reaches lib/pq: inner is nil, so any
+	// call through to it would panic.
+	c := &rebindConn{}
+	const mixed = "SELECT $1, ?"
+	ctx := context.Background()
+	_, err := c.Prepare(mixed)
+	assert.Error(t, err)
+	_, err = c.PrepareContext(ctx, mixed)
+	assert.Error(t, err)
+	_, err = c.ExecContext(ctx, mixed, nil)
+	assert.Error(t, err)
+	_, err = c.QueryContext(ctx, mixed, nil)
+	assert.Error(t, err)
 }
 
 func TestDialectFor(t *testing.T) {

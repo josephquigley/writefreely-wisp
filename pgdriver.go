@@ -80,13 +80,21 @@ func postgresDSN(c config.DatabaseCfg) string {
 //
 // Postgres' jsonb operators `?`, `?|` and `?&` cannot be written through
 // this driver; use jsonb_exists() and friends instead.
-func rebindPostgres(query string) string {
+//
+// A query is written with `?` placeholders or with native `$n` ones, never
+// both. A query with no `?` passes through unchanged, `$n` and all. A query
+// that mixes them is refused with an error: the first `?` would become $1
+// whatever $n the query already uses, so the two would silently bind the
+// same argument. A `$n` counts only where a `?` would: not inside the
+// quoted runs and comments above, and not as part of an identifier (a$1).
+func rebindPostgres(query string) (string, error) {
 	if strings.IndexByte(query, '?') < 0 {
-		return query
+		return query, nil
 	}
 	var b strings.Builder
 	b.Grow(len(query) + 16)
 	n := 0
+	native := ""
 	for i := 0; i < len(query); {
 		c := query[i]
 		switch {
@@ -115,6 +123,13 @@ func rebindPostgres(query string) string {
 		case c == '$' && (i == 0 || !isSQLIdentByte(query[i-1])):
 			tag := dollarQuoteTag(query, i)
 			if tag == "" {
+				if native == "" && i+1 < len(query) && isASCIIDigit(query[i+1]) {
+					j := i + 1
+					for j < len(query) && isASCIIDigit(query[j]) {
+						j++
+					}
+					native = query[i:j]
+				}
 				b.WriteByte(c)
 				i++
 				break
@@ -137,7 +152,10 @@ func rebindPostgres(query string) string {
 			i++
 		}
 	}
-	return b.String()
+	if native != "" && n > 0 {
+		return "", fmt.Errorf("%s: query mixes ? placeholders with the native placeholder %s; write it with one or the other", driverPostgresRebind, native)
+	}
+	return b.String(), nil
 }
 
 // skipQuoted returns the index just past the quoted run that starts at
@@ -206,8 +224,12 @@ func isASCIILetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+func isASCIIDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
 func isSQLIdentByte(c byte) bool {
-	return isASCIILetter(c) || (c >= '0' && c <= '9') || c == '_' || c == '$' || c >= 0x80
+	return isASCIILetter(c) || isASCIIDigit(c) || c == '_' || c == '$' || c >= 0x80
 }
 
 // rebindDriver is registered as driverPostgresRebind. It opens connections
@@ -366,11 +388,19 @@ var (
 func (c *rebindConn) Unwrap() driver.Conn { return c.inner }
 
 func (c *rebindConn) Prepare(query string) (driver.Stmt, error) {
-	return c.inner.Prepare(rebindPostgres(query))
+	q, err := rebindPostgres(query)
+	if err != nil {
+		return nil, err
+	}
+	return c.inner.Prepare(q)
 }
 
 func (c *rebindConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	return c.inner.PrepareContext(ctx, rebindPostgres(query))
+	q, err := rebindPostgres(query)
+	if err != nil {
+		return nil, err
+	}
+	return c.inner.PrepareContext(ctx, q)
 }
 
 func (c *rebindConn) Close() error { return c.inner.Close() }
@@ -383,11 +413,19 @@ func (c *rebindConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver
 }
 
 func (c *rebindConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	return c.inner.ExecContext(ctx, rebindPostgres(query), args)
+	q, err := rebindPostgres(query)
+	if err != nil {
+		return nil, err
+	}
+	return c.inner.ExecContext(ctx, q, args)
 }
 
 func (c *rebindConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	return c.inner.QueryContext(ctx, rebindPostgres(query), args)
+	q, err := rebindPostgres(query)
+	if err != nil {
+		return nil, err
+	}
+	return c.inner.QueryContext(ctx, q, args)
 }
 
 func (c *rebindConn) Ping(ctx context.Context) error { return c.inner.Ping(ctx) }
