@@ -1652,14 +1652,43 @@ func normalizeLangCode(lang string) string {
 	return strings.ToLower(strings.TrimSpace(lang))
 }
 
+// postLanguageLower is what a lookup compares with a normalizeLangCode code:
+// LOWER(language), which V23 indexes, or on MySQL the generated column V23
+// stores it in, because neither MariaDB nor MySQL before 8.0.13 can index
+// the expression.
+func (db *datastore) postLanguageLower() string {
+	switch db.driverName {
+	case driverSQLite, driverPostgres:
+		return "LOWER(language)"
+	case driverMySQL:
+		return "language_lower"
+	default:
+		unsupportedDriver("postLanguageLower", db.driverName)
+	}
+	return ""
+}
+
+// collLangTotalPostsQuery is the query GetCollLangTotalPosts runs.
+func (db *datastore) collLangTotalPostsQuery() string {
+	return "SELECT COUNT(*) FROM posts WHERE collection_id = ? AND " + db.postLanguageLower() + " = ? AND created <= " + db.now()
+}
+
 func (db *datastore) GetCollLangTotalPosts(collID int64, lang string) (uint64, error) {
 	var articles uint64
-	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE collection_id = ? AND LOWER(language) = ? AND created <= "+db.now(), collID, normalizeLangCode(lang)).Scan(&articles)
+	err := db.QueryRow(db.collLangTotalPostsQuery(), collID, normalizeLangCode(lang)).Scan(&articles)
 	if err != nil && err != sql.ErrNoRows {
 		log.Error("Couldn't get total lang posts count for collection %d: %v", collID, err)
 		return 0, err
 	}
 	return articles, nil
+}
+
+// langPostsQuery is the query GetLangPosts runs.
+func (db *datastore) langPostsQuery(timeCondition, order, limitStr string) string {
+	return `SELECT ` + postCols + `
+FROM posts
+WHERE collection_id = ? AND ` + db.postLanguageLower() + ` = ? ` + timeCondition + `
+ORDER BY created ` + order + `, id ` + order + limitStr
 }
 
 func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string, page int, includeFuture bool) (*[]PublicPost, error) {
@@ -1687,10 +1716,7 @@ func (db *datastore) GetLangPosts(cfg *config.Config, c *Collection, lang string
 		timeCondition = "AND created <= " + db.now()
 	}
 
-	rows, err := db.Query(`SELECT `+postCols+`
-FROM posts
-WHERE collection_id = ? AND LOWER(language) = ? `+timeCondition+`
-ORDER BY created `+order+`, id `+order+limitStr, collID, normalizeLangCode(lang))
+	rows, err := db.Query(db.langPostsQuery(timeCondition, order, limitStr), collID, normalizeLangCode(lang))
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -3580,6 +3606,33 @@ func (db *datastore) DeleteEmailSubscriberByUser(email string, userID, collID in
 	return nil
 }
 
+// subscriberEmailLower is what a lookup across every blog compares with a
+// normalizeSubscriberEmail address: LOWER(email), which V23 indexes, or on
+// MySQL the generated column V23 stores it in, because neither MariaDB nor
+// MySQL before 8.0.13 can index the expression. Lookups within one blog keep
+// comparing LOWER(email) beside collection_id, which narrows them already.
+func (db *datastore) subscriberEmailLower() string {
+	switch db.driverName {
+	case driverSQLite, driverPostgres:
+		return "LOWER(email)"
+	case driverMySQL:
+		return "email_lower"
+	default:
+		unsupportedDriver("subscriberEmailLower", db.driverName)
+	}
+	return ""
+}
+
+// confirmSubscriberEmailQuery is the update UpdateSubscriberConfirmed runs.
+func (db *datastore) confirmSubscriberEmailQuery() string {
+	return "UPDATE emailsubscribers SET confirmed = TRUE WHERE " + db.subscriberEmailLower() + " = ?"
+}
+
+// subscriberConfirmedQuery is the query IsSubscriberConfirmed runs.
+func (db *datastore) subscriberConfirmedQuery() string {
+	return "SELECT 1 FROM emailsubscribers WHERE " + db.subscriberEmailLower() + " = ? AND confirmed = TRUE"
+}
+
 func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 	email, err := db.FetchEmailSubscriberEmail(subID, token)
 	if err != nil {
@@ -3588,7 +3641,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 	}
 
 	// TODO: ensure all addresses with original name are also confirmed, e.g. matt+fake@write.as and matt@write.as are now confirmed
-	_, err = db.Exec("UPDATE emailsubscribers SET confirmed = TRUE WHERE LOWER(email) = ?", normalizeSubscriberEmail(email))
+	_, err = db.Exec(db.confirmSubscriberEmailQuery(), normalizeSubscriberEmail(email))
 	if err != nil {
 		log.Error("Could not update email subscriber confirmation status: %v", err)
 		return err
@@ -3598,7 +3651,7 @@ func (db *datastore) UpdateSubscriberConfirmed(subID, token string) error {
 
 func (db *datastore) IsSubscriberConfirmed(email string) bool {
 	var dummy int64
-	err := db.QueryRow("SELECT 1 FROM emailsubscribers WHERE LOWER(email) = ? AND confirmed = TRUE", normalizeSubscriberEmail(email)).Scan(&dummy)
+	err := db.QueryRow(db.subscriberConfirmedQuery(), normalizeSubscriberEmail(email)).Scan(&dummy)
 	switch {
 	case err == sql.ErrNoRows:
 		return false

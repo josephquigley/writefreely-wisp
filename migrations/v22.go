@@ -30,10 +30,8 @@ package migrations
 //     indexes on virtual columns need a newer MariaDB than the 10.2.2 this
 //     edition supports.
 //
-// Emails and language codes are not indexed here. Their LOWER() lookups
-// either run once per subscribe, unsubscribe or confirmation, or (the
-// /lang: page) are already narrowed to one blog by an index on
-// collection_id; neither is worth an index on every write.
+// Emails and language codes were left out here and are indexed by V23, the
+// same way.
 //
 // Each statement can run again, so a start interrupted before the version is
 // recorded finishes on the next one.
