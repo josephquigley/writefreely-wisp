@@ -35,6 +35,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ### Fixed
 
+- A scheduled post's email can no longer go out twice when two workers pick up the same publish job; each job is claimed first, and a failed send is retried on the next run.
 - `db init` stops with an error at the first table it cannot create, instead of reporting success with tables missing.
 - Re-pinning a post at the position it already holds is no longer refused as forbidden on MySQL and MariaDB.
 - A failed post deletion rolls back its transaction instead of leaving the connection holding row locks.
