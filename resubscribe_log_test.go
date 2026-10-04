@@ -24,7 +24,8 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// Re-subscribing takes the duplicate-key path, which used to log the
+// Re-subscribing finds the existing subscriber before inserting (or, under a
+// concurrent insert, takes the duplicate-key path). Both used to log the
 // subscriber's address in plain text.
 func TestResubscribeDoesNotLogEmailAddress(t *testing.T) {
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
@@ -44,7 +45,7 @@ func TestResubscribeDoesNotLogEmailAddress(t *testing.T) {
 		require.Equal(t, first.ID, again.ID)
 
 		out := buf.String()
-		assert.Contains(t, out, "Duplicate subscriber", "the duplicate path should still be logged")
+		assert.Contains(t, out, "subscriber", "the re-subscribe should still be logged")
 		assert.NotContains(t, out, addr)
 		assert.NotContains(t, out, "example.com")
 	})
