@@ -47,6 +47,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - The login API, the account settings API and the full-account export return the user's plain email address instead of its stored ciphertext.
 - RSS and Atom feeds return an error instead of crashing the request when the query for a blog's posts or tag fails.
 - Logs no longer contain subscribers' email addresses: re-subscribing, newsletter sends and failed deliveries now log subscriber IDs or the collection instead of the address.
+- Two Follows arriving together from a not-yet-known remote account are both stored and accepted, instead of the second being dropped on a duplicate remote-user insert.
 
 ## [0.20.0+wisp] - 2026-09-09
 

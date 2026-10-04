@@ -1569,6 +1569,36 @@ func logOutgoingActivity(label string, activity any) {
 	log.Info("%s outgoing ActivityPub payload:\n%s", label, string(b))
 }
 
+// addOrGetRemoteUser stores fullActor as a remote user and returns its id,
+// or returns the id of the row already stored for it.
+//
+// Two Follows from an actor this instance has not seen before both reach
+// acceptAndPersistFollow with no remote user, and both insert one; the second
+// insert meets the unique key on actor_id. That is not a failure: the actor is
+// stored, which is all the caller needs, so the existing row's id is read back
+// and the follow goes ahead.
+//
+// The insert runs on its own rather than inside the caller's transaction, so
+// that the duplicate-key error ends only that one statement on every engine
+// (on Postgres it would otherwise abort the whole transaction), and so that
+// the read-back sees the row the other Follow committed whatever the
+// isolation level. A plain INSERT is used rather than an insert-ignore so
+// that any other failure, such as a value MySQL in strict mode refuses, is
+// still reported instead of being downgraded to a warning.
+func addOrGetRemoteUser(app *App, fullActor *activitystreams.Person) (int64, error) {
+	id, err := app.db.insertReturningID(app.db, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
+	if err == nil {
+		return id, nil
+	}
+	if !app.db.isDuplicateKeyErr(err) {
+		return 0, err
+	}
+	if qErr := app.db.QueryRow("SELECT id FROM remoteusers WHERE actor_id = ?", fullActor.ID).Scan(&id); qErr != nil {
+		return 0, fmt.Errorf("%v; then couldn't read the existing remote user: %v", err, qErr)
+	}
+	return id, nil
+}
+
 // acceptAndPersistFollow delivers the Accept for a Follow or an Undo Follow
 // and records the resulting change to the follower list.
 //
@@ -1598,26 +1628,29 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 	// fullActor, remoteUser and c.ID were all populated synchronously
 	// in the Follow callback, before this goroutine was even started.
 	if isFollow {
+		var followerID int64
+		if remoteUser != nil {
+			followerID = remoteUser.ID
+		} else {
+			// The actor was unknown when the Follow arrived, but that was
+			// two seconds ago: another Follow from the same actor may have
+			// stored it since, so this must not assume the insert is the
+			// first.
+			var err error
+			followerID, err = addOrGetRemoteUser(app, fullActor)
+			if err != nil {
+				log.Error("Couldn't add new remoteuser in DB: %v\n", err)
+				return
+			}
+		}
+
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
 			return
 		}
 
-		var followerID int64
-
-		if remoteUser != nil {
-			followerID = remoteUser.ID
-		} else {
-			// TODO: use apAddRemoteUser() here, instead!
-			// Add follower locally, since it wasn't found before
-			followerID, err = app.db.insertReturningID(t, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
-			if err != nil {
-				t.Rollback()
-				log.Error("Couldn't add new remoteuser in DB: %v\n", err)
-				return
-			}
-
+		if remoteUser == nil {
 			// Add in key. A key that is already stored is skipped in the
 			// SQL rather than forgiven after the fact: on Postgres a
 			// duplicate-key error aborts the transaction, and the follow
