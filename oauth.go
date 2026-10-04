@@ -12,7 +12,9 @@ package writefreely
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -329,7 +331,12 @@ func (h oauthHandler) viewOauthCallback(app *App, w http.ResponseWriter, r *http
 	provider, clientID, attachUserID, inviteCode, err := h.DB.ValidateOAuthState(ctx, state)
 	if err != nil {
 		log.Error("Unable to ValidateOAuthState: %s", err)
-		return impart.HTTPError{http.StatusInternalServerError, err.Error()}
+		// An unknown or already-used state is a stale or replayed link, not
+		// a server fault. Neither case shows the database's error text.
+		if errors.Is(err, sql.ErrNoRows) {
+			return impart.HTTPError{http.StatusBadRequest, "This sign-in link has expired. Please try signing in again."}
+		}
+		return impart.HTTPError{http.StatusInternalServerError, "Unable to complete sign-in. Please try again."}
 	}
 
 	tokenResponse, err := h.oauthClient.exchangeOauthCode(ctx, code)

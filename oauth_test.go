@@ -12,6 +12,8 @@ package writefreely
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -258,5 +260,46 @@ func TestViewOauthCallback(t *testing.T) {
 		err = h.viewOauthCallback(&App{cfg: app.Config(), sessionStore: app.SessionStore()}, rr, req)
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusTemporaryRedirect, rr.Code)
+	})
+}
+
+// TestViewOauthCallbackStateErrors checks that a callback whose state cannot
+// be validated reports neither a server fault for a replayed state nor the
+// database's own error text to the user.
+func TestViewOauthCallbackStateErrors(t *testing.T) {
+	serve := func(t *testing.T, validateErr error) *httptest.ResponseRecorder {
+		app := &MockOAuthDatastoreProvider{
+			DoDB: func() OAuthDatastore {
+				return &MockOAuthDatastore{
+					DoValidateOAuthState: func(ctx context.Context, state string) (string, string, int64, string, error) {
+						return "", "", 0, "", validateErr
+					},
+				}
+			},
+		}
+		h := oauthHandler{
+			Config: app.Config(),
+			DB:     app.DB(),
+			Store:  app.SessionStore(),
+		}
+		a := &App{cfg: app.Config(), sessionStore: app.SessionStore()}
+		handler := (&Handler{app: a}).OAuth(h.viewOauthCallback)
+		req := httptest.NewRequest("GET", "/oauth/callback/write.as?code=code&state=replayed", nil)
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		return rr
+	}
+
+	t.Run("replayed state", func(t *testing.T) {
+		rr := serve(t, sql.ErrNoRows)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+		assert.NotContains(t, rr.Body.String(), "sql:")
+		assert.Contains(t, rr.Body.String(), "expired")
+	})
+
+	t.Run("database failure", func(t *testing.T) {
+		rr := serve(t, errors.New("sql: database is closed"))
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+		assert.NotContains(t, rr.Body.String(), "sql:")
 	})
 }
