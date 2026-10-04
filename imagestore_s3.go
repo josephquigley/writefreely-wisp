@@ -102,15 +102,51 @@ func newS3ImageStore(cfg config.StorageCfg) (*s3ImageStore, error) {
 		// not in its error.
 		return nil, fmt.Errorf("[storage] s3: %v", err)
 	}
+	return &s3ImageStore{client: client, bucket: cfg.S3Bucket, prefix: s3KeyPrefix(cfg)}, nil
+}
+
+// s3KeyPrefix returns what every object key starts with: s3_prefix and a
+// slash, or nothing. image_url_base URLs are built from it too.
+func s3KeyPrefix(cfg config.StorageCfg) string {
 	prefix := strings.Trim(cfg.S3Prefix, "/")
 	if prefix != "" {
 		prefix += "/"
 	}
-	return &s3ImageStore{client: client, bucket: cfg.S3Bucket, prefix: prefix}, nil
+	return prefix
+}
+
+// s3ObjectKey returns the key the image at relPath is stored under. It is the
+// one place a key is made, for the store and for image_url_base alike, so
+// the URL readers are given and the object it names cannot drift apart.
+func s3ObjectKey(prefix, relPath string) string {
+	return prefix + strings.TrimPrefix(relPath, "/")
 }
 
 func (s *s3ImageStore) key(relPath string) string {
-	return s.prefix + strings.TrimPrefix(relPath, "/")
+	return s3ObjectKey(s.prefix, relPath)
+}
+
+// imageObjectMeta is the HTTP metadata an image object is stored with. Once
+// image_url_base is set, something other than this app serves the bucket,
+// and the object's own metadata is all it has to go on, so the headers this
+// app would have sent are kept on the object itself: the same Cache-Control
+// as a streamed image, and for SVG, Content-Disposition: attachment, which
+// stops a direct visit from loading it as a document (see uploadHeaders).
+//
+// It is set whether or not a base is configured, so that turning one on
+// later finds every image already carrying it.
+type imageObjectMeta struct {
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+}
+
+func imageObjectMetaFor(relPath, mime string) imageObjectMeta {
+	m := imageObjectMeta{ContentType: mime, CacheControl: imageCacheControl}
+	if mime == svgMIME || strings.HasSuffix(strings.ToLower(relPath), ".svg") {
+		m.ContentDisposition = "attachment"
+	}
+	return m
 }
 
 func isNoSuchKey(err error) bool {
@@ -120,8 +156,13 @@ func isNoSuchKey(err error) bool {
 func (s *s3ImageStore) Put(ctx context.Context, relPath string, b []byte, mime string) error {
 	ctx, cancel := context.WithTimeout(ctx, s3WriteTimeout)
 	defer cancel()
+	meta := imageObjectMetaFor(relPath, mime)
 	_, err := s.client.PutObject(ctx, s.bucket, s.key(relPath), bytes.NewReader(b), int64(len(b)),
-		minio.PutObjectOptions{ContentType: mime})
+		minio.PutObjectOptions{
+			ContentType:        meta.ContentType,
+			CacheControl:       meta.CacheControl,
+			ContentDisposition: meta.ContentDisposition,
+		})
 	if err != nil && minio.ToErrorResponse(err).Code == "" {
 		return s3UnreachableError{err}
 	}
