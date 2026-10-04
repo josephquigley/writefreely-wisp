@@ -82,7 +82,9 @@ type dialect interface {
 	Version(ctx context.Context, q sqlQueryer) (string, error)
 	// Rebind returns query with its `?` placeholders in this dialect's
 	// native form: unchanged for MySQL and SQLite, `$1…$n` for Postgres.
-	// Normal code does NOT need to call it; see the type comment.
+	// Normal code does NOT need to call it; see the type comment. Postgres
+	// panics on a query that mixes `?` with native `$n` placeholders, which
+	// the rebinding driver refuses (see rebindPostgres).
 	Rebind(query string) string
 	// InsertReturningID runs an INSERT and returns the generated `id`
 	// column. MySQL and SQLite use Exec + LastInsertId. Postgres appends
@@ -425,7 +427,13 @@ func (postgresDialect) Version(ctx context.Context, q sqlQueryer) (string, error
 	return queryVersion(ctx, q, "SELECT version()")
 }
 
-func (postgresDialect) Rebind(query string) string { return rebindPostgres(query) }
+func (postgresDialect) Rebind(query string) string {
+	q, err := rebindPostgres(query)
+	if err != nil {
+		panic("postgresDialect.Rebind: " + err.Error())
+	}
+	return q
+}
 
 func (postgresDialect) InsertReturningID(ctx context.Context, q sqlQueryer, query string, args ...interface{}) (int64, error) {
 	var id int64
