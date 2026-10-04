@@ -266,7 +266,8 @@ scheme decides whether TLS is used. Addressing is path-style, which Garage
 needs; set `s3_virtual_host = true` for a store that wants bucket subdomains.
 The bucket can stay private: images are still served at `/uploads/...` and
 streamed through the app, never redirected to the bucket, so URLs that other
-servers have cached keep working. At startup the server checks that it can
+servers have cached keep working. (`image_url_base`, below, changes that on
+purpose.) At startup the server checks that it can
 write to and delete from the bucket, and refuses to start if the store answers
 and says no (a missing bucket, a rejected key). If the store does not answer
 within 15 seconds, the blog starts anyway and logs "uploaded images are
@@ -286,6 +287,52 @@ safe to run again: images already in the bucket are left alone, and a damaged
 one is replaced. It reads the bucket from the `[storage]` section, so the order
 is: stop the server, add the section, run the sync, start the server. Nothing
 is uploaded in between, so nothing is missed.
+
+### Serving images without the app
+
+By default every image byte passes through the app. To let a CDN or a
+reverse proxy serve them straight from the bucket instead, set
+`image_url_base` to where the bucket's objects can be fetched:
+
+```ini
+[storage]
+type           = s3
+...
+image_url_base = https://media.example.org
+```
+
+An image's URL is then the base, a slash, and its object key, `s3_prefix`
+included: `https://media.example.org/uploads/2026/10/04/photo.png` with the
+example above. Post bodies are not changed; they keep `/uploads/` URLs, and
+pages, feeds and ActivityPub objects are given the base when they are
+rendered, so the setting can be changed or removed at any time. `/uploads/`
+then answers with a redirect to the base, which keeps working the copies of
+posts that left before the change. It requires `type = s3`.
+
+There are three ways to run it:
+
+- **No base** (the default): the app streams every image, as before.
+- **A proxy in front of the app**: a path such as `image_url_base = /media`,
+  with the proxy serving `/media/` from the bucket.
+- **A host of its own**: `image_url_base = https://media.example.org`, served
+  by a CDN or a proxy reading the bucket.
+
+Whatever serves the bucket must be able to read it, and should send
+`X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`,
+which the app sends for `/uploads/` and an object cannot carry. Objects do
+carry their `Cache-Control`, and SVGs `Content-Disposition: attachment`;
+images uploaded before this edition stored those are given them with:
+
+```sh
+writefreely images metadata --dry-run
+writefreely images metadata
+```
+
+Use a hostname you own. Image URLs are copied into federated posts and kept
+by the servers that received them, so a base on a provider's own hostname
+(`*.r2.dev`, `*.amazonaws.com` and the like) breaks every one of them if the
+images ever move. The server logs a warning at startup when it sees one.
 
 ## Going back to upstream
 
