@@ -3487,6 +3487,8 @@ func (db *datastore) GetJobsToRun(action string) ([]*PostJob, error) {
 	timeWhere := "created < DATE_SUB(NOW(), INTERVAL delay MINUTE) AND created > DATE_SUB(NOW(), INTERVAL delay + 5 MINUTE)"
 	if db.driverName == driverSQLite {
 		timeWhere = "created < DATETIME('now', '-' || delay || ' MINUTE') AND created > DATETIME('now', '-' || (delay+5) || ' MINUTE')"
+	} else if db.driverName == driverPostgres {
+		timeWhere = "created < NOW() - delay * INTERVAL '1 MINUTE' AND created > NOW() - (delay + 5) * INTERVAL '1 MINUTE'"
 	}
 	rows, err := db.Query(`SELECT pj.id, post_id, action, delay
 		FROM publishjobs pj
