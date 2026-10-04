@@ -320,12 +320,20 @@ func New() *Config {
 	return c
 }
 
+const (
+	defaultMySQLPort    = 3306
+	defaultPostgresPort = 5432
+)
+
 // UseMySQL resets the Config's Database to use default values for a MySQL setup.
 func (cfg *Config) UseMySQL(fresh bool) {
 	cfg.Database.Type = "mysql"
 	if fresh {
 		cfg.Database.Host = "localhost"
-		cfg.Database.Port = 3306
+		cfg.Database.Port = defaultMySQLPort
+	} else if cfg.Database.Port == defaultPostgresPort {
+		// Switching from Postgres: move off its default port, keep a custom one
+		cfg.Database.Port = defaultMySQLPort
 	}
 }
 
@@ -336,7 +344,10 @@ func (cfg *Config) UsePostgres(fresh bool) {
 	cfg.Database.Type = "postgres"
 	if fresh {
 		cfg.Database.Host = "localhost"
-		cfg.Database.Port = 5432
+		cfg.Database.Port = defaultPostgresPort
+	} else if cfg.Database.Port == defaultMySQLPort {
+		// Switching from MySQL: move off its default port, keep a custom one
+		cfg.Database.Port = defaultPostgresPort
 	}
 }
 
