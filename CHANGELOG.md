@@ -43,6 +43,7 @@ changes share a bullet. Detailed notes are on the corresponding
 - Paginated post and user lists break same-second ties by id, so pages no longer repeat or skip entries.
 - On MySQL and MariaDB, tokens, invite codes and remote actor addresses now match case-sensitively, and remote actors with non-Latin characters in their URLs save; the upgrade migration may take a while on large instances.
 - Saving a post whose title matches many others in a blog no longer fails when the random slug suffix collides too; it now retries several times before giving up.
+- A repeated inbound ActivityPub Like is accepted as already recorded, and a failed Like or Undo now returns an error status instead of an HTML error page with HTTP 200.
 - Logs no longer contain subscribers' email addresses: re-subscribing, newsletter sends and failed deliveries now log subscriber IDs or the collection instead of the address.
 
 ## [0.20.0+wisp] - 2026-09-09
