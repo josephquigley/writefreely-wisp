@@ -47,6 +47,7 @@ func (s staticSessionStore) Save(*http.Request, http.ResponseWriter, *sessions.S
 func TestDeletePostRollsBackOnFailedDelete(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.SingleUser = false

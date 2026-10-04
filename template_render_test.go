@@ -59,6 +59,7 @@ func newTemplateTestApp(t *testing.T, mutate func(cfg *config.Config)) (*App, *m
 	dir := t.TempDir()
 
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.Server.TemplatesParentDir = ""
 	cfg.Server.PagesParentDir = ""
 	cfg.Server.StaticParentDir = "testdata"

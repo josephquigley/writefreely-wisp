@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -21,9 +22,21 @@ var testDB *sql.DB
 type ScopedTestBody func(*sql.DB)
 
 // TestMain provides testing infrastructure within this package.
+// testMaxBlogs is the blog cap test configs use. config.New() allows one
+// blog, which the one CreateUser makes already fills, and CreateCollection
+// enforces the cap, so fixtures that create blogs need room. It stays finite
+// so the cap is still in force in those tests.
+const testMaxBlogs = 10
+
 func TestMain(m *testing.M) {
 	rand.Seed(time.Now().UTC().UnixNano())
 	gob.Register(&User{})
+
+	// Federation tests deliver to httptest servers on 127.0.0.1, which
+	// safeDialContext refuses. The ruleset itself is tested directly in
+	// ssrf_guard_test.go, and TestActivityPubClientRefusesLoopback checks
+	// the production dialer is wired in.
+	activityPubDialContext = (&net.Dialer{}).DialContext
 
 	if runMySQLTests() {
 		var err error

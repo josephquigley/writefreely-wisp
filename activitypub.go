@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -170,9 +171,25 @@ func (ru *RemoteUser) AsPerson() *activitystreams.Person {
 	}
 }
 
+// activityPubDialContext dials every ActivityPub connection. It is
+// safeDialContext, which refuses non-public addresses; a variable only so
+// that tests can deliver to an httptest server on loopback.
+var activityPubDialContext = safeDialContext
+
 func activityPubClient() *http.Client {
+	// Validate the resolved IP of every connection (including redirects) at
+	// dial time via safeDialContext.
 	return &http.Client{
 		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: activityPubDialContext,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
 	}
 }
 

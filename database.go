@@ -356,6 +356,14 @@ func (db *datastore) CreateCollection(cfg *config.Config, alias, title string, u
 	// Postgres an over-long title is an error rather than a truncation.
 	title = boundedDBText(title, collMaxLengthTitle)
 
+	collCount, err := db.GetUserCollectionCount(userID)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.App.CanCreateBlogs(collCount) {
+		return nil, impart.HTTPError{http.StatusForbidden, "You've reached the maximum number of blogs."}
+	}
+
 	// All good, so create new collection
 	collID, err := db.insertReturningID(db.DB, "INSERT INTO collections (alias, title, description, privacy, owner_id, view_count) VALUES (?, ?, ?, ?, ?, ?)", alias, title, "", defaultVisibility(cfg), userID, 0)
 	if err != nil {
@@ -1026,9 +1034,12 @@ func (db *datastore) UpdateCollection(app *App, c *SubmittedCollection, alias st
 	var rowsAffected int64
 	var changed bool
 	var res sql.Result
-	err := db.QueryRow("SELECT id FROM collections WHERE alias = ?", alias).Scan(&collID)
-	if err != nil {
+	err := db.QueryRow("SELECT id FROM collections WHERE alias = ? AND owner_id = ?", alias, c.OwnerID).Scan(&collID)
+	if err == sql.ErrNoRows {
+		return ErrUnauthorizedEditPost
+	} else if err != nil {
 		log.Error("Failed selecting from collections: %v. Some things won't work.", err)
+		return err
 	}
 
 	// Update MathJax value

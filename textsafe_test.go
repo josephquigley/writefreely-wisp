@@ -127,6 +127,7 @@ func TestLengthBounds_SQLite(t *testing.T) {
 // silent truncation.
 func TestLengthBounds_Postgres(t *testing.T) {
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "http://localhost:8080"
 	cfg.Server.StaticParentDir = t.TempDir()
 	cfg.Uploads.Enabled = true

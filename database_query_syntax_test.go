@@ -123,6 +123,7 @@ func TestPostgresQuerySyntax(t *testing.T) {
 
 func querySyntaxSuite(t *testing.T, db *datastore) {
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "http://localhost:0"
 	cfg.App.DefaultVisibility = "public"
 	app := &App{db: db, cfg: cfg}

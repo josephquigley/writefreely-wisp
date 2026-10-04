@@ -258,6 +258,7 @@ var txSemanticsScenarios = []struct {
 
 func txTestConfig() *config.Config {
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "https://local.example"
 	return cfg
 }

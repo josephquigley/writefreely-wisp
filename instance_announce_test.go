@@ -40,6 +40,7 @@ func newAnnounceTestApp(t *testing.T) *App {
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
 
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.Host = announceTestHost
@@ -360,6 +361,7 @@ func TestCollectionForAPRequestResolvesInstanceActor(t *testing.T) {
 // request happens to carry.
 func TestInstanceActorAliasComesFromConfig(t *testing.T) {
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "https://blog.example.org"
 
 	assert.Equal(t, "blog.example.org", instanceActorAlias(cfg))

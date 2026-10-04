@@ -14,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -67,6 +69,19 @@ func TestIsPublicAddr(t *testing.T) {
 		{"just below CGNAT is public", "100.63.255.255", true},
 		{"just above CGNAT is public", "100.128.0.0", true},
 
+		// IPv6 transition addresses embed an IPv4 address that must face
+		// the same checks (upstream GHSA-22qx-x758-m72p).
+		{"6to4 wrapping loopback", "2002:7f00:1::", false},
+		{"6to4 wrapping cloud metadata", "2002:a9fe:a9fe::", false},
+		{"6to4 wrapping CGNAT", "2002:6454:9b73::", false},
+		{"6to4 wrapping a public address", "2002:5db8:d822::", true},
+		{"Teredo wrapping loopback", "2001::80ff:fffe", false},
+		{"Teredo wrapping a public address", "2001::a247:27dd", true},
+		{"NAT64 wrapping cloud metadata", "64:ff9b::a9fe:a9fe", false},
+		{"NAT64 wrapping a public address", "64:ff9b::5db8:d822", true},
+		{"IPv4-compatible wrapping loopback", "::7f00:1", false},
+		{"IPv4-compatible wrapping RFC1918", "::a00:5", false},
+
 		{"ordinary public IPv4", "93.184.216.34", true},
 		{"ordinary public IPv6", "2606:2800:220:1:248:1893:25c8:1946", true},
 	}
@@ -118,4 +133,27 @@ func TestBothGuardPathsRefuseCGNAT(t *testing.T) {
 			t.Errorf("isPublicIRI error = %v, want it to name the disallowed address", err)
 		}
 	})
+}
+
+// TestActivityPubClientRefusesLoopback checks that ActivityPub requests dial
+// through safeDialContext. TestMain swaps in a plain dialer so federation
+// tests can reach httptest servers; this puts the real one back.
+func TestActivityPubClientRefusesLoopback(t *testing.T) {
+	prev := activityPubDialContext
+	activityPubDialContext = safeDialContext
+	t.Cleanup(func() { activityPubDialContext = prev })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the request reached a loopback server")
+	}))
+	defer srv.Close()
+
+	resp, err := activityPubClient().Get(srv.URL + "/inbox")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("activityPubClient reached %s; it must refuse loopback", srv.URL)
+	}
+	if !errors.Is(err, errBlockedRemoteAddr) {
+		t.Errorf("error = %v, want one wrapping errBlockedRemoteAddr", err)
+	}
 }

@@ -30,6 +30,7 @@ func newJobsTestApp(t *testing.T) (*App, *sql.DB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.SingleUser = false
