@@ -72,7 +72,7 @@ var wfpg04PostgresDDL = []string{
 	`CREATE TABLE appcontent (id VARCHAR(36) PRIMARY KEY, content TEXT NOT NULL, updated TIMESTAMP NOT NULL, title VARCHAR(255) NULL, content_type VARCHAR(36) NOT NULL DEFAULT 'page')`,
 	`CREATE TABLE oauth_users (user_id INTEGER NOT NULL, remote_user_id VARCHAR(128) NOT NULL, provider VARCHAR(24) NOT NULL, client_id VARCHAR(128) NOT NULL, access_token VARCHAR(512) NOT NULL)`,
 	`CREATE UNIQUE INDEX oauth_users_uk ON oauth_users (user_id, provider, client_id)`,
-	`CREATE TABLE publishjobs (id SERIAL PRIMARY KEY, post_id VARCHAR(16) NOT NULL, action VARCHAR(16) NOT NULL, delay SMALLINT NOT NULL)`,
+	`CREATE TABLE publishjobs (id SERIAL PRIMARY KEY, post_id VARCHAR(16) NOT NULL, action VARCHAR(16) NOT NULL, delay SMALLINT NOT NULL, claimed_at TIMESTAMPTZ NULL)`,
 	`CREATE TABLE remoteusers (id SERIAL PRIMARY KEY, actor_id VARCHAR(255) NOT NULL UNIQUE, inbox VARCHAR(255) NOT NULL, shared_inbox VARCHAR(255) NOT NULL, url VARCHAR(255) NULL)`,
 	`CREATE TABLE remoteuserkeys (id VARCHAR(255) PRIMARY KEY, remote_user_id INTEGER NOT NULL, public_key BYTEA NOT NULL)`,
 }
