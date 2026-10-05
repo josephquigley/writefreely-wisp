@@ -124,16 +124,15 @@ func TestValueTypesMySQL(t *testing.T) {
 }
 
 // vtCreateUser creates a user the way signup does: a bcrypt hash (empty for
-// an OAuth user without a password) and an encrypted email, if any.
+// an OAuth user without a password) and an encrypted email, if any. The
+// hash is at bcrypt.MinCost (testHashPass) rather than signup's cost 12:
+// what these suites check is how the hash is stored and read back, and
+// auth.Authenticated verifies it either way.
 func vtCreateUser(t *testing.T, app *App, username, pass, email string) *User {
 	t.Helper()
 	hashed := []byte{}
 	if pass != "" {
-		var err error
-		hashed, err = auth.HashPass([]byte(pass))
-		if err != nil {
-			t.Fatalf("hash: %v", err)
-		}
+		hashed = testHashPass(t, pass)
 	}
 	u := &User{
 		Username:   username,
