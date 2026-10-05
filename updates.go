@@ -113,10 +113,15 @@ func (app *App) InitUpdates() {
 	}
 }
 
+// versionCheckURL is where newVersionCheck asks for the latest release. It is
+// a variable so tests can point it at a local server: the real one is a third
+// party, and a test that needs it fails whenever it is down.
+var versionCheckURL = "https://version.writefreely.org"
+
 func newVersionCheck() (string, error) {
-	res, err := http.Get("https://version.writefreely.org")
+	res, err := http.Get(versionCheckURL)
 	if debugging {
-		log.Info("[update check] GET https://version.writefreely.org")
+		log.Info("[update check] GET %s", versionCheckURL)
 	}
 	// TODO: return error if statusCode != OK
 	if err == nil && res.StatusCode == http.StatusOK {

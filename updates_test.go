@@ -1,12 +1,32 @@
 package writefreely
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"testing"
 	"time"
 )
 
+// serveLatestVersion points versionCheckURL at a local server answering with
+// version, for the length of the test, so the update check never leaves the
+// machine.
+func serveLatestVersion(t *testing.T, version string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, version)
+	}))
+	t.Cleanup(srv.Close)
+	prev := versionCheckURL
+	versionCheckURL = srv.URL
+	t.Cleanup(func() { versionCheckURL = prev })
+}
+
 func TestUpdatesRoundTrip(t *testing.T) {
+	// Set before the cache is built: newUpdatesCache starts a check in a
+	// goroutine straight away.
+	serveLatestVersion(t, "v99.0.0")
 	cache := newUpdatesCache(defaultUpdatesCacheTime)
 	t.Run("New Updates Cache", func(t *testing.T) {
 
