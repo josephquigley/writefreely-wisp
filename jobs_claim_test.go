@@ -183,6 +183,8 @@ func TestFailedPublishJobIsClaimableAgain(t *testing.T) {
 }
 
 func TestPublishJobClaimsMigration(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		// Back to before wisp_v3, as an upgrade finds it, with a job queued.
 		for _, q := range []string{

@@ -56,6 +56,12 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+	if err := dropPostgresTestTemplate(); err != nil {
+		fmt.Println("test database harness:", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	if runMySQLTests() {
 		if closeErr := testDB.Close(); closeErr != nil {
 			fmt.Println(closeErr)

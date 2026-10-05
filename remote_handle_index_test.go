@@ -132,6 +132,8 @@ func undoRemoteHandleIndex(t *testing.T, app *App) {
 }
 
 func TestRemoteHandleIndexMigration(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		undoRemoteHandleIndex(t, app)
 		// On MySQL the query names handle_lower, which is gone now.

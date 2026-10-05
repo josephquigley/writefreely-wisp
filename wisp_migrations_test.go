@@ -60,6 +60,8 @@ func rewindToAppMigrations(t *testing.T, app *App, ver int) {
 }
 
 func TestWispMigrationsRecordedOnInit(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		assert.Equal(t, migrations.CurrentVer(), maxMigrationVersion(t, app, migrations.WispTable))
 		assert.Equal(t, migrations.UpstreamVer(), maxMigrationVersion(t, app, "appmigrations"),
@@ -72,6 +74,8 @@ func TestWispMigrationsRecordedOnInit(t *testing.T) {
 }
 
 func TestWispMigrationsConvertFromAppMigrations(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		// The released V18, as the blog's database holds it. Its schema is
 		// already past V18, so the later migrations also show they can run
@@ -100,6 +104,8 @@ func TestWispMigrationsConvertFromAppMigrations(t *testing.T) {
 // A start interrupted after creating wisp_migrations but before filling it
 // converts on the next one, rather than reading the empty table as V0.
 func TestWispConversionFinishesAfterInterruption(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		rewindToAppMigrations(t, app, 18)
 		dt := "DATETIME"
@@ -120,6 +126,8 @@ func TestWispConversionFinishesAfterInterruption(t *testing.T) {
 // released, and their numbers now mean other migrations. Such a database is
 // refused rather than guessed at.
 func TestWispConversionRefusesUnreleasedVersions(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		rewindToAppMigrations(t, app, 19)
 		err := migrations.Migrate(migrations.NewDatastore(app.db.DB, app.db.driverName))

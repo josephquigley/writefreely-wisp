@@ -116,17 +116,24 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # -tags sqlite so the app-level tests behind that tag (signup, OAuth
-      # state, tokens, tags) are compiled and run against Postgres too.
-      - run: go test -count=1 -tags sqlite ./...
-      # WFPG-06 made every Postgres timestamp a UTC instant (the session is
-      # pinned to timezone=UTC and the dialect sends UTC), which only means
-      # something if it holds when the Go process itself is not on UTC. The
-      # runner is, so run the whole suite a second time with the process in
-      # a zone that is never UTC and has daylight saving. The first command
-      # fails the step if Go did not actually pick the zone up (Go reads TZ
-      # and the runner's tzdata itself), so a silently UTC rerun cannot pass
-      # for this one.
+      # The suite runs once, with the Go process in a zone that is never UTC
+      # and has daylight saving. Every Postgres timestamp is a UTC instant:
+      # the session is pinned to timezone=UTC and the dialect sends UTC. That
+      # guarantee is about a process that is not on UTC, because a bug in
+      # this class (a zone-less local time sent, or a value read back in the
+      # process zone) cannot show while the process is already on UTC, which
+      # the runner is. A second pass on the runner's UTC would add nothing
+      # for it, so there is none: the test job (SQLite) and test-mysql
+      # (MariaDB, plus the SQLite twins) still run the suite with the process
+      # on UTC, so a test that silently assumes a UTC process is still caught
+      # there. What no job runs any more is Postgres with a UTC process,
+      # which for this bug class is the easy case.
+      #
+      # The first command fails the step if Go did not actually pick the
+      # zone up (Go reads TZ and the runner's tzdata itself), so a silently
+      # UTC run cannot pass for a Detroit one. -tags sqlite so the app-level
+      # tests behind that tag (signup, OAuth state, tokens, tags) are
+      # compiled and run against Postgres too.
       - name: go test (TZ=America/Detroit)
         env:
           TZ: America/Detroit

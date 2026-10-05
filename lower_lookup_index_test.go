@@ -129,6 +129,8 @@ func undoLowerEmailLanguageIndex(t *testing.T, app *App) {
 }
 
 func TestLowerEmailLanguageIndexMigration(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	forEachCaseEngine(t, func(t *testing.T, app *App) {
 		undoLowerEmailLanguageIndex(t, app)
 
