@@ -60,6 +60,7 @@ costs nothing on a run without Postgres.
 | `newPostgresTestDatastore(t testing.TB) *datastore` | A `*datastore` with `driverName` `postgres` over a fresh database with the full schema loaded, as `writefreely db init` would load it. The usual choice. |
 | `newPostgresTestApp(t testing.TB, cfg *config.Config) *App` | The same, wrapped in an `*App` whose `cfg` is yours (`nil` means `config.New()`). Its `Database.Type` is set to `postgres`. Use it for code that takes an `*App`. |
 | `newPostgresTestDB(t testing.TB) *sql.DB` | A fresh, **empty** database, for a test that builds its own tables. |
+| `buildPostgresFromScratch(t testing.TB)` | Makes the schema-loaded databases this test and its subtests get be built by `adminInitDatabase` rather than cloned from the template (below). For tests about `db init`, the migrations or `db copy`. |
 | `runPostgresTests() bool` | Whether the run is a Postgres run, for gating a test by hand. |
 
 ```go
@@ -79,19 +80,38 @@ isolated from one another and need no teardown of their own.
 
 The schema is loaded by `adminInitDatabase`, the same function `db init`
 uses, so these tests exercise the real schema and migrations rather than a
-copy. The helpers still turn one specific panic, "not implemented for
-database driver", into a skip naming the schema ticket; since the Postgres
-schema landed (WFPG-03) that panic no longer happens, and any schema-load
-error fails the test. `TestPostgresSchemaLoads` is the probe that a full
-`db init` works against a real server.
+hand-written copy. It runs once per test binary: the first test that asks
+for a schema-loaded database builds a template, `wf_test_template_<16 hex
+digits>`, as an empty database with `adminInitDatabase` run on it, closes
+every connection to it and disallows new ones. Every schema-loaded database
+after that is `CREATE DATABASE … TEMPLATE … STRATEGY WAL_LOG`, a few
+milliseconds instead of about fifty for the schema and every migration.
+On a server older than 15, which has no `STRATEGY`, it is a plain
+`TEMPLATE` copy. `TestMain` drops the template at the end of the run.
+`TestPostgresTemplateParity` compares a clone with a database built from
+scratch: every schema object, owner, privilege, row and sequence.
+
+A test about `db init`, the migrations themselves or `db copy` calls
+`buildPostgresFromScratch(t)` first, so that it checks a real run of them
+and not a copy of one. `TestPostgresSchemaLoads`, the migration tests
+(`Test*Migration*`, `TestWisp*`) and the `TestDBCopy*_Postgres` tests do;
+`TestSchemaParity` and `TestPostgresInit*` build on an empty database
+themselves. `TestPostgresSchemaLoads` is the probe that a full `db init`
+works against a real server. Any schema-load error fails the test.
+
+Postgres refuses to copy a template while a session is connected to it, so
+nothing may open the template once it is built; a clone that fails for that
+reason says so.
 
 `withTestDB`, the older helper used by MySQL-only tests, also hands out a
 fresh schema-loaded database under Postgres. `TestOAuthDatastore` and
 `TestUpdatePostPinStateUnchanged` run on Postgres; `TestTaggedPostQueriesOnMySQL`
 stays MySQL-only, because it is about MySQL's two regex engines.
 
-If a run is killed hard (`kill -9`, a crashed container), a database can be
-left behind. They are easy to spot and drop by hand:
+If a run is killed hard (`kill -9`, a crashed container, a panicking
+test), a database can be left behind, the template among them. Each run's
+template has its own name, so a leftover is never reused or mistaken for
+the next run's. They are easy to spot and drop by hand:
 
 ```sh
 psql "$WF_TEST_PG_DSN" -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'wf\_test\_%'"

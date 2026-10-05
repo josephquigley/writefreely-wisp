@@ -263,6 +263,8 @@ func dbCopyRun(t *testing.T, fx *dbCopyFixture, dst *sql.DB, opts DBCopyOptions)
 }
 
 func TestDBCopy_Postgres(t *testing.T) {
+	// About db copy into a database db init built: not a template clone.
+	buildPostgresFromScratch(t)
 	fx := buildDBCopyFixture(t)
 	pg := newPostgresTestApp(t, valueTypesConfig())
 	prepareValueTypesApp(t, pg)
@@ -498,6 +500,8 @@ func TestDBCopy_Postgres(t *testing.T) {
 // TestDBCopyRefusals_Postgres covers what the command must refuse, and that
 // a refused copy leaves the target as it was.
 func TestDBCopyRefusals_Postgres(t *testing.T) {
+	// About db copy into a database db init built: not a template clone.
+	buildPostgresFromScratch(t)
 	t.Run("source behind", func(t *testing.T) {
 		fx := buildDBCopyFixture(t)
 		pg := newPostgresTestApp(t, nil)
@@ -570,6 +574,8 @@ func TestDBCopyRefusals_Postgres(t *testing.T) {
 // is refused with an error naming the version found, before anything is
 // written to the target, in a real copy and in a dry run alike.
 func TestDBCopyVersionRefusals_Postgres(t *testing.T) {
+	// About db copy into a database db init built: not a template clone.
+	buildPostgresFromScratch(t)
 	newer, older := dbCopySchemaVersion+1, dbCopySchemaVersion-1
 	addVersion := func(t *testing.T, db *sql.DB, v int) {
 		t.Helper()

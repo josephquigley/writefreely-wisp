@@ -161,6 +161,8 @@ func writeTestINI(t *testing.T, path, body string) {
 // left: MySQL commits each DDL statement as it goes, so a crash can leave
 // the tables, with or without the version row, and no appmigrations entry.
 func TestSettingsMigrationIsIdempotent(t *testing.T) {
+	// About the migrations themselves: not a template clone.
+	buildPostgresFromScratch(t)
 	ctx := context.Background()
 	run := func(a *App) {
 		t.Helper()
