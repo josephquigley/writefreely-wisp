@@ -644,6 +644,29 @@ func (h *Handler) OAuth(f handlerFunc) http.HandlerFunc {
 	}
 }
 
+// isInstanceActorRead reports whether r is an ActivityPub GET of the
+// instance actor's own document, and nothing else: not another collection,
+// not its inbox, outbox, followers or following, and not a non-ActivityPub
+// request for the same path.
+//
+// That document holds only the server's name and public key, and every
+// signed fetch this instance makes names that key as its keyId. A peer that
+// fetches keys without signing cannot verify our signature unless it can
+// read this one document, so private mode leaves it open, as Mastodon and
+// Mbin do for their own instance actors.
+//
+// The alias comes from App.Host, the same place the instance actor's id and
+// route come from, never from the request's Host header.
+func isInstanceActorRead(cfg *config.Config, r *http.Request) bool {
+	ur, err := url.Parse(cfg.App.Host)
+	if err != nil || ur.Host == "" {
+		return false
+	}
+	return r.Method == http.MethodGet &&
+		r.URL.Path == "/api/collections/"+ur.Host &&
+		IsActivityPubRequest(r)
+}
+
 func (h *Handler) AllReader(f handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, func() error {
@@ -663,7 +686,7 @@ func (h *Handler) AllReader(f handlerFunc) http.HandlerFunc {
 			// Allow any origin, as public endpoints are handled in here
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 
-			if h.app.App().cfg.App.Private {
+			if h.app.App().cfg.App.Private && !isInstanceActorRead(h.app.App().cfg, r) {
 				// This instance is private, so ensure it's being accessed by a valid user
 				// Check if authenticated with an access token
 				_, apiErr := optionalAPIAuth(h.app.App(), r)
