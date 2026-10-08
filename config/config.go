@@ -176,6 +176,20 @@ type (
 		// the zone, so use one only on a zone you control.
 		FederationAllowlist string `ini:"federation_allowlist"`
 
+		// AuthorizedFetch requires a valid HTTP signature on every
+		// ActivityPub request this instance serves: every read of an
+		// actor, collection or post, and every inbox delivery. Unsigned
+		// and badly signed requests get 401. With FederationAllowlist set
+		// the signer must also be on it; without one, any server that can
+		// sign is admitted.
+		//
+		// It is independent of Private, and only ever narrows access: it
+		// never admits a request that private mode would refuse. Webfinger,
+		// host-meta, nodeinfo and the instance actor stay open, because a
+		// peer must read those before it can verify our own signed
+		// requests. Off, nothing changes.
+		AuthorizedFetch bool `ini:"authorized_fetch"`
+
 		// InstanceAnnounce turns on the instance-wide announce actor: the
 		// server actor at /api/collections/<host> accepts follows of its own
 		// and Announces every new post from every PUBLIC blog to whoever

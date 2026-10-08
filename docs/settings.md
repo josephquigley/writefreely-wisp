@@ -9,9 +9,10 @@ WriteFreely keeps its configuration in two places.
 restart. Any value may be a `${VARIABLE}` reference to the environment.
 
 **The database holds everything else**: site name and description,
-appearance, registration, federation (including `federation_allowlist` and
-`instance_announce`), the reader, invites, default visibility, update
-checks, and whether image uploads are on and how large they may be. Every
+appearance, registration, federation (including `federation_allowlist`,
+`authorized_fetch` and `instance_announce`), the reader, invites, default
+visibility, update checks, and whether image uploads are on and how large
+they may be. Every
 server sharing the database uses the same values. A change made on one
 takes effect on the others with their next request. Turning image uploads off
 also stops serving images already uploaded, until they are turned back on.

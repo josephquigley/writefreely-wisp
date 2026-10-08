@@ -78,6 +78,9 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 
 	// Primary app routes
 	write := r.PathPrefix("/").Subrouter()
+	// authorized_fetch is enforced here, once a route has matched and before
+	// any handler looks anything up. See requireAuthorizedFetch.
+	write.Use(handler.authorizedFetch)
 
 	// Federation endpoint configurations
 	wf := webfinger.Default(wfResolver{apper.App().db, apper.App()})
