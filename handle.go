@@ -657,12 +657,37 @@ func (h *Handler) OAuth(f handlerFunc) http.HandlerFunc {
 	}
 }
 
+// isInstanceActorRead reports whether r is an ActivityPub GET of the
+// instance actor's own document, and nothing else: not another collection,
+// not its inbox, outbox, followers or following, and not a non-ActivityPub
+// request for the same path.
+//
+// That document holds only the server's name and public key, and every
+// signed fetch this instance makes names that key as its keyId. A peer that
+// fetches keys without signing cannot verify our signature unless it can
+// read this one document.
+func isInstanceActorRead(cfg *config.Config, r *http.Request) bool {
+	alias := instanceActorAlias(cfg)
+	return alias != "" &&
+		r.Method == http.MethodGet &&
+		r.URL.Path == "/api/collections/"+alias &&
+		IsActivityPubRequest(r)
+}
+
 // requirePrivateModeAccess enforces private mode for a request. It accepts an
 // API access token, a web session, or an HTTP signature from a host on the
 // federation allowlist, and returns nil when the instance is not private.
+//
+// The instance actor's document is the one exception, and is readable by
+// anyone: see isInstanceActorRead. Mastodon and Mbin leave their instance
+// actor open for the same reason.
 func (h *Handler) requirePrivateModeAccess(r *http.Request) error {
 	app := h.app.App()
 	if !app.Config().App.Private {
+		return nil
+	}
+
+	if isInstanceActorRead(app.Config(), r) {
 		return nil
 	}
 
