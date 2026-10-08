@@ -82,6 +82,11 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	// any handler looks anything up. See requireAuthorizedFetch.
 	write.Use(handler.authorizedFetch)
 
+	// Status-only health route. Registered before every other dynamic
+	// route, including the collection catch-alls, and without any of
+	// Handler's wrappers: see handleHealthz.
+	write.HandleFunc(healthzPath, apper.App().handleHealthz)
+
 	// Federation endpoint configurations
 	wf := webfinger.Default(wfResolver{apper.App().db, apper.App()})
 	wf.NoTLSHandler = nil
