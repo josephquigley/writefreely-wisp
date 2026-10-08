@@ -56,6 +56,7 @@ var reservedUsernames = map[string]bool{
 	"guide":            true,
 	"guides":           true,
 	"help":             true,
+	"healthz":          true,
 	"index":            true,
 	"invite":           true,
 	"js":               true,
