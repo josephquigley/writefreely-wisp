@@ -221,6 +221,12 @@ select {
 			<div><input type="text" name="federation_allowlist" id="federation_allowlist" class="inline" value="{{.Config.FederationAllowlist}}" style="width: 20em;"/></div>
 		</div>
 		<div class="features row">
+			<div><label for="authorized_fetch">Authorized Fetch
+					<p>Require a valid HTTP signature on every ActivityPub request, public or private. Uses the allowlist when one is set. <strong>Unsigned fetches are refused.</strong></p>
+				</label></div>
+			<div><input type="checkbox" name="authorized_fetch" id="authorized_fetch" {{if .Config.AuthorizedFetch}}checked="checked"{{end}} /></div>
+		</div>
+		<div class="features row">
 			<div><label for="instance_announce">Instance Announce
 					<p>Announce every public post under one instance-wide actor. <strong>Publishes a feed of all public writing.</strong></p>
 				</label></div>

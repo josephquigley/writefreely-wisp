@@ -22,6 +22,8 @@ changes share a bullet. Detailed notes are on the corresponding
 - Scheduled email publishing and the orphaned-image sweep take a database lock, so two app processes sharing one MySQL or Postgres database never email the same post twice.
 - `docs/postgres-ha.md` explains running behind a proxy that follows a Patroni primary, the HAProxy settings failover depends on, and what several processes sharing one database must agree on.
 - Pages, feeds and federated posts link S3 images at `image_url_base` while stored posts keep `/uploads/` URLs, which redirect there, and `writefreely images metadata` adds caching headers to existing objects.
+- `GET /healthz` answers 200, or 503 when the database is unreachable, with an empty body, no cookie and no redirect, even on a private instance, and `healthz` is now a reserved username.
+- `[app] authorized_fetch` requires a valid HTTP signature on every ActivityPub read and inbox delivery, public or private, admitting only allowlisted signers when `federation_allowlist` is set; discovery and the instance actor stay open.
 
 ### Changed
 

@@ -23,6 +23,9 @@ type nodeInfoResolver struct {
 	db  *datastore
 }
 
+// nodeInfoPath is where the NodeInfo document itself is served.
+const nodeInfoPath = "/api/nodeinfo"
+
 func nodeInfoConfig(db *datastore, cfg *config.Config) *nodeinfo.Config {
 	name := cfg.App.SiteName
 	desc := cfg.App.SiteDesc
@@ -38,7 +41,7 @@ func nodeInfoConfig(db *datastore, cfg *config.Config) *nodeinfo.Config {
 	}
 	return &nodeinfo.Config{
 		BaseURL: cfg.App.Host,
-		InfoURL: "/api/nodeinfo",
+		InfoURL: nodeInfoPath,
 
 		Metadata: nodeinfo.Metadata{
 			NodeName:        name,

@@ -78,6 +78,14 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 
 	// Primary app routes
 	write := r.PathPrefix("/").Subrouter()
+	// authorized_fetch is enforced here, once a route has matched and before
+	// any handler looks anything up. See requireAuthorizedFetch.
+	write.Use(handler.authorizedFetch)
+
+	// Status-only health route. Registered before every other dynamic
+	// route, including the collection catch-alls, and without any of
+	// Handler's wrappers: see handleHealthz.
+	write.HandleFunc(healthzPath, apper.App().handleHealthz)
 
 	// Federation endpoint configurations
 	wf := webfinger.Default(wfResolver{apper.App().db, apper.App()})
