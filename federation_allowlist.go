@@ -130,10 +130,11 @@ func newKeyCache() *keyCache {
 // keyCacheLimit caps the number of entries a keyCache holds. allowlistedKey
 // is reached before a caller has proved possession of any private key: the
 // allowlist, date-window and signed-header checks that come before it in
-// verifyAllowlistedSignature all pass without a valid signature. An
-// unauthenticated caller who knows one allowlisted hostname can therefore
-// present an unbounded number of distinct keyIds on that host, so the cache
-// must not grow without bound in response.
+// verifyPeerSignature all pass without a valid signature. An
+// unauthenticated caller who knows one allowlisted hostname — or, under
+// authorized_fetch with no allowlist, any hostname at all — can therefore
+// present an unbounded number of distinct keyIds, so the cache must not grow
+// without bound in response.
 const keyCacheLimit = 1024
 
 // get returns the cached key for keyID. The second return value reports
@@ -260,7 +261,7 @@ func (app *App) inboxAllowed(inboxURL string) bool {
 // allowlistedKey returns the RSA public key named by keyID, fetching the
 // owning actor if the key is not cached.
 //
-// The caller must already have checked keyID's host against the allowlist:
+// The caller must already have checked keyID's host with federationAllowed:
 // this function makes an outbound request.
 //
 // The actor is fetched directly rather than through getActor, because a
@@ -484,58 +485,74 @@ func verifyDigest(r *http.Request) error {
 
 // verifyAllowlistedSignature admits a request carrying a valid HTTP signature
 // from a host on the federation allowlist. Every failure returns
+// ErrFederationNotAllowed, and so does every request when no allowlist is
+// configured: private mode admits signers only through an allowlist.
+func (app *App) verifyAllowlistedSignature(r *http.Request) error {
+	if !app.federationAllowlistActive() {
+		return ErrFederationNotAllowed
+	}
+	return app.verifyPeerSignature(r)
+}
+
+// verifyPeerSignature admits a request carrying a valid HTTP signature from a
+// host federationAllowed admits: with an allowlist configured, a host on it;
+// without one, any host at all. Every failure returns
 // ErrFederationNotAllowed.
 //
 // The order of these checks is a security property, not an implementation
 // detail. The signing key's host is checked against the allowlist before the
 // key is fetched, so a request from a host that is not on the list never
-// causes an outbound connection to a URL the caller chose.
-func (app *App) verifyAllowlistedSignature(r *http.Request) error {
-	if !app.federationAllowlistActive() || r.Header.Get("Signature") == "" {
+// causes an outbound connection to a URL the caller chose. With no
+// allowlist that protection is gone by definition, since any host may sign;
+// what remains is that the fetch goes through resolveIRI, which refuses
+// non-public addresses, and that the key cache stays bounded by
+// keyCacheLimit however many keyIds a caller invents.
+func (app *App) verifyPeerSignature(r *http.Request) error {
+	if r.Header.Get("Signature") == "" {
 		return ErrFederationNotAllowed
 	}
 
 	v, err := fedsig.NewVerifier(r)
 	if err != nil {
-		log.Info("Federation allowlist: malformed signature: %v", err)
+		log.Info("Signature check: malformed signature: %v", err)
 		return ErrFederationNotAllowed
 	}
 
 	keyID := v.KeyId()
 	u, err := url.Parse(keyID)
 	if err != nil || u.Hostname() == "" {
-		log.Info("Federation allowlist: unusable keyId %q", keyID)
+		log.Info("Signature check: unusable keyId %q", keyID)
 		return ErrFederationNotAllowed
 	}
 	if !app.federationAllowed(u.Hostname()) {
-		log.Info("Federation allowlist: host %s is not on the allowlist", u.Hostname())
+		log.Info("Signature check: host %s is not on the federation allowlist", u.Hostname())
 		return ErrFederationNotAllowed
 	}
 
 	if err := checkRequestDate(r, time.Now()); err != nil {
-		log.Info("Federation allowlist: %v", err)
+		log.Info("Signature check: %v", err)
 		return ErrFederationNotAllowed
 	}
 
 	hasBody := requestHasBody(r)
 	if err := checkSignedHeaders(r, hasBody); err != nil {
-		log.Info("Federation allowlist: %v", err)
+		log.Info("Signature check: %v", err)
 		return ErrFederationNotAllowed
 	}
 
 	pubKey, err := app.allowlistedKey(keyID)
 	if err != nil {
-		log.Info("Federation allowlist: can't get key %s: %v", keyID, err)
+		log.Info("Signature check: can't get key %s: %v", keyID, err)
 		return ErrFederationNotAllowed
 	}
 	if err := v.Verify(pubKey, fedsig.RSA_SHA256); err != nil {
-		log.Info("Federation allowlist: bad signature from %s: %v", keyID, err)
+		log.Info("Signature check: bad signature from %s: %v", keyID, err)
 		return ErrFederationNotAllowed
 	}
 
 	if hasBody {
 		if err := verifyDigest(r); err != nil {
-			log.Info("Federation allowlist: %v", err)
+			log.Info("Signature check: %v", err)
 			return ErrFederationNotAllowed
 		}
 	}

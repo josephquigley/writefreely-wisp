@@ -622,6 +622,7 @@ func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *htt
 		"app.disable_drafts":       check("disable_drafts"),
 		"app.notes_only":           check("notes_only"),
 		"app.federation_allowlist": r.FormValue("federation_allowlist"),
+		"app.authorized_fetch":     check("authorized_fetch"),
 		"app.instance_announce":    check("instance_announce"),
 		"uploads.enabled":          check("uploads_enabled"),
 		"uploads.max_size_mb":      r.FormValue("uploads_max_size_mb"),

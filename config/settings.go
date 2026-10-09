@@ -67,6 +67,7 @@ var dbSettings = []Setting{
 	{Name: "app.notes_only", Kind: KindBool},
 	{Name: "app.private", Kind: KindBool},
 	{Name: "app.federation_allowlist", Kind: KindString, Validate: validateFederationAllowlistText},
+	{Name: "app.authorized_fetch", Kind: KindBool},
 	{Name: "app.instance_announce", Kind: KindBool},
 	{Name: "app.local_timeline", Kind: KindBool},
 	{Name: "app.user_invites", Kind: KindString, Validate: oneOf("", "admin", "user")},
