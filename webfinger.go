@@ -24,12 +24,11 @@ import (
 	"github.com/writeas/go-webfinger"
 	"github.com/writeas/impart"
 	"github.com/writeas/web-core/log"
-	"github.com/writefreely/writefreely/config"
 )
 
 type wfResolver struct {
 	db  *datastore
-	cfg *config.Config
+	app *App
 }
 
 var wfUserNotFoundErr = impart.HTTPError{http.StatusNotFound, "User not found."}
@@ -39,7 +38,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 	var err error
 	if username == host {
 		c = instanceColl
-	} else if wfr.cfg.App.SingleUser {
+	} else if wfr.app.Config().App.SingleUser {
 		c, err = wfr.db.GetCollectionByID(1)
 	} else {
 		c, err = wfr.db.GetCollection(username)
@@ -48,7 +47,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 		log.Error("Unable to get blog: %v", err)
 		return nil, err
 	}
-	c.hostName = wfr.cfg.App.Host
+	c.hostName = wfr.app.Config().App.Host
 
 	if !c.IsInstanceColl() {
 		silenced, err := wfr.db.IsUserSilenced(c.OwnerID)
@@ -60,7 +59,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 			return nil, wfUserNotFoundErr
 		}
 	}
-	if wfr.cfg.App.SingleUser {
+	if wfr.app.Config().App.SingleUser {
 		// Ensure handle matches user-chosen one on single-user blogs
 		if username != c.Alias {
 			log.Info("Username '%s' is not handle '%s'", username, c.Alias)
@@ -69,7 +68,7 @@ func (wfr wfResolver) FindUser(username string, host, requestHost string, r []we
 	}
 	// Only return information if site has federation enabled.
 	// TODO: enable two levels of federation? Unlisted or Public on timelines?
-	if !wfr.cfg.App.Federation {
+	if !wfr.app.Config().App.Federation {
 		return nil, wfUserNotFoundErr
 	}
 
@@ -138,7 +137,11 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 	}
 	var lastErr error
 	for _, ip := range ips {
-		if !isPublicAddr(ip.IP) {
+		// The check happens here, after the resolver and before the
+		// dial, so a DNS rebind cannot move the connection to an
+		// address that was public when the name was first looked up.
+		// The ruleset itself lives in ssrf_guard.go.
+		if !isPublicAddr(ip.IP, host, nil) {
 			lastErr = fmt.Errorf("%w: %s", errBlockedRemoteAddr, ip.IP)
 			continue
 		}
@@ -154,30 +157,6 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 		lastErr = fmt.Errorf("no addresses found for %s", host)
 	}
 	return nil, lastErr
-}
-
-// isPublicAddr reports whether ip is safe to connect to, i.e. not a
-// loopback, private, link-local, multicast, or otherwise special-purpose
-// address that could be used to reach internal services or cloud metadata
-// endpoints via SSRF.
-func isPublicAddr(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	if ip4 := ip.To4(); ip4 != nil {
-		// 100.64.0.0/10 (Carrier-Grade NAT) and 169.254.169.254-style
-		// cloud metadata addresses are covered by IsLinkLocalUnicast above,
-		// but explicitly block the CGNAT range too.
-		if ip4[0] == 100 && ip4[1]&0xc0 == 64 {
-			return false
-		}
-	}
-	return true
 }
 
 // remoteLookup and newRemoteActor are the two network calls that handle

@@ -18,7 +18,7 @@ migration, and the one step that must not be skipped is the backup.
 |---|---|---|
 | Binary name | `writefreely` | `writefreely` |
 | Config file | `config.ini` | `config.ini`, plus an optional `[uploads]` section |
-| Database schema | through migration V17 | V17 plus V18, which adds `post_images` |
+| Database schema | through migration V17 | V17, then this edition's own migrations, recorded in `wisp_migrations` |
 | Software name in nodeinfo, the `Server` header and the outbound user agent | `WriteFreely` | `WriteFreely`, deliberately unchanged |
 | Name shown to people | WriteFreely | WriteFreely (Wisp Edition) |
 | Update checks | on | off, see the README |
@@ -28,8 +28,12 @@ V1 through V17 unmodified, so an instance running an older release
 migrates straight through in one step, exactly as an upstream upgrade
 would.
 
-Migration V18 only creates a table. Nothing existing is altered or
-dropped. The reordering of pinned posts uses `posts.pinned_position`,
+This edition's own migrations are numbered separately, wisp_v1 onwards,
+and recorded in their own `wisp_migrations` table; `appmigrations` keeps
+upstream's numbering. wisp_v1 only creates a table, `post_images`. wisp_v2
+gives tokens, codes and remote IRIs exact-match collations on MySQL, and
+wisp_v3 adds the settings tables, lookup indexes and a `publishjobs`
+column. Nothing existing is dropped. The reordering of pinned posts uses `posts.pinned_position`,
 which upstream already has, and multiple verification links are stored in
 the `verification_link` attribute upstream already has, one per line.
 
@@ -200,7 +204,7 @@ this, and the app reaches it by service name as before. Add `PUID` and
 [docker.md](docker.md).
 
 `docker compose up -d` then starts the new image, and the entrypoint
-applies migration V18.
+applies this edition's migrations.
 
 The entrypoint migrates before the server starts, and it does not undo the
 migration if the server then fails to boot. A container that crash-loops
@@ -240,16 +244,93 @@ uploads go under the static asset tree, which is fine until an upgrade
 replaces that tree. Which image types are accepted is fixed by the
 decoders compiled in, and is not configurable.
 
+### Keeping images in object storage
+
+Images can live in an S3-compatible store such as Garage or MinIO instead of
+`dir`. Every node pointed at the same bucket then sees the same images, which
+a directory on one machine cannot do. The app only writes to the bucket;
+readers fetch images from `image_url_base`, a hostname that serves the
+bucket, and the app never handles an image byte once it is stored:
+
+```ini
+[storage]
+type                 = s3
+s3_endpoint          = http://garage:3900
+s3_region            = garage
+s3_bucket            = blog
+s3_prefix            = uploads
+s3_access_key_id     = ${WF_S3_ACCESS_KEY_ID}
+s3_secret_access_key = ${WF_S3_SECRET_ACCESS_KEY}
+image_url_base       = https://media.example.org
+```
+
+Without the section, or with `type = local`, nothing changes: images stay in
+`dir` and the app serves them at `/uploads/`. `image_url_base` is required
+with `type = s3` and refused without it. It must be an `https://` URL.
+
+The endpoint's scheme decides whether TLS is used. Addressing is path-style,
+which Garage needs; set `s3_virtual_host = true` for a store that wants bucket
+subdomains.
+
+An image's URL is the base, a slash, and its object key, `s3_prefix`
+included: `https://media.example.org/uploads/2026/10/04/photo.png` with the
+example above. Post bodies are not changed. They keep `/uploads/` URLs, and
+pages, feeds and ActivityPub objects are given the base when they are
+rendered, so the base can be moved later without touching a post. `/uploads/`
+answers with a redirect to the base, which keeps working the copies of posts
+that federated while their images were still on disk.
+
+Whatever answers at the base serves the bucket: a CDN, the store's own public
+website endpoint, or your own reverse proxy reading a private bucket. The
+last is how to keep the bucket private; to the app they are all the same. It
+should send `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`,
+which the app sends for `/uploads/` and an object cannot carry. Objects do
+carry their `Cache-Control`, and SVGs `Content-Disposition: attachment`.
+
+Use a hostname you own. Image URLs are copied into federated posts and kept
+by the servers that received them, so a base on a provider's own hostname
+(`*.r2.dev`, `*.amazonaws.com` and the like) breaks every one of them if the
+images ever move. The server logs a warning at startup when it sees one.
+
+At startup the server checks that it can write to and delete from the
+bucket, and refuses to start if the store answers and says no (a missing
+bucket, a rejected key). If the store does not answer within 15 seconds, the
+blog starts anyway and logs "image uploads are unavailable"; pages render,
+and uploads fail with a 503 until the store is back. Each S3 call is bounded
+at 30 seconds.
+
+Existing images are copied in with:
+
+```sh
+writefreely images sync --to s3
+```
+
+It reads `post_images`, copies each file from `dir`, and checks every copy
+against the SHA-256 recorded at upload. It changes nothing in `dir`, and is
+safe to run again: images already in the bucket are left alone, and a damaged
+one is replaced. It reads the bucket from the `[storage]` section, so the order
+is: stop the server, add the section, run the sync, start the server. Nothing
+is uploaded in between, so nothing is missed.
+
+Objects written by a development build from before the caching headers were
+stored are given them with:
+
+```sh
+writefreely images metadata --dry-run
+writefreely images metadata
+```
+
 ## Going back to upstream
 
-Installing upstream over this edition mostly works. The `post_images`
-table is simply unused, and every other table is upstream's own.
+Installing upstream over this edition mostly works. The tables this
+edition adds (`post_images`, `app_settings`, `app_settings_version` and
+`wisp_migrations`) are simply unused, and so are the columns and indexes
+it adds to upstream's tables.
 
-The exception is the migration counter. This edition leaves
-`appmigrations` recording version 18, and upstream's next migration will
-also be numbered 18, so upstream would consider it already applied and
-skip it. Going back means dropping `post_images` and setting that version
-back to 17 by hand, before running upstream's `--migrate`.
+The migration counter needs nothing done by hand. `appmigrations` only
+ever records upstream's own migrations, so upstream reads the version it
+would have reached itself and runs its next migration as usual.
 
 Uploaded images are files on disk, and upstream has nowhere to serve them
 from. Posts referencing them will show broken images.

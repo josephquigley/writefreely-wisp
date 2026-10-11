@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -63,7 +64,7 @@ func initActivityPub(app *App) {
 	// actor they enabled announces nothing. Same shape as the allowlist's
 	// inert warning: configuration that cannot take effect is reported, not
 	// treated as an error.
-	if app.cfg.App.InstanceAnnounce && !app.cfg.App.Federation {
+	if app.Config().App.InstanceAnnounce && !app.Config().App.Federation {
 		log.Info(instanceAnnounceInertWarning)
 	}
 }
@@ -86,13 +87,13 @@ const instanceAnnounceInertWarning = "WARNING: instance_announce is enabled but 
 // skip it. Building it from config instead keeps it absent from every query
 // that enumerates blogs.
 func newInstanceColl(app *App) *Collection {
-	ur, _ := url.Parse(app.cfg.App.Host)
+	ur, _ := url.Parse(app.Config().App.Host)
 	return &Collection{
 		ID:       0,
 		Alias:    ur.Host,
 		Title:    ur.Host,
 		db:       app.db,
-		hostName: app.cfg.App.Host,
+		hostName: app.Config().App.Host,
 	}
 }
 
@@ -122,10 +123,10 @@ func instanceActorAlias(cfg *config.Config) string {
 // but with an inbox, outbox, followers and following that all 404'd because
 // no blog is named after the host.
 func collectionForAPRequest(app *App, alias string) (*Collection, error) {
-	if alias != "" && alias == instanceActorAlias(app.cfg) {
+	if alias != "" && alias == instanceActorAlias(app.Config()) {
 		return newInstanceColl(app), nil
 	}
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		return app.db.GetCollectionByID(1)
 	}
 	return app.db.GetCollection(alias)
@@ -170,9 +171,25 @@ func (ru *RemoteUser) AsPerson() *activitystreams.Person {
 	}
 }
 
+// activityPubDialContext dials every ActivityPub connection. It is
+// safeDialContext, which refuses non-public addresses; a variable only so
+// that tests can deliver to an httptest server on loopback.
+var activityPubDialContext = safeDialContext
+
 func activityPubClient() *http.Client {
+	// Validate the resolved IP of every connection (including redirects) at
+	// dial time via safeDialContext.
 	return &http.Client{
 		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: activityPubDialContext,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
 	}
 }
 
@@ -190,7 +207,7 @@ func handleFetchCollectionActivities(app *App, w http.ResponseWriter, r *http.Re
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	if !c.IsInstanceColl() {
 		if c.IsPrivate() || c.IsProtected() {
@@ -223,7 +240,7 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	if c.IsInstanceColl() {
 		return handleFetchInstanceOutbox(app, w, r, c)
@@ -241,7 +258,7 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 		return ErrCollectionNotFound
 	}
 
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		if alias != c.Alias {
 			return ErrCollectionNotFound
 		}
@@ -263,7 +280,7 @@ func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Reques
 	ocp := activitystreams.NewOrderedCollectionPage(accountRoot, "outbox", res.TotalPosts, p)
 	ocp.OrderedItems = []interface{}{}
 
-	posts, err := app.db.GetPosts(app.cfg, c, p, false, true, false, "")
+	posts, err := app.db.GetPosts(app.Config(), c, p, false, true, false, "")
 	for _, pp := range *posts {
 		pp.Collection = res
 		o := pp.ActivityObject(app)
@@ -291,7 +308,7 @@ func handleFetchCollectionFollowers(app *App, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// The instance actor has no owner to silence and no visibility of its
 	// own: it is the server, and it is reachable exactly when federation is.
@@ -347,7 +364,7 @@ func handleFetchCollectionFollowing(app *App, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// The instance actor has no owner to silence and no visibility of its
 	// own: it is the server, and it is reachable exactly when federation is.
@@ -398,7 +415,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		// TODO: return Reject?
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	// The instance actor has no owner, so there is no user to silence. Every
 	// other check below applies to it unchanged.
@@ -666,7 +683,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
-			return fmt.Errorf("unable to start transaction: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		var remoteUserID int64
@@ -674,31 +691,33 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			remoteUserID = remoteUser.ID
 		} else {
 			remoteUserID, err = apAddRemoteUser(app, t, fullActor)
+			if err != nil {
+				// apAddRemoteUser has already rolled back.
+				log.Error("Couldn't add remote user for like: %v", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
+			}
 		}
 
-		// Add like
-		_, err = t.Exec("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", likePostID, remoteUserID)
+		// Add like. A peer that retries delivers the same Like twice; the
+		// second is already recorded, so it is a success rather than a
+		// failure. insertIgnore, not a duplicate-key check after the fact:
+		// on Postgres a failed statement aborts the whole transaction.
+		_, err = t.Exec(app.db.insertIgnore("INSERT INTO remote_likes (post_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")"), likePostID, remoteUserID)
 		if err != nil {
-			if !app.db.isDuplicateKeyErr(err) {
-				t.Rollback()
-				log.Error("Couldn't add like in DB: %v\n", err)
-				return fmt.Errorf("Couldn't add like in DB: %v", err)
-			} else {
-				t.Rollback()
-				log.Error("Couldn't add like in DB: %v\n", err)
-				return fmt.Errorf("Couldn't add like in DB: %v", err)
-			}
+			t.Rollback()
+			log.Error("Couldn't add like in DB: %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		err = t.Commit()
 		if err != nil {
 			t.Rollback()
 			log.Error("Rolling back after Commit(): %v\n", err)
-			return fmt.Errorf("Rolling back after Commit(): %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't record the like."}
 		}
 
 		if debugging {
-			log.Info("Successfully liked post %s by remote user %s", likePostID, remoteUser.URL)
+			log.Info("Successfully liked post %s by actor %s", likePostID, fullActor.ID)
 		}
 		impart.RenderActivityJSON(w, "", http.StatusOK)
 		return nil
@@ -706,7 +725,7 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
-			return fmt.Errorf("unable to start transaction: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		var remoteUserID int64
@@ -714,25 +733,30 @@ func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request
 			remoteUserID = remoteUser.ID
 		} else {
 			remoteUserID, err = apAddRemoteUser(app, t, fullActor)
+			if err != nil {
+				// apAddRemoteUser has already rolled back.
+				log.Error("Couldn't add remote user for unlike: %v", err)
+				return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
+			}
 		}
 
-		// Remove like
+		// Remove like. Deleting a like that is already gone is not an error.
 		_, err = t.Exec("DELETE FROM remote_likes WHERE post_id = ? AND remote_user_id = ?", unlikePostID, remoteUserID)
 		if err != nil {
 			t.Rollback()
 			log.Error("Couldn't delete Like from DB: %v\n", err)
-			return fmt.Errorf("Couldn't delete Like from DB: %v", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		err = t.Commit()
 		if err != nil {
 			t.Rollback()
 			log.Error("Rolling back after Commit(): %v\n", err)
-			return fmt.Errorf("Rolling back after Commit(): %v\n", err)
+			return impart.HTTPError{http.StatusInternalServerError, "Couldn't remove the like."}
 		}
 
 		if debugging {
-			log.Info("Successfully un-liked post %s by remote user %s", unlikePostID, remoteUser.URL)
+			log.Info("Successfully un-liked post %s by actor %s", unlikePostID, fullActor.ID)
 		}
 		impart.RenderActivityJSON(w, "", http.StatusOK)
 		return nil
@@ -778,7 +802,7 @@ func actorPrivKey(p *activitystreams.Person) (crypto.PrivateKey, error) {
 // allowlist is enforced: no delivery path can reach a host that is not on the
 // list.
 func makeActivityPost(app *App, p *activitystreams.Person, url string, m interface{}) error {
-	hostName := app.cfg.App.Host
+	hostName := app.Config().App.Host
 
 	if !app.inboxAllowed(url) {
 		return fmt.Errorf("refusing to post to %s: not on the federation allowlist", url)
@@ -850,10 +874,13 @@ func makeActivityPost(app *App, p *activitystreams.Person, url string, m interfa
 }
 
 // isPublicIRI reports whether iri is an http(s) URL whose host resolves
-// exclusively to public, routable IP addresses. It rejects loopback,
-// private, link-local (including cloud metadata endpoints like
-// 169.254.169.254), and unspecified addresses to mitigate SSRF via
+// exclusively to public, routable IP addresses, to mitigate SSRF via
 // attacker-supplied ActivityPub IRIs (e.g. inbox actor/object fields).
+//
+// It rejects loopback, private, link-local (including cloud metadata
+// endpoints like 169.254.169.254), CGNAT, multicast and unspecified
+// addresses. That list is isPublicAddr's, not its own: this used to carry a
+// second, weaker copy that let 100.64.0.0/10 and plain multicast through.
 func isPublicIRI(iri string) error {
 	u, err := url.Parse(iri)
 	if err != nil {
@@ -871,7 +898,10 @@ func isPublicIRI(iri string) error {
 		return fmt.Errorf("unable to resolve host %q: %v", host, err)
 	}
 	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		// Shared with the webfinger client's dial-time check; the
+		// ruleset lives in ssrf_guard.go. This one stays a pre-flight
+		// check so an IRI is refused before anything is signed or sent.
+		if !isPublicAddr(ip, host, nil) {
 			return fmt.Errorf("host %q resolves to disallowed address %s", host, ip)
 		}
 	}
@@ -973,7 +1003,7 @@ func deleteFederatedPost(app *App, p *PublicPost, collID int64) error {
 	// and would keep a boost of a post that no longer exists.
 	go undoAnnounceToInstanceFollowers(app, announceablePost{ID: p.ID, Created: p.Created}, collID)
 
-	p.Collection.hostName = app.cfg.App.Host
+	p.Collection.hostName = app.Config().App.Host
 	actor := p.Collection.PersonObject(collID)
 	na := p.ActivityObject(app)
 
@@ -1025,7 +1055,7 @@ func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 	// A private instance does not federate. With a federation allowlist
 	// configured it does, but only to the hosts on that list, which
 	// makeActivityPost enforces.
-	if app.cfg.App.Private && !app.federationAllowlistActive() {
+	if app.Config().App.Private && !app.federationAllowlistActive() {
 		return nil
 	}
 
@@ -1180,12 +1210,34 @@ func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 	return &u, nil
 }
 
+// remoteUserByHandleQuery is the query getRemoteUserFromHandle runs, taking
+// a handle already normalised by normalizeRemoteHandle.
+//
+// It compares LOWER(handle), so that a row cached before handles were
+// normalised is still found instead of costing a webfinger round trip every
+// time. On MySQL that is the generated column handle_lower, which wisp_v3 added
+// because neither MariaDB nor MySQL before 8.0.13 can index the expression;
+// the other engines index lower(handle) itself.
+func (db *datastore) remoteUserByHandleQuery() string {
+	const q = "SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE "
+	switch db.driverName {
+	case driverSQLite, driverPostgres:
+		return q + "LOWER(handle) = ?"
+	case driverMySQL:
+		return q + "handle_lower = ?"
+	default:
+		unsupportedDriver("remoteUserByHandleQuery", db.driverName)
+	}
+	return ""
+}
+
 // getRemoteUserFromHandle retrieves the profile page of a remote user
 // from the @user@server.tld handle
 func getRemoteUserFromHandle(app *App, handle string) (*RemoteUser, error) {
+	handle = normalizeRemoteHandle(handle)
 	u := RemoteUser{Handle: handle}
 	var urlVal sql.NullString
-	err := app.db.QueryRow("SELECT id, actor_id, inbox, shared_inbox, url FROM remoteusers WHERE handle = ?", handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
+	err := app.db.QueryRow(app.db.remoteUserByHandleQuery(), handle).Scan(&u.ID, &u.ActorID, &u.Inbox, &u.SharedInbox, &urlVal)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, ErrRemoteUserNotFound
@@ -1263,7 +1315,7 @@ var fetchActorIRI = resolveIRI
 // makeActivityPost has nowhere to post and fails with "target POST URL is
 // empty". Leaving the actor uncached leaves it retryable, which is what it is.
 func fetchRemoteActor(app *App, actorIRI string) (remoteActorInfo, error) {
-	resp, err := fetchActorIRI(app.cfg.App.Host, actorIRI)
+	resp, err := fetchActorIRI(app.Config().App.Host, actorIRI)
 	if err != nil {
 		return remoteActorInfo{}, err
 	}
@@ -1299,7 +1351,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 			if iErr.Status == http.StatusNotFound {
 				// Fetch remote actor
 				log.Info("Not found; fetching actor %s remotely", actorIRI)
-				actorResp, err := resolveIRI(app.cfg.App.Host, actorIRI)
+				actorResp, err := resolveIRI(app.Config().App.Host, actorIRI)
 				if err != nil {
 					log.Error("Unable to get base actor! %v", err)
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't fetch actor."}
@@ -1314,7 +1366,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't parse actual actor."}
 				}
 				// Fetch the actual actor using the owner field from the publicKey object
-				actualActorResp, err := resolveIRI(app.cfg.App.Host, baseActor.PublicKey.Owner)
+				actualActorResp, err := resolveIRI(app.Config().App.Host, baseActor.PublicKey.Owner)
 				if err != nil {
 					log.Error("Unable to get actual actor! %v", err)
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't fetch actual actor."}
@@ -1342,7 +1394,7 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 		// manual SQL.
 		if remoteUser.Inbox == "" {
 			log.Info("Remote user %s inbox empty, fetching", actorIRI)
-			fetched, err := newRemoteActor(app, actorIRI)
+			fetched, err := fetchRemoteActorForStorage(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't re-fetch remote actor %s: %v", actorIRI, err)
 				return nil, nil, err
@@ -1360,8 +1412,18 @@ func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 	return actor, remoteUser, nil
 }
 
+// normalizeRemoteHandle is the form a fediverse handle (user@host, without
+// the leading '@') is stored in remoteusers and looked up by. Handles are
+// case-insensitive in practice — webfinger servers answer any case — and
+// MySQL's collation used to match them that way; SQLite and Postgres compare
+// exactly, so a mixed-case handle would miss the cache, cost a webfinger
+// request and rewrite the row on every lookup.
+func normalizeRemoteHandle(handle string) string {
+	return strings.ToLower(strings.TrimLeft(strings.TrimSpace(handle), "@"))
+}
+
 func GetProfileURLFromHandle(app *App, handle string) (string, error) {
-	handle = strings.TrimLeft(handle, "@")
+	handle = sanitizeDBText(normalizeRemoteHandle(handle))
 	actorIRI := ""
 	parts := strings.Split(handle, "@")
 	if len(parts) != 2 {
@@ -1379,7 +1441,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// can't find using handle in the table but the table may already have this user without
 		// handle from a previous version
 		// TODO: Make this determination. We should know whether a user exists without a handle, or doesn't exist at all
-		actorIRI = remoteLookup(handle)
+		actorIRI = sanitizeDBText(remoteLookup(handle))
 		// See GetProfilePageFromHandle: an empty webfinger result must not
 		// reach the INSERT below, or the handle is cached against an empty
 		// actor_id and never resolves again.
@@ -1396,7 +1458,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
-			remoteActor, err := newRemoteActor(app, actorIRI)
+			remoteActor, err := fetchRemoteActorForStorage(app, actorIRI)
 			if err != nil {
 				log.Error("Couldn't fetch remote actor: %v", err)
 				return "", err
@@ -1417,7 +1479,7 @@ func GetProfileURLFromHandle(app *App, handle string) (string, error) {
 		// an authorized-fetch instance, and it disables delivery to that
 		// actor until something replaces it.
 		log.Info("Remote user %s URL or inbox empty, fetching", remoteUser.ActorID)
-		fetchedActor, err := newRemoteActor(app, remoteUser.ActorID)
+		fetchedActor, err := fetchRemoteActorForStorage(app, remoteUser.ActorID)
 		if err != nil {
 			log.Error("Couldn't fetch remote actor: %v", err)
 		} else {
@@ -1476,6 +1538,10 @@ func unmarshalActor(actorResp []byte, actor *activitystreams.Person) error {
 		}
 	}(flexActor.Context)
 
+	// Everything above came from another server. Make it storable before
+	// any of it can reach remoteusers or remoteuserkeys.
+	sanitizeRemoteActor(actor)
+
 	return nil
 }
 
@@ -1520,6 +1586,36 @@ func logOutgoingActivity(label string, activity any) {
 	log.Info("%s outgoing ActivityPub payload:\n%s", label, string(b))
 }
 
+// addOrGetRemoteUser stores fullActor as a remote user and returns its id,
+// or returns the id of the row already stored for it.
+//
+// Two Follows from an actor this instance has not seen before both reach
+// acceptAndPersistFollow with no remote user, and both insert one; the second
+// insert meets the unique key on actor_id. That is not a failure: the actor is
+// stored, which is all the caller needs, so the existing row's id is read back
+// and the follow goes ahead.
+//
+// The insert runs on its own rather than inside the caller's transaction, so
+// that the duplicate-key error ends only that one statement on every engine
+// (on Postgres it would otherwise abort the whole transaction), and so that
+// the read-back sees the row the other Follow committed whatever the
+// isolation level. A plain INSERT is used rather than an insert-ignore so
+// that any other failure, such as a value MySQL in strict mode refuses, is
+// still reported instead of being downgraded to a warning.
+func addOrGetRemoteUser(app *App, fullActor *activitystreams.Person) (int64, error) {
+	id, err := app.db.insertReturningID(app.db, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
+	if err == nil {
+		return id, nil
+	}
+	if !app.db.isDuplicateKeyErr(err) {
+		return 0, err
+	}
+	if qErr := app.db.QueryRow("SELECT id FROM remoteusers WHERE actor_id = ?", fullActor.ID).Scan(&id); qErr != nil {
+		return 0, fmt.Errorf("%v; then couldn't read the existing remote user: %v", err, qErr)
+	}
+	return id, nil
+}
+
 // acceptAndPersistFollow delivers the Accept for a Follow or an Undo Follow
 // and records the resulting change to the follower list.
 //
@@ -1549,54 +1645,51 @@ func acceptAndPersistFollow(app *App, c *Collection, p *activitystreams.Person, 
 	// fullActor, remoteUser and c.ID were all populated synchronously
 	// in the Follow callback, before this goroutine was even started.
 	if isFollow {
+		var followerID int64
+		if remoteUser != nil {
+			followerID = remoteUser.ID
+		} else {
+			// The actor was unknown when the Follow arrived, but that was
+			// two seconds ago: another Follow from the same actor may have
+			// stored it since, so this must not assume the insert is the
+			// first.
+			var err error
+			followerID, err = addOrGetRemoteUser(app, fullActor)
+			if err != nil {
+				log.Error("Couldn't add new remoteuser in DB: %v\n", err)
+				return
+			}
+		}
+
 		t, err := app.db.Begin()
 		if err != nil {
 			log.Error("Unable to start transaction: %v", err)
 			return
 		}
 
-		var followerID int64
-
-		if remoteUser != nil {
-			followerID = remoteUser.ID
-		} else {
-			// TODO: use apAddRemoteUser() here, instead!
-			// Add follower locally, since it wasn't found before
-			res, err := t.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox, fullActor.URL)
-			if err != nil {
-				// if duplicate key, res will be nil and panic on
-				// res.LastInsertId below
-				t.Rollback()
-				log.Error("Couldn't add new remoteuser in DB: %v\n", err)
-				return
-			}
-
-			followerID, err = res.LastInsertId()
+		if remoteUser == nil {
+			// Add in key. A key that is already stored is skipped in the
+			// SQL rather than forgiven after the fact: on Postgres a
+			// duplicate-key error aborts the transaction, and the follow
+			// below would then never be stored. public_key is binary
+			// (bytea on Postgres), so the PEM goes in as bytes.
+			_, err = t.Exec(app.db.insertIgnore("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)"), remoteUserKeyID(fullActor), followerID, []byte(fullActor.PublicKey.PublicKeyPEM))
 			if err != nil {
 				t.Rollback()
-				log.Error("no lastinsertid for followers, rolling back: %v", err)
+				log.Error("Couldn't add follower keys in DB: %v\n", err)
 				return
-			}
-
-			// Add in key
-			_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
-			if err != nil {
-				if !app.db.isDuplicateKeyErr(err) {
-					t.Rollback()
-					log.Error("Couldn't add follower keys in DB: %v\n", err)
-					return
-				}
 			}
 		}
 
-		// Add follow
-		_, err = t.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", c.ID, followerID)
+		// Add follow. A remote that re-sends its Follow (Mastodon and Mbin
+		// both do) is already a follower; skipping the row in SQL keeps the
+		// transaction alive on Postgres so that the commit succeeds and the
+		// Accept below still goes out.
+		_, err = t.Exec(app.db.insertIgnore("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")"), c.ID, followerID)
 		if err != nil {
-			if !app.db.isDuplicateKeyErr(err) {
-				t.Rollback()
-				log.Error("Couldn't add follower in DB: %v\n", err)
-				return
-			}
+			t.Rollback()
+			log.Error("Couldn't add follower in DB: %v\n", err)
+			return
 		}
 
 		err = t.Commit()

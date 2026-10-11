@@ -36,7 +36,7 @@ func InitKeys(apper Apper) error {
 	err := apper.LoadKeys()
 	if err != nil {
 		if os.IsNotExist(err) {
-			keysPath := filepath.Join(apper.App().cfg.Server.KeysParentDir, keysDir)
+			keysPath := filepath.Join(apper.App().Config().Server.KeysParentDir, keysDir)
 			return fmt.Errorf("Missing encryption keys at %s. To create, run:\n  writefreely keys generate", keysPath)
 		}
 		return err
@@ -45,10 +45,10 @@ func InitKeys(apper Apper) error {
 }
 
 func initKeyPaths(app *App) {
-	emailKeyPath = filepath.Join(app.cfg.Server.KeysParentDir, emailKeyPath)
-	cookieAuthKeyPath = filepath.Join(app.cfg.Server.KeysParentDir, cookieAuthKeyPath)
-	cookieKeyPath = filepath.Join(app.cfg.Server.KeysParentDir, cookieKeyPath)
-	csrfKeyPath = filepath.Join(app.cfg.Server.KeysParentDir, csrfKeyPath)
+	emailKeyPath = filepath.Join(app.Config().Server.KeysParentDir, emailKeyPath)
+	cookieAuthKeyPath = filepath.Join(app.Config().Server.KeysParentDir, cookieAuthKeyPath)
+	cookieKeyPath = filepath.Join(app.Config().Server.KeysParentDir, cookieKeyPath)
+	csrfKeyPath = filepath.Join(app.Config().Server.KeysParentDir, csrfKeyPath)
 }
 
 // generateKey generates a key at the given path used for the encryption of

@@ -91,3 +91,28 @@ func TestExtractImageAltText(t *testing.T) {
 		})
 	}
 }
+
+func TestPostHasTagIsLiteral(t *testing.T) {
+	testCases := map[string]struct {
+		content string
+		tag     string
+		want    bool
+	}{
+		"plain tag":                     {"Hello #gox.", "gox", true},
+		"tag at end":                    {"Hello #gox", "gox", true},
+		"tag followed by space":         {"#gox and more", "gox", true},
+		"prefix of a longer tag":        {"Hello #goxy", "gox", false},
+		"dot is not a wildcard":         {"Hello #gox", "g.x", false},
+		"dot matches itself":            {"Hello #g.x", "g.x", true},
+		"star does not match anything":  {"Hello #anything", ".*", false},
+		"parenthesis does not break it": {"Hello #a(b", "a(b", true},
+		"plus is literal":               {"Hello #cc.", "c+", false},
+	}
+
+	for name, test := range testCases {
+		t.Run(name, func(t *testing.T) {
+			p := givenPost(test.content)
+			assert.Equal(t, test.want, p.HasTag(test.tag))
+		})
+	}
+}

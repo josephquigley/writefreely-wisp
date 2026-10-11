@@ -29,13 +29,22 @@ import (
 // The syndicated HTML is the source, with extracted supplying the bare image
 // URLs that live in the post text rather than in a tag, and altText their
 // names. An alt attribute in the HTML wins over that map.
-func imageAttachments(syndicatedHTML string, extracted []string, altText map[string]string, base string) []activitystreams.Attachment {
+//
+// urls is image_url_base. The HTML has been through it already, but the
+// extracted URLs come straight from the post body, so without it the same
+// image would be attached twice: once at the base, once at /uploads/.
+func imageAttachments(syndicatedHTML string, extracted []string, altText map[string]string, base string, urls imageURLs) []activitystreams.Attachment {
 	images := postImages("", syndicatedHTML, base)
 
 	b, err := url.Parse(base)
 	baseUsable := err == nil && b.IsAbs()
+	for i, img := range images {
+		if resolved, ok := resolveImageURL(urls.rewriteURL(img.URL), b, baseUsable); ok {
+			images[i].URL = resolved
+		}
+	}
 	for _, raw := range extracted {
-		if resolved, ok := resolveImageURL(raw, b, baseUsable); ok {
+		if resolved, ok := resolveImageURL(urls.rewriteURL(raw), b, baseUsable); ok {
 			images = append(images, postImage{URL: resolved, Alt: altText[raw]})
 		}
 	}

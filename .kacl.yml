@@ -1,0 +1,32 @@
+# Fork-only. Configuration for python-kacl (kacl-cli), which validates
+# CHANGELOG.md against Keep a Changelog. kacl-cli reads this file from the
+# working directory and merges it over its built-in defaults, so only the
+# settings that differ from those defaults, or that matter here, are listed.
+#
+# .github/workflows/changelog.yml runs `kacl-cli verify` on every pull request
+# into main, and also requires an entry for the version in app.go.
+kacl:
+  file: CHANGELOG.md
+  allowed_header_titles:
+    - Changelog
+  allowed_version_sections:
+    - Added
+    - Changed
+    - Deprecated
+    - Removed
+    - Fixed
+    - Security
+  release:
+    add_unreleased: True
+  # wisp-release.yml tags and publishes releases when a version bump merges
+  # to main. kacl-cli must never commit or tag on its own.
+  git:
+    commit: False
+    tag: False
+    tag_name: "v{new_version}"
+  # Tags are v<version>, and work lands on develop rather than master.
+  links:
+    auto_generate: True
+    compare_versions_template: "{host}/compare/v{previous_version}...v{version}"
+    unreleased_changes_template: "{host}/compare/v{latest_version}...develop"
+    initial_version_template: "{host}/tree/v{version}"

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -21,9 +22,21 @@ var testDB *sql.DB
 type ScopedTestBody func(*sql.DB)
 
 // TestMain provides testing infrastructure within this package.
+// testMaxBlogs is the blog cap test configs use. config.New() allows one
+// blog, which the one CreateUser makes already fills, and CreateCollection
+// enforces the cap, so fixtures that create blogs need room. It stays finite
+// so the cap is still in force in those tests.
+const testMaxBlogs = 10
+
 func TestMain(m *testing.M) {
 	rand.Seed(time.Now().UTC().UnixNano())
 	gob.Register(&User{})
+
+	// Federation tests deliver to httptest servers on 127.0.0.1, which
+	// safeDialContext refuses. The ruleset itself is tested directly in
+	// ssrf_guard_test.go, and TestActivityPubClientRefusesLoopback checks
+	// the production dialer is wired in.
+	activityPubDialContext = (&net.Dialer{}).DialContext
 
 	if runMySQLTests() {
 		var err error
@@ -35,9 +48,32 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// See harness_app_test.go. Asking for MySQL or Postgres and not
+	// reaching it is a failed run, not a skipped one.
+	if err := initTestDBEngine(); err != nil {
+		fmt.Println("test database harness:", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
+	if err := dropPostgresTestTemplate(); err != nil {
+		fmt.Println("test database harness:", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	if runMySQLTests() {
 		if closeErr := testDB.Close(); closeErr != nil {
+			fmt.Println(closeErr)
+		}
+	}
+	if testPGAdmin != nil {
+		if closeErr := testPGAdmin.Close(); closeErr != nil {
+			fmt.Println(closeErr)
+		}
+	}
+	if testMySQLAdmin != nil {
+		if closeErr := testMySQLAdmin.Close(); closeErr != nil {
 			fmt.Println(closeErr)
 		}
 	}
@@ -78,8 +114,16 @@ func ensureMySQL(db *sql.DB) error {
 	return nil
 }
 
-// withTestDB provides a scoped database connection.
+// withTestDB provides a scoped database connection. Under
+// WF_TEST_DB_TYPE=postgres or mysql the connection is to a fresh wf_test_*
+// database with the schema loaded (engineTestApp), dropped when the test
+// ends; otherwise it is a copy of the MySQL reference database
+// (newTestDatabase).
 func withTestDB(t *testing.T, testBody ScopedTestBody) {
+	if e := engineTestApp(t, nil); e != nil {
+		testBody(e.db.DB)
+		return
+	}
 	db, cleanup, err := newTestDatabase(testDB,
 		os.Getenv("WF_USER"),
 		os.Getenv("WF_PASSWORD"),

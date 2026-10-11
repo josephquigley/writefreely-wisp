@@ -25,9 +25,20 @@ import (
 
 // InitStaticRoutes adds routes for serving static files.
 // TODO: this should just be a func, not method
+// uploadsGate serves next only while uploads are enabled.
+func uploadsGate(app *App, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !app.Config().Uploads.Enabled {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (app *App) InitStaticRoutes(r *mux.Router) {
 	// Handle static files
-	fs := http.FileServer(http.Dir(filepath.Join(app.cfg.Server.StaticParentDir, staticDir)))
+	fs := http.FileServer(http.Dir(filepath.Join(app.Config().Server.StaticParentDir, staticDir)))
 	fs = cacheControl(fs)
 	app.shttp = http.NewServeMux()
 	app.shttp.Handle("/", fs)
@@ -36,11 +47,10 @@ func (app *App) InitStaticRoutes(r *mux.Router) {
 	// ever treating one as anything but an image. They are served from
 	// their own root rather than the static one, because the two are only
 	// the same directory when no upload directory is configured.
-	if app.cfg.Uploads.Enabled {
-		uploads := http.FileServer(http.Dir(app.uploadsRoot()))
-		uploads = cacheControl(http.StripPrefix("/"+uploadsDir+"/", uploads))
-		r.PathPrefix("/" + uploadsDir + "/").Handler(uploadHeaders(uploads))
-	}
+	//
+	// Registered whatever the setting says, because it can be turned on at
+	// runtime from any node; uploadsGate answers 404 while it is off.
+	r.PathPrefix("/" + uploadsDir + "/").Handler(uploadsGate(app, app.uploadsHandler()))
 
 	r.PathPrefix("/").Handler(fs)
 }
@@ -51,8 +61,8 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	handler := NewWFHandler(apper)
 
 	// Set up routes
-	hostSubroute := apper.App().cfg.App.Host[strings.Index(apper.App().cfg.App.Host, "://")+3:]
-	if apper.App().cfg.App.SingleUser {
+	hostSubroute := apper.App().Config().App.Host[strings.Index(apper.App().Config().App.Host, "://")+3:]
+	if apper.App().Config().App.SingleUser {
 		hostSubroute = "{domain}"
 	} else {
 		if strings.HasPrefix(hostSubroute, "localhost") {
@@ -60,7 +70,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 		}
 	}
 
-	if apper.App().cfg.App.SingleUser {
+	if apper.App().Config().App.SingleUser {
 		log.Info("Adding %s routes (single user)...", hostSubroute)
 	} else {
 		log.Info("Adding %s routes (multi-user)...", hostSubroute)
@@ -68,9 +78,17 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 
 	// Primary app routes
 	write := r.PathPrefix("/").Subrouter()
+	// authorized_fetch is enforced here, once a route has matched and before
+	// any handler looks anything up. See requireAuthorizedFetch.
+	write.Use(handler.authorizedFetch)
+
+	// Status-only health route. Registered before every other dynamic
+	// route, including the collection catch-alls, and without any of
+	// Handler's wrappers: see handleHealthz.
+	write.HandleFunc(healthzPath, apper.App().handleHealthz)
 
 	// Federation endpoint configurations
-	wf := webfinger.Default(wfResolver{apper.App().db, apper.App().cfg})
+	wf := webfinger.Default(wfResolver{apper.App().db, apper.App()})
 	wf.NoTLSHandler = nil
 
 	// Federation endpoints
@@ -79,10 +97,11 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	// webfinger
 	write.HandleFunc(webfinger.WebFingerPath, handler.LogHandlerFuncDiscovery(http.HandlerFunc(wf.Webfinger)))
 	// nodeinfo
-	niCfg := nodeInfoConfig(apper.App().db, apper.App().cfg)
-	ni := nodeinfo.NewService(*niCfg, nodeInfoResolver{apper.App().cfg, apper.App().db})
-	write.HandleFunc(nodeinfo.NodeInfoPath, handler.LogHandlerFunc(http.HandlerFunc(ni.NodeInfoDiscover)))
-	write.HandleFunc(niCfg.InfoURL, handler.LogHandlerFunc(http.HandlerFunc(ni.NodeInfo)))
+	// The handlers build the service per request, from the settings in
+	// force; only the path (bootstrap-derived) is fixed here.
+	niCfg := nodeInfoConfig(apper.App().db, apper.App().Config())
+	write.HandleFunc(nodeinfo.NodeInfoPath, handler.LogHandlerFunc(apper.App().nodeInfoHandler(true)))
+	write.HandleFunc(niCfg.InfoURL, handler.LogHandlerFunc(apper.App().nodeInfoHandler(false)))
 
 	// handle mentions
 	write.HandleFunc("/@/{handle}", handler.Web(handleViewMention, UserLevelReader))
@@ -210,7 +229,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	RouteRead(handler, UserLevelReader, write.PathPrefix("/read").Subrouter())
 
 	draftEditPrefix := ""
-	if apper.App().cfg.App.SingleUser {
+	if apper.App().Config().App.SingleUser {
 		draftEditPrefix = "/d"
 		write.Path("/me/new").Handler(csrfProtect(apper.App(), handler.Web(handleViewPad, UserLevelUser))).Methods("GET")
 	} else {
@@ -221,7 +240,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 	write.Path(draftEditPrefix + "/{action}/edit").Handler(csrfProtect(apper.App(), handler.Web(handleViewPad, UserLevelUser))).Methods("GET")
 	write.HandleFunc(draftEditPrefix+"/{action}/meta", handler.Web(handleViewMeta, UserLevelUser)).Methods("GET")
 	// Collections
-	if apper.App().cfg.App.SingleUser {
+	if apper.App().Config().App.SingleUser {
 		RouteCollections(handler, write.PathPrefix("/").Subrouter())
 	} else {
 		write.HandleFunc("/{prefix:[@~$!\\-+]}{collection}", handler.Web(handleViewCollection, UserLevelReader))
@@ -240,7 +259,7 @@ func InitRoutes(apper Apper, r *mux.Router) *mux.Router {
 // receives: behind a proxy that terminates TLS the configured host is
 // https even though the proxied request arrives as http.
 func (app *App) servesPlaintextHTTP() bool {
-	return strings.HasPrefix(strings.ToLower(app.cfg.App.Host), "http://")
+	return strings.HasPrefix(strings.ToLower(app.Config().App.Host), "http://")
 }
 
 // csrfOptions returns the CSRF cookie options for this instance. A Secure
@@ -303,8 +322,8 @@ func RouteCollections(handler *Handler, r *mux.Router) {
 	r.HandleFunc("/page/{page:[0-9]+}", handler.Web(handleViewCollection, UserLevelReader))
 	r.HandleFunc("/archive/", handler.Web(handleViewCollection, UserLevelReader))
 	r.HandleFunc("/{archive:archive}/page/{page:[0-9]+}", handler.Web(handleViewCollection, UserLevelReader))
-	r.HandleFunc("/lang:{lang:[a-z]{2}}", handler.Web(handleViewCollectionLang, UserLevelOptional))
-	r.HandleFunc("/lang:{lang:[a-z]{2}}/page/{page:[0-9]+}", handler.Web(handleViewCollectionLang, UserLevelOptional))
+	r.HandleFunc("/lang:{lang:[a-zA-Z]{2}}", handler.Web(handleViewCollectionLang, UserLevelOptional))
+	r.HandleFunc("/lang:{lang:[a-zA-Z]{2}}/page/{page:[0-9]+}", handler.Web(handleViewCollectionLang, UserLevelOptional))
 	r.HandleFunc("/tag:{tag}", handler.Web(handleViewCollectionTag, UserLevelReader))
 	r.HandleFunc("/tag:{tag}/page/{page:[0-9]+}", handler.Web(handleViewCollectionTag, UserLevelReader))
 	r.HandleFunc("/tag:{tag}/feed/", handler.Web(ViewFeed, UserLevelReader))

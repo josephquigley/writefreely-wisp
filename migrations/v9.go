@@ -17,10 +17,15 @@ func optimizeDrafts(db *datastore) error {
 		return err
 	}
 
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		_, err = t.Exec(`CREATE INDEX key_owner_post_id ON posts (owner_id, id)`)
-	} else {
+	case driverMySQL:
 		_, err = t.Exec(`ALTER TABLE posts ADD INDEX(owner_id, id)`)
+	case driverPostgres:
+		err = errBeforePostgresBase("optimizeDrafts")
+	default:
+		unsupportedDriver("optimizeDrafts", db.driverName)
 	}
 	if err != nil {
 		t.Rollback()

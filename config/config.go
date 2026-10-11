@@ -58,7 +58,10 @@ type (
 		Dev bool `ini:"-"`
 	}
 
-	// DatabaseCfg holds values that determine how the application connects to a datastore
+	// DatabaseCfg holds values that determine how the application connects to a datastore.
+	// Type is "mysql", "sqlite3" or "postgres". FileName is used only by
+	// sqlite3; the rest only by mysql and postgres, where TLS maps to
+	// Postgres' sslmode=require (true) or sslmode=disable (false).
 	DatabaseCfg struct {
 		Type     string `ini:"type"`
 		FileName string `ini:"filename"`
@@ -173,6 +176,20 @@ type (
 		// the zone, so use one only on a zone you control.
 		FederationAllowlist string `ini:"federation_allowlist"`
 
+		// AuthorizedFetch requires a valid HTTP signature on every
+		// ActivityPub request this instance serves: every read of an
+		// actor, collection or post, and every inbox delivery. Unsigned
+		// and badly signed requests get 401. With FederationAllowlist set
+		// the signer must also be on it; without one, any server that can
+		// sign is admitted.
+		//
+		// It is independent of Private, and only ever narrows access: it
+		// never admits a request that private mode would refuse. Webfinger,
+		// host-meta, nodeinfo and the instance actor stay open, because a
+		// peer must read those before it can verify our own signed
+		// requests. Off, nothing changes.
+		AuthorizedFetch bool `ini:"authorized_fetch"`
+
 		// InstanceAnnounce turns on the instance-wide announce actor: the
 		// server actor at /api/collections/<host> accepts follows of its own
 		// and Announces every new post from every PUBLIC blog to whoever
@@ -250,6 +267,41 @@ type (
 		Dir       string `ini:"dir"`
 	}
 
+	// StorageCfg chooses where uploaded images are kept. With no [storage]
+	// section, or with type empty or "local", they stay on this node's disk
+	// under [uploads] dir, exactly as before the section existed.
+	//
+	// Every key is bootstrap: it names infrastructure and carries
+	// credentials, so it lives in config.ini and never in the database.
+	// Write the credentials as ${VAR} references.
+	StorageCfg struct {
+		Type string `ini:"type,omitempty"`
+
+		// S3Endpoint is a URL, and its scheme decides whether TLS is used:
+		// https://s3.example.org, or http://localhost:3900 for a store on
+		// this machine.
+		S3Endpoint        string `ini:"s3_endpoint,omitempty"`
+		S3Region          string `ini:"s3_region,omitempty"`
+		S3Bucket          string `ini:"s3_bucket,omitempty"`
+		S3Prefix          string `ini:"s3_prefix,omitempty"`
+		S3AccessKeyID     string `ini:"s3_access_key_id,omitempty"`
+		S3SecretAccessKey string `ini:"s3_secret_access_key,omitempty"`
+
+		// Path-style addressing (endpoint/bucket/key) is the default,
+		// because Garage and most other non-AWS stores need it. Set this
+		// for a store that wants bucket.endpoint/key instead.
+		S3VirtualHost bool `ini:"s3_virtual_host,omitempty"`
+
+		// ImageURLBase is where readers fetch uploaded images from, and
+		// is required with S3: the app writes images to the bucket and
+		// never serves them, so a CDN, or a reverse proxy reading the
+		// bucket, must answer here. An image's URL is this base, a slash,
+		// and its object key, prefix included. Post bodies keep /uploads/
+		// paths; rendered and federated copies use the base, and /uploads/
+		// redirects to it. Not allowed with local storage.
+		ImageURLBase string `ini:"image_url_base,omitempty"`
+	}
+
 	// Config holds the complete configuration for running a writefreely instance
 	Config struct {
 		Server       ServerCfg       `ini:"server"`
@@ -257,6 +309,7 @@ type (
 		App          AppCfg          `ini:"app"`
 		Email        EmailCfg        `ini:"email"`
 		Uploads      UploadsCfg      `ini:"uploads"`
+		Storage      StorageCfg      `ini:"storage"`
 		SlackOauth   SlackOauthCfg   `ini:"oauth.slack"`
 		WriteAsOauth WriteAsOauthCfg `ini:"oauth.writeas"`
 		GitlabOauth  GitlabOauthCfg  `ini:"oauth.gitlab"`
@@ -290,12 +343,34 @@ func New() *Config {
 	return c
 }
 
+const (
+	defaultMySQLPort    = 3306
+	defaultPostgresPort = 5432
+)
+
 // UseMySQL resets the Config's Database to use default values for a MySQL setup.
 func (cfg *Config) UseMySQL(fresh bool) {
 	cfg.Database.Type = "mysql"
 	if fresh {
 		cfg.Database.Host = "localhost"
-		cfg.Database.Port = 3306
+		cfg.Database.Port = defaultMySQLPort
+	} else if cfg.Database.Port == defaultPostgresPort {
+		// Switching from Postgres: move off its default port, keep a custom one
+		cfg.Database.Port = defaultMySQLPort
+	}
+}
+
+// UsePostgres resets the Config's Database to use default values for a
+// PostgreSQL setup. It uses the same host, port, username, password,
+// database and tls keys as MySQL.
+func (cfg *Config) UsePostgres(fresh bool) {
+	cfg.Database.Type = "postgres"
+	if fresh {
+		cfg.Database.Host = "localhost"
+		cfg.Database.Port = defaultPostgresPort
+	} else if cfg.Database.Port == defaultMySQLPort {
+		// Switching from MySQL: move off its default port, keep a custom one
+		cfg.Database.Port = defaultPostgresPort
 	}
 }
 
@@ -421,6 +496,10 @@ func Load(fname string) (*Config, error) {
 		if uc.Server.PagesParentDir == "" {
 			uc.Server.PagesParentDir = parentDir
 		}
+	}
+
+	if err := uc.Storage.validate(); err != nil {
+		return nil, err
 	}
 
 	// Do any transformations

@@ -231,14 +231,11 @@ func (p *dummyPeer) keyFor(keyID string) (*rsa.PublicKey, error) {
 // follower.
 func registerPeerLocally(t *testing.T, app *App, p *dummyPeer) int64 {
 	t.Helper()
-	res, err := app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)",
+	// insertReturningID, not Result.LastInsertId, which Postgres lacks.
+	id, err := app.db.insertReturningID(app.db.DB, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)",
 		p.actorID, p.inbox(), "", p.actorID)
 	if err != nil {
 		t.Fatalf("register peer: %v", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("peer id: %v", err)
 	}
 	return id
 }
@@ -674,12 +671,11 @@ func TestSharedInboxReceivesOneDelivery(t *testing.T) {
 	peer := newDummyPeer(t, app)
 
 	for i, actor := range []string{peer.actorID, peer.server.URL + "/users/carol"} {
-		res, err := app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)",
+		id, err := app.db.insertReturningID(app.db.DB, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)",
 			actor, fmt.Sprintf("%s/users/%d/inbox", peer.server.URL, i), peer.inbox(), actor)
 		if err != nil {
 			t.Fatalf("register follower: %v", err)
 		}
-		id, _ := res.LastInsertId()
 		if _, err := app.db.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (0, ?, "+app.db.now()+")", id); err != nil {
 			t.Fatalf("follow: %v", err)
 		}

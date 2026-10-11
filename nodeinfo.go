@@ -19,9 +19,12 @@ import (
 )
 
 type nodeInfoResolver struct {
-	cfg *config.Config
+	app *App
 	db  *datastore
 }
+
+// nodeInfoPath is where the NodeInfo document itself is served.
+const nodeInfoPath = "/api/nodeinfo"
 
 func nodeInfoConfig(db *datastore, cfg *config.Config) *nodeinfo.Config {
 	name := cfg.App.SiteName
@@ -38,7 +41,7 @@ func nodeInfoConfig(db *datastore, cfg *config.Config) *nodeinfo.Config {
 	}
 	return &nodeinfo.Config{
 		BaseURL: cfg.App.Host,
-		InfoURL: "/api/nodeinfo",
+		InfoURL: nodeInfoPath,
 
 		Metadata: nodeinfo.Metadata{
 			NodeName:        name,
@@ -70,7 +73,7 @@ func nodeInfoConfig(db *datastore, cfg *config.Config) *nodeinfo.Config {
 }
 
 func (r nodeInfoResolver) IsOpenRegistration() (bool, error) {
-	return r.cfg.App.OpenRegistration, nil
+	return r.app.Config().App.OpenRegistration, nil
 }
 
 func (r nodeInfoResolver) Usage() (nodeinfo.Usage, error) {
@@ -86,7 +89,7 @@ func (r nodeInfoResolver) Usage() (nodeinfo.Usage, error) {
 		log.Error("Unable to fetch post counts: %v", err)
 	}
 
-	if r.cfg.App.PublicStats {
+	if r.app.Config().App.PublicStats {
 		// Display bi-yearly / monthly stats
 		err = r.db.QueryRow(`SELECT COUNT(*) FROM (
 SELECT DISTINCT collection_id

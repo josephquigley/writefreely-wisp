@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -171,7 +172,7 @@ func (h *Handler) User(f userHandlerFunc) http.HandlerFunc {
 				status = impErr.Status
 				if impErr == ErrUserNotFound {
 					log.Info("Logged-in user not found. Logging out.")
-					sendRedirect(w, http.StatusFound, "/me/logout?to="+h.app.App().cfg.App.LandingPath())
+					sendRedirect(w, http.StatusFound, "/me/logout?to="+h.app.App().Config().App.LandingPath())
 					// Reset err so handleHTTPError does nothing
 					err = nil
 				}
@@ -429,21 +430,21 @@ func (h *Handler) WebErrors(f handlerFunc, ul UserLevelFunc) http.HandlerFunc {
 
 			var session *sessions.Session
 			var err error
-			if ul(h.app.App().cfg) != UserLevelNoneType {
+			if ul(h.app.App().Config()) != UserLevelNoneType {
 				session, err = h.sessionStore.Get(r, cookieName)
-				if err != nil && (ul(h.app.App().cfg) == UserLevelNoneRequiredType || ul(h.app.App().cfg) == UserLevelUserType) {
+				if err != nil && (ul(h.app.App().Config()) == UserLevelNoneRequiredType || ul(h.app.App().Config()) == UserLevelUserType) {
 					// Cookie is required, but we can ignore this error
-					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().cfg), err)
+					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().Config()), err)
 				}
 
 				_, gotUser := session.Values[cookieUserVal].(*User)
-				if ul(h.app.App().cfg) == UserLevelNoneRequiredType && gotUser {
+				if ul(h.app.App().Config()) == UserLevelNoneRequiredType && gotUser {
 					to := correctPageFromLoginAttempt(r)
 					log.Info("Handler: Required NO user, but got one. Redirecting to %s", to)
 					err := impart.HTTPError{http.StatusFound, to}
 					status = err.Status
 					return err
-				} else if ul(h.app.App().cfg) == UserLevelUserType && !gotUser {
+				} else if ul(h.app.App().Config()) == UserLevelUserType && !gotUser {
 					log.Info("Handler: Required a user, but DIDN'T get one. Sending not logged in.")
 					err := ErrNotLoggedIn
 					status = err.Status
@@ -519,21 +520,21 @@ func (h *Handler) Web(f handlerFunc, ul UserLevelFunc) http.HandlerFunc {
 				log.Info("%s", h.app.ReqLog(r, status, time.Since(start)))
 			}()
 
-			if ul(h.app.App().cfg) != UserLevelNoneType {
+			if ul(h.app.App().Config()) != UserLevelNoneType {
 				session, err := h.sessionStore.Get(r, cookieName)
-				if err != nil && (ul(h.app.App().cfg) == UserLevelNoneRequiredType || ul(h.app.App().cfg) == UserLevelUserType) {
+				if err != nil && (ul(h.app.App().Config()) == UserLevelNoneRequiredType || ul(h.app.App().Config()) == UserLevelUserType) {
 					// Cookie is required, but we can ignore this error
-					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().cfg), err)
+					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().Config()), err)
 				}
 
 				_, gotUser := session.Values[cookieUserVal].(*User)
-				if ul(h.app.App().cfg) == UserLevelNoneRequiredType && gotUser {
+				if ul(h.app.App().Config()) == UserLevelNoneRequiredType && gotUser {
 					to := correctPageFromLoginAttempt(r)
 					log.Info("Handler: Required NO user, but got one. Redirecting to %s", to)
 					err := impart.HTTPError{http.StatusFound, to}
 					status = err.Status
 					return err
-				} else if ul(h.app.App().cfg) == UserLevelUserType && !gotUser {
+				} else if ul(h.app.App().Config()) == UserLevelUserType && !gotUser {
 					log.Info("Handler: Required a user, but DIDN'T get one. Sending not logged in.")
 					err := ErrNotLoggedIn
 					status = err.Status
@@ -656,12 +657,37 @@ func (h *Handler) OAuth(f handlerFunc) http.HandlerFunc {
 	}
 }
 
+// isInstanceActorRead reports whether r is an ActivityPub GET of the
+// instance actor's own document, and nothing else: not another collection,
+// not its inbox, outbox, followers or following, and not a non-ActivityPub
+// request for the same path.
+//
+// That document holds only the server's name and public key, and every
+// signed fetch this instance makes names that key as its keyId. A peer that
+// fetches keys without signing cannot verify our signature unless it can
+// read this one document.
+func isInstanceActorRead(cfg *config.Config, r *http.Request) bool {
+	alias := instanceActorAlias(cfg)
+	return alias != "" &&
+		r.Method == http.MethodGet &&
+		r.URL.Path == "/api/collections/"+alias &&
+		IsActivityPubRequest(r)
+}
+
 // requirePrivateModeAccess enforces private mode for a request. It accepts an
 // API access token, a web session, or an HTTP signature from a host on the
 // federation allowlist, and returns nil when the instance is not private.
+//
+// The instance actor's document is the one exception, and is readable by
+// anyone: see isInstanceActorRead. Mastodon and Mbin leave their instance
+// actor open for the same reason.
 func (h *Handler) requirePrivateModeAccess(r *http.Request) error {
 	app := h.app.App()
-	if !app.cfg.App.Private {
+	if !app.Config().App.Private {
+		return nil
+	}
+
+	if isInstanceActorRead(app.Config(), r) {
 		return nil
 	}
 
@@ -782,21 +808,21 @@ func (h *Handler) Redirect(url string, ul UserLevelFunc) http.HandlerFunc {
 			start := time.Now()
 
 			var status int
-			if ul(h.app.App().cfg) != UserLevelNoneType {
+			if ul(h.app.App().Config()) != UserLevelNoneType {
 				session, err := h.sessionStore.Get(r, cookieName)
-				if err != nil && (ul(h.app.App().cfg) == UserLevelNoneRequiredType || ul(h.app.App().cfg) == UserLevelUserType) {
+				if err != nil && (ul(h.app.App().Config()) == UserLevelNoneRequiredType || ul(h.app.App().Config()) == UserLevelUserType) {
 					// Cookie is required, but we can ignore this error
-					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().cfg), err)
+					log.Error("Handler: Unable to get session (for user permission %d); ignoring: %v", ul(h.app.App().Config()), err)
 				}
 
 				_, gotUser := session.Values[cookieUserVal].(*User)
-				if ul(h.app.App().cfg) == UserLevelNoneRequiredType && gotUser {
+				if ul(h.app.App().Config()) == UserLevelNoneRequiredType && gotUser {
 					to := correctPageFromLoginAttempt(r)
 					log.Info("Handler: Required NO user, but got one. Redirecting to %s", to)
 					err := impart.HTTPError{http.StatusFound, to}
 					status = err.Status
 					return err
-				} else if ul(h.app.App().cfg) == UserLevelUserType && !gotUser {
+				} else if ul(h.app.App().Config()) == UserLevelUserType && !gotUser {
 					log.Info("Handler: Required a user, but DIDN'T get one. Sending not logged in.")
 					err := ErrNotLoggedIn
 					status = err.Status
@@ -946,7 +972,7 @@ func (h *Handler) handleOAuthError(w http.ResponseWriter, r *http.Request, err e
 
 func correctPageFromLoginAttempt(r *http.Request) string {
 	to := r.FormValue("to")
-	if to == "" {
+	if to == "" || strings.HasPrefix(to, "//") {
 		to = "/"
 	} else if !strings.HasPrefix(to, "/") {
 		to = "/" + to
@@ -1011,7 +1037,16 @@ func (h *Handler) Gopher(f gopherFunc) gopher.HandlerFunc {
 			log.Info("gopher: %s", r.Selector)
 		}()
 
-		err := f(h.app.App(), w, r)
+		app := h.app.App()
+		app.refreshSettings(context.Background())
+		if app.Config().App.Private {
+			// The Gopher server starts only on a public instance; an
+			// instance made private since must stop answering.
+			w.WriteError("This instance is private.")
+			return
+		}
+
+		err := f(app, w, r)
 		if err != nil {
 			log.Error("failed: %s", err)
 			w.WriteError("the page failed for some reason (see logs)")
@@ -1025,9 +1060,12 @@ func sendRedirect(w http.ResponseWriter, code int, location string) int {
 	return code
 }
 
+// imageCacheControl is how long a browser or CDN may keep an uploaded image.
+const imageCacheControl = "public, max-age=604800, immutable"
+
 func cacheControl(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+		w.Header().Set("Cache-Control", imageCacheControl)
 		next.ServeHTTP(w, r)
 	})
 }

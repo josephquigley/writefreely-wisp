@@ -19,8 +19,8 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	"github.com/writeas/web-core/auth"
 	wflog "github.com/writeas/web-core/log"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/writefreely/writefreely/config"
 	"github.com/writefreely/writefreely/key"
@@ -46,17 +46,20 @@ import (
 //     appended after partial output from the page that actually failed)
 
 // newTemplateTestApp builds a fully-initialized App backed by a temporary
-// SQLite database and disposable in-memory keys, for use in rendering
-// tests. It skips the test if the binary wasn't built with `-tags sqlite`.
+// SQLite database (or, under WF_TEST_DB_TYPE=mysql or postgres, a fresh one
+// on that engine) and disposable in-memory keys, for use in rendering tests.
+// On SQLite it skips the test if the binary wasn't built with `-tags sqlite`.
 func newTemplateTestApp(t *testing.T, mutate func(cfg *config.Config)) (*App, *mux.Router) {
 	t.Helper()
-	if !SQLiteEnabled {
+	engine, _ := testDBEngine()
+	if !SQLiteEnabled && engine == driverSQLite {
 		t.Skip("SQLite support not compiled in; run with `go test -tags sqlite` to run this test")
 	}
 
 	dir := t.TempDir()
 
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.Server.TemplatesParentDir = ""
 	cfg.Server.PagesParentDir = ""
 	cfg.Server.StaticParentDir = "testdata"
@@ -91,11 +94,17 @@ func newTemplateTestApp(t *testing.T, mutate func(cfg *config.Config)) (*App, *m
 	app.InitSession()
 	app.InitDecoder()
 
-	connectToDatabase(app)
-	t.Cleanup(func() { app.db.Close() })
+	if e := engineTestApp(t, app.cfg); e != nil {
+		// A fresh wf_test_* database with the schema loaded; see
+		// harness_app_test.go.
+		app.db = e.db
+	} else {
+		connectToDatabase(app)
+		t.Cleanup(func() { app.db.Close() })
 
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init database: %v", err)
+		if err := adminInitDatabase(app); err != nil {
+			t.Fatalf("init database: %v", err)
+		}
 	}
 
 	initActivityPub(app)
@@ -189,17 +198,31 @@ func truncateForLog(s string) string {
 	return s[:max] + "...(truncated)"
 }
 
-// createTemplateTestUser creates a user (and their auto-generated blog) and
-// a single published post in it, returning all three.
-func createTemplateTestUser(t *testing.T, app *App, username string) (*User, *Collection, *Post) {
+// testHashPass is a bcrypt hash of pass at bcrypt.MinCost, for test
+// fixtures that need a stored password but are not testing how it is
+// hashed. auth.HashPass uses cost 12, about 225 ms a hash, and the fixtures
+// below run hundreds of times per run. A hash records its own cost, so
+// auth.Authenticated still checks the password against it, just as fast.
+//
+// Tests of the production hashing path (signup, ChangeSettings,
+// ChangePassphrase, API login) still call auth.HashPass or the code that
+// does; this is only for setup.
+func testHashPass(t testing.TB, pass string) []byte {
 	t.Helper()
-
-	hashedPass, err := auth.HashPass([]byte("testpassword"))
+	h, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.MinCost)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
+	return h
+}
 
-	u := &User{Username: username, HashedPass: hashedPass}
+// createTemplateTestUser creates a user (and their auto-generated blog) and
+// a single published post in it, returning all three. The password is never
+// checked, so it is hashed cheaply (testHashPass).
+func createTemplateTestUser(t *testing.T, app *App, username string) (*User, *Collection, *Post) {
+	t.Helper()
+
+	u := &User{Username: username, HashedPass: testHashPass(t, "testpassword")}
 	if err := app.db.CreateUser(app.cfg, u, "", ""); err != nil {
 		t.Fatalf("create user %q: %v", username, err)
 	}

@@ -102,10 +102,10 @@ func exportPostsZip(u *User, posts *[]PublicPost) []byte {
 
 func compileFullExport(app *App, u *User) *ExportUser {
 	exportUser := &ExportUser{
-		User: u,
+		User: u.forAPI(app.keys),
 	}
 
-	colls, err := app.db.GetCollections(u, app.cfg.App.Host)
+	colls, err := app.db.GetCollections(u, app.Config().App.Host)
 	if err != nil {
 		log.Error("unable to fetch collections: %v", err)
 	}
@@ -119,7 +119,7 @@ func compileFullExport(app *App, u *User) *ExportUser {
 	var collObjs []CollectionObj
 	for _, c := range *colls {
 		co := &CollectionObj{Collection: c}
-		co.Posts, err = app.db.GetPosts(app.cfg, &c, 0, true, false, true, "")
+		co.Posts, err = app.db.GetPosts(app.Config(), &c, 0, true, false, true, "")
 		if err != nil {
 			log.Error("unable to get collection posts: %v", err)
 		}

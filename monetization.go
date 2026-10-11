@@ -54,7 +54,7 @@ func handleSPSPEndpoint(app *App, w http.ResponseWriter, r *http.Request) error 
 	}
 
 	var c *Collection
-	if strings.IndexRune(id, '.') > 0 && app.cfg.App.SingleUser {
+	if strings.IndexRune(id, '.') > 0 && app.Config().App.SingleUser {
 		c, err = app.db.GetCollectionByID(1)
 	} else {
 		c, err = app.db.GetCollection(id)
@@ -89,7 +89,7 @@ func handleGetSplitContent(app *App, w http.ResponseWriter, r *http.Request) err
 		collLookupID = coll.Alias
 	}
 
-	p, err := app.db.GetPost(vars["post"], collID)
+	p, err := app.db.GetPost(normalizePostID(vars["post"]), collID)
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func handleGetSplitContent(app *App, w http.ResponseWriter, r *http.Request) err
 		}
 
 		d.Content = p.Content[exc+len(shortCodePaid):]
-		d.HTMLContent = applyMarkdown([]byte(d.Content), baseURL, app.cfg)
+		d.HTMLContent = applyMarkdown([]byte(d.Content), baseURL, app.Config())
 	}
 
 	return impart.WriteSuccess(w, d, http.StatusOK)

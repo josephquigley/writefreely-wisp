@@ -11,6 +11,9 @@ func TestDialect_Column(t *testing.T) {
 	assert.Equal(t, DialectSQLite, c1.Dialect)
 	c2 := DialectMySQL.Column("foo", ColumnTypeBool, UnsetSize)
 	assert.Equal(t, DialectMySQL, c2.Dialect)
+	c3 := DialectPostgres.Column("foo", ColumnTypeBool, UnsetSize)
+	assert.Equal(t, DialectPostgres, c3.Dialect)
+	assert.Panics(t, func() { DialectType(10000).Column("foo", ColumnTypeBool, UnsetSize) })
 }
 
 func TestColumnType_Format(t *testing.T) {
@@ -44,6 +47,17 @@ func TestColumnType_Format(t *testing.T) {
 		{"MySQL varchar with param", ColumnTypeVarChar, args{dialect: DialectMySQL, size: OptionalInt{true, 25}}, "VARCHAR(25)", false},
 		{"MySQL text", ColumnTypeText, args{dialect: DialectMySQL}, "TEXT", false},
 		{"MySQL datetime", ColumnTypeDateTime, args{dialect: DialectMySQL}, "DATETIME", false},
+
+		{"Postgres bool", ColumnTypeBool, args{dialect: DialectPostgres}, "BOOLEAN", false},
+		{"Postgres small int", ColumnTypeSmallInt, args{dialect: DialectPostgres}, "SMALLINT", false},
+		{"Postgres small int ignores width", ColumnTypeSmallInt, args{dialect: DialectPostgres, size: OptionalInt{true, 3}}, "SMALLINT", false},
+		{"Postgres int", ColumnTypeInteger, args{dialect: DialectPostgres}, "INTEGER", false},
+		{"Postgres int ignores width", ColumnTypeInteger, args{dialect: DialectPostgres, size: OptionalInt{true, 24}}, "INTEGER", false},
+		{"Postgres char is varchar", ColumnTypeChar, args{dialect: DialectPostgres, size: OptionalInt{true, 6}}, "VARCHAR(6)", false},
+		{"Postgres varchar", ColumnTypeVarChar, args{dialect: DialectPostgres, size: OptionalInt{true, 25}}, "VARCHAR(25)", false},
+		{"Postgres text", ColumnTypeText, args{dialect: DialectPostgres}, "TEXT", false},
+		{"Postgres datetime", ColumnTypeDateTime, args{dialect: DialectPostgres}, "TIMESTAMPTZ", false},
+		{"Postgres invalid column type", 10000, args{dialect: DialectPostgres}, "", true},
 
 		{"invalid column type", 10000, args{dialect: DialectMySQL}, "", true},
 		{"invalid dialect", ColumnTypeBool, args{dialect: 10000}, "", true},

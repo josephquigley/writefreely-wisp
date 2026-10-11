@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -38,9 +39,12 @@ func TestGetCollectionPostsForOwnerPaging(t *testing.T) {
 	app, _ := newTemplateTestApp(t, nil)
 	u, coll, _ := createTemplateTestUser(t, app, "pager")
 
-	title := "post"
 	content := "body"
 	for i := 0; i < postListPageSize+5; i++ {
+		// Distinct titles give distinct slugs. A shared title makes every
+		// insert after the first collide on (collection_id, slug) and fall
+		// back to a random suffix, which can itself collide.
+		title := fmt.Sprintf("post %d", i)
 		_, err := app.db.CreatePost(u.ID, coll.ID, &SubmittedPost{Title: &title, Content: &content})
 		assert.NoError(t, err)
 	}

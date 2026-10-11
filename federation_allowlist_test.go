@@ -228,6 +228,33 @@ func TestAllowlistedKeyReturnsCachedKey(t *testing.T) {
 	assert.Equal(t, pub, got)
 }
 
+// A key ID longer than remoteuserkeys.id can hold must still pass: the
+// fetched actor's key ID is compared with the signature's keyId, so nothing
+// between the fetch and that comparison may shorten it.
+func TestAllowlistedKeyAcceptsKeyIDLongerThanItsColumn(t *testing.T) {
+	app := allowlistApp(t, "example.org")
+	k := testKey(t)
+	actorID := "https://example.org/users/a"
+	keyID := actorID + "#" + strings.Repeat("k", 300-len(actorID)-1)
+	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	stubFetchActorIRI(t, func(_, iri string) ([]byte, error) {
+		assert.Equal(t, actorID, iri)
+		return []byte(fmt.Sprintf(`{"id":%q,"type":"Person","inbox":%q,"publicKey":{"id":%q,"owner":%q,"publicKeyPem":%q}}`,
+			actorID, actorID+"/inbox", keyID, actorID, pubPEM)), nil
+	})
+
+	got, err := app.allowlistedKey(keyID)
+	assert.NoError(t, err)
+	assert.Equal(t, &k.PublicKey, got)
+
+	r := signedRequest(t, k, keyID, "GET", "https://local.example/api/collections/x/outbox", nil)
+	assert.NoError(t, app.verifyAllowlistedSignature(r))
+}
+
 // signedRequest builds a request signed the way WriteFreely itself signs
 // outbound requests, so the gate is exercised against a real signature.
 func signedRequest(t *testing.T, k *rsa.PrivateKey, keyID, method, target string, body []byte) *http.Request {

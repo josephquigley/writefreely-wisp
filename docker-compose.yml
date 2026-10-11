@@ -109,6 +109,60 @@ services:
 
     restart: unless-stopped
 
+  postgres:
+    # Opt-in. Nothing starts this unless the profile is named:
+    #
+    #   docker compose --profile postgres up -d postgres
+    #
+    # The default stack above is unchanged and still runs on MariaDB. This
+    # service exists for working on the Postgres dialect and for running the
+    # test suite against a long-lived database; see docs/postgres-testing.md.
+    # `make test-postgres` does not use it -- it starts its own throwaway
+    # container -- so this is only for when you want one that stays up.
+    profiles: ["postgres"]
+
+    image: "postgres:18"
+
+    # Postgres 18 images keep their data under a versioned subdirectory of
+    # /var/lib/postgresql, so the volume goes on the parent rather than on
+    # the old /var/lib/postgresql/data. A named volume rather than a bind
+    # mount: the image runs as its own postgres user, and a bind mount
+    # would need a chown that the MariaDB service above avoids with PUID.
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+    # On the external network as well as the internal one, so the port can
+    # be published for tests run from the host. Bound to loopback only.
+    networks:
+      - internal
+      - external
+
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - POSTGRES_DB=writefreely
+      - POSTGRES_USER=writefreely
+      # A default rather than a required value, unlike MYSQL_PASSWORD:
+      # Compose interpolates every service, profiled or not, so requiring
+      # this would stop the default MariaDB stack from starting for anyone
+      # who never set it. The port is loopback-only and the data is
+      # disposable development state.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-writefreely}
+
+    # -h 127.0.0.1 so the check waits for the real server. During first
+    # start the image runs a temporary server on the Unix socket only, and
+    # a socket check would pass before the database is reachable.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U writefreely -d writefreely"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+    restart: unless-stopped
+
   mailpit:
     # Catches everything the app sends instead of delivering it. Nothing
     # here leaves the machine, so password resets and invites can be
@@ -131,3 +185,7 @@ services:
       - "127.0.0.1:8025:8025"
 
     restart: unless-stopped
+
+volumes:
+  # Only used by the opt-in postgres profile.
+  pgdata:

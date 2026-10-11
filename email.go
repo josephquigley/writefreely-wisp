@@ -110,12 +110,19 @@ func handleCreateEmailSubscription(app *App, w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// An address too long to be valid, or one that is not valid text, is
+	// refused here rather than reaching emailsubscribers.email, where
+	// Postgres would fail the request with a 500 instead of truncating.
+	if len(ss.Email) > emailMaxLength || !isValidDBText(ss.Email) {
+		return impart.HTTPError{http.StatusBadRequest, "That email address isn't valid."}
+	}
+
 	c, err := app.db.GetCollection(ss.CollAlias)
 	if err != nil {
 		log.Error("getCollection: %s", err)
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	from := c.CanonicalURL()
 	isAuthorBanned, err := app.db.IsUserSilenced(c.OwnerID)
@@ -127,7 +134,7 @@ func handleCreateEmailSubscription(app *App, w http.ResponseWriter, r *http.Requ
 	if ss.Web {
 		// On a single-user instance the blog is served at the site root, so
 		// the canonical URL we already have is the right place to go back to.
-		if u != nil && u.ID == c.OwnerID && !app.cfg.App.SingleUser {
+		if u != nil && u.ID == c.OwnerID && !app.Config().App.SingleUser {
 			from = "/" + c.Alias + "/"
 		}
 		from += ss.Slug
@@ -230,7 +237,7 @@ func handleDeleteEmailSubscription(app *App, w http.ResponseWriter, r *http.Requ
 	// Display collection if this is a collection
 	var c *Collection
 	var err error
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		c, err = app.db.GetCollectionByID(1)
 	} else {
 		c, err = app.db.GetCollection(alias)
@@ -257,7 +264,7 @@ func handleDeleteEmailSubscription(app *App, w http.ResponseWriter, r *http.Requ
 			userID = u.ID
 			// See the note in handleCreateEmailSubscription: on a
 			// single-user instance the blog is served at the site root.
-			if userID == c.OwnerID && !app.cfg.App.SingleUser {
+			if userID == c.OwnerID && !app.Config().App.SingleUser {
 				from = "/" + c.Alias + "/"
 			}
 		}
@@ -299,7 +306,7 @@ func handleConfirmEmailSubscription(app *App, w http.ResponseWriter, r *http.Req
 
 	var c *Collection
 	var err error
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		c, err = app.db.GetCollectionByID(1)
 	} else {
 		c, err = app.db.GetCollection(alias)
@@ -329,7 +336,7 @@ func emailPost(app *App, p *PublicPost, collID int64) error {
 	p.Content = strings.Replace(p.Content, shortCodeEmailSub, `<p id="emailsub">You're subscribed to email updates.</p>`, -1)
 
 	if p.HTMLContent == template.HTML("") {
-		p.formatContent(app.cfg, false, false)
+		p.formatContent(app.Config(), false, false)
 	}
 	p.augmentReadingDestination()
 
@@ -337,7 +344,7 @@ func emailPost(app *App, p *PublicPost, collID int64) error {
 	if title != "" {
 		title = p.Title.String + "\n\n"
 	}
-	plainMsg := title + "A new post from " + p.CanonicalURL(app.cfg.App.Host) + "\n\n" + stripmd.Strip(p.Content)
+	plainMsg := title + "A new post from " + p.CanonicalURL(app.Config().App.Host) + "\n\n" + stripmd.Strip(p.Content)
 	plainMsg += `
 
 ---------------------------------------------------------------------------------
@@ -346,11 +353,11 @@ Originally published on ` + p.Collection.DisplayTitle() + ` (` + p.Collection.Ca
 
 Sent to %recipient.to%. Unsubscribe: ` + p.Collection.CanonicalURL() + `email/unsubscribe/%recipient.id%?t=%recipient.token%`
 
-	mlr, err := mailer.New(app.cfg.Email)
+	mlr, err := mailer.New(app.Config().Email)
 	if err != nil {
 		return err
 	}
-	m, err := mlr.NewMessage(mailer.FormatAddress(p.Collection.DisplayTitle(), p.Collection.Alias+"@"+app.cfg.Email.Domain), stripmd.Strip(p.DisplayTitle()), plainMsg)
+	m, err := mlr.NewMessage(mailer.FormatAddress(p.Collection.DisplayTitle(), p.Collection.Alias+"@"+app.Config().Email.Domain), stripmd.Strip(p.DisplayTitle()), plainMsg)
 	if err != nil {
 		return err
 	}
@@ -432,7 +439,7 @@ Sent to %recipient.to%. Unsubscribe: ` + p.Collection.CanonicalURL() + `email/un
 		</style>
 	</head>
 	<body>
-		<div id="article">` + title + `<p class="intro">From <a href="` + p.CanonicalURL(app.cfg.App.Host) + `">` + p.DisplayCanonicalURL() + `</a></p>
+		<div id="article">` + title + `<p class="intro">From <a href="` + p.CanonicalURL(app.Config().App.Host) + `">` + p.DisplayCanonicalURL() + `</a></p>
 
 ` + string(p.HTMLContent) + `</div>
 		<hr />
@@ -455,14 +462,13 @@ Sent to %recipient.to%. Unsubscribe: ` + p.Collection.CanonicalURL() + `email/un
 	log.Info("[email] Adding %d recipient(s)", len(subs))
 	for _, s := range subs {
 		e := s.FinalEmail(app.keys)
-		log.Info("[email] Adding %s", e)
 		err = m.AddRecipientAndVariables(e, map[string]string{
 			"id":    s.ID,
 			"to":    e,
 			"token": s.Token,
 		})
 		if err != nil {
-			log.Error("Unable to add receipient %s: %s", e, err)
+			log.Error("Unable to add recipient %s to post email: %s", s.ID, err)
 		}
 	}
 
@@ -482,7 +488,7 @@ func sendSubConfirmEmail(app *App, c *Collection, email, subID, token string) er
 	}
 
 	// Send email
-	mlr, err := mailer.New(app.cfg.Email)
+	mlr, err := mailer.New(app.Config().Email)
 	if err != nil {
 		return err
 	}
@@ -492,7 +498,7 @@ func sendSubConfirmEmail(app *App, c *Collection, email, subID, token string) er
 ` + c.CanonicalURL() + "email/confirm/" + subID + "?t=" + token + `
 
 If you didn't subscribe to this site or you're not sure why you're getting this email, you can delete it. You won't be subscribed or receive any future emails.`
-	m, err := mlr.NewMessage(mailer.FormatAddress(c.DisplayTitle(), c.Alias+"@"+app.cfg.Email.Domain), "Confirm your subscription to "+c.DisplayTitle(), plainMsg, fmt.Sprintf("<%s>", email))
+	m, err := mlr.NewMessage(mailer.FormatAddress(c.DisplayTitle(), c.Alias+"@"+app.Config().Email.Domain), "Confirm your subscription to "+c.DisplayTitle(), plainMsg, fmt.Sprintf("<%s>", email))
 	if err != nil {
 		return err
 	}

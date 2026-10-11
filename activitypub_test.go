@@ -2,7 +2,6 @@ package writefreely
 
 import (
 	"bytes"
-	"database/sql"
 	"fmt"
 	stdlog "log"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
+	"github.com/writeas/impart"
 	"github.com/writeas/web-core/activitypub"
 	"github.com/writeas/web-core/activitystreams"
 	"github.com/writeas/web-core/log"
@@ -120,7 +120,7 @@ func TestUpdateActivityIDVariesPerEdit(t *testing.T) {
 	}
 }
 
-// newInboxTestApp builds a real, sqlite-backed App suitable for exercising
+// newInboxTestApp builds a real, database-backed App (openAppTestDB) suitable for exercising
 // handleFetchCollectionInbox end-to-end, with a single user and collection
 // already created. When allowlist is non-empty the App is private and that
 // allowlist is configured; otherwise the App behaves as an ordinary,
@@ -129,11 +129,6 @@ func newInboxTestApp(t *testing.T, allowlist string) *App {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	cfg := config.New()
 	cfg.UseSQLite(true)
@@ -143,13 +138,8 @@ func newInboxTestApp(t *testing.T, allowlist string) *App {
 	cfg.App.Private = allowlist != ""
 	cfg.App.FederationAllowlist = allowlist
 
-	app := &App{
-		db:  &datastore{DB: db, driverName: driverSQLite},
-		cfg: cfg,
-	}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	openAppTestDB(t, app, "sqlite3", dbPath+"?parseTime=true&cached=shared")
 	if err := app.initFederationAllowlist(); err != nil {
 		t.Fatalf("initFederationAllowlist: %v", err)
 	}
@@ -278,4 +268,84 @@ func TestMakeActivityPostEmptyURLDoesNotLogPrivateKey(t *testing.T) {
 	// not appear verbatim: look for the rendering fmt would actually emit.
 	assert.NotContains(t, logged.String(), fmt.Sprintf("%v", privKey), "the actor's private key must never reach the log")
 	assert.Contains(t, logged.String(), p.ID, "the log should still name the actor, which is the useful debugging detail")
+}
+
+// deliverLike posts a Like (or an Undo of one) from actor for postIRI to the
+// inbox of newInboxTestApp's collection.
+func deliverLike(app *App, activityType, actor, postIRI string) (*httptest.ResponseRecorder, error) {
+	like := fmt.Sprintf(`{"type":"Like","actor":%q,"object":%q}`, actor, postIRI)
+	body := `{"@context":"https://www.w3.org/ns/activitystreams","id":"https://remote.example/activities/1","type":"Like","actor":"` + actor + `","object":"` + postIRI + `"}`
+	if activityType == "Undo" {
+		body = `{"@context":"https://www.w3.org/ns/activitystreams","id":"https://remote.example/activities/2","type":"Undo","actor":"` + actor + `","object":` + like + `}`
+	}
+	r := httptest.NewRequest("POST", "https://local.example/api/collections/alice/inbox", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	err := handleFetchCollectionInbox(app, w, r)
+	return w, err
+}
+
+func seedLikeActor(t *testing.T, app *App, actor string) int64 {
+	t.Helper()
+	id, err := app.db.insertReturningID(app.db, "INSERT INTO remoteusers (actor_id, inbox, shared_inbox, url) VALUES (?, ?, ?, ?)", actor, "https://remote.example/inbox", "", actor)
+	if err != nil {
+		t.Fatalf("seed remote user: %v", err)
+	}
+	return id
+}
+
+func countRemoteLikes(t *testing.T, app *App, postID string) int {
+	t.Helper()
+	var n int
+	if err := app.db.QueryRow("SELECT COUNT(*) FROM remote_likes WHERE post_id = ?", postID).Scan(&n); err != nil {
+		t.Fatalf("count likes: %v", err)
+	}
+	return n
+}
+
+func TestHandleFetchCollectionInboxRepeatedLikeIsIdempotent(t *testing.T) {
+	app := newInboxTestApp(t, "")
+	actor := "https://remote.example/users/bob"
+	seedLikeActor(t, app, actor)
+	post := "https://local.example/api/posts/abc123"
+
+	for i := 1; i <= 2; i++ {
+		w, err := deliverLike(app, "Like", actor, post)
+		assert.NoError(t, err, "delivery %d", i)
+		assert.Equal(t, http.StatusOK, w.Code, "delivery %d", i)
+		assert.Equal(t, 1, countRemoteLikes(t, app, "abc123"), "likes after delivery %d", i)
+	}
+}
+
+func TestHandleFetchCollectionInboxUndoLikeRepeatedIsIdempotent(t *testing.T) {
+	app := newInboxTestApp(t, "")
+	actor := "https://remote.example/users/bob"
+	seedLikeActor(t, app, actor)
+	post := "https://local.example/api/posts/abc123"
+
+	_, err := deliverLike(app, "Like", actor, post)
+	assert.NoError(t, err)
+	for i := 1; i <= 2; i++ {
+		w, err := deliverLike(app, "Undo", actor, post)
+		assert.NoError(t, err, "undo %d", i)
+		assert.Equal(t, http.StatusOK, w.Code, "undo %d", i)
+		assert.Equal(t, 0, countRemoteLikes(t, app, "abc123"))
+	}
+}
+
+func TestHandleFetchCollectionInboxLikeDBFailureIsAnHTTPError(t *testing.T) {
+	// A database failure must reach the client as an error status, not as the
+	// HTML "Server error" page the handler renders for a plain error.
+	app := newInboxTestApp(t, "")
+	actor := "https://remote.example/users/bob"
+	seedLikeActor(t, app, actor)
+	if _, err := app.db.Exec("DROP TABLE remote_likes"); err != nil {
+		t.Fatalf("drop remote_likes: %v", err)
+	}
+
+	_, err := deliverLike(app, "Like", actor, "https://local.example/api/posts/abc123")
+
+	herr, ok := err.(impart.HTTPError)
+	if assert.True(t, ok, "want impart.HTTPError, got %T: %v", err, err) {
+		assert.Equal(t, http.StatusInternalServerError, herr.Status)
+	}
 }

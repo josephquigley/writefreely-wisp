@@ -20,7 +20,7 @@ const attachBase = "https://quigs.blog/rel-img-test"
 func TestImageAttachmentsFromUploadedImage(t *testing.T) {
 	html := `<p><img src="https://quigs.blog/uploads/2026/09/02/pic.png" alt="a picture"></p>`
 
-	got := imageAttachments(html, nil, nil, attachBase)
+	got := imageAttachments(html, nil, nil, attachBase, imageURLs{})
 
 	if len(got) != 1 {
 		t.Fatalf("wanted 1 attachment, got %d: %+v", len(got), got)
@@ -45,7 +45,7 @@ func TestImageAttachmentsFromUploadedImage(t *testing.T) {
 func TestImageAttachmentsResolveRelativeSrc(t *testing.T) {
 	html := `<img src="/uploads/2026/09/02/pic.png">`
 
-	got := imageAttachments(html, nil, nil, attachBase)
+	got := imageAttachments(html, nil, nil, attachBase, imageURLs{})
 
 	if len(got) != 1 || got[0].URL != "https://quigs.blog/uploads/2026/09/02/pic.png" {
 		t.Fatalf("wanted absolute upload url, got %+v", got)
@@ -58,7 +58,7 @@ func TestImageAttachmentsKeepsTextExtractedImages(t *testing.T) {
 	extracted := []string{"https://example.com/photo.jpg"}
 	alts := map[string]string{"https://example.com/photo.jpg": "a photo"}
 
-	got := imageAttachments("<p>no img tags here</p>", extracted, alts, attachBase)
+	got := imageAttachments("<p>no img tags here</p>", extracted, alts, attachBase, imageURLs{})
 
 	if len(got) != 1 {
 		t.Fatalf("wanted 1 attachment, got %d: %+v", len(got), got)
@@ -75,7 +75,7 @@ func TestImageAttachmentsDeduplicates(t *testing.T) {
 	html := `<img src="https://example.com/photo.jpg" alt="from html">`
 	extracted := []string{"https://example.com/photo.jpg"}
 
-	got := imageAttachments(html, extracted, nil, attachBase)
+	got := imageAttachments(html, extracted, nil, attachBase, imageURLs{})
 
 	if len(got) != 1 {
 		t.Fatalf("wanted 1 attachment, got %d: %+v", len(got), got)
@@ -88,7 +88,7 @@ func TestImageAttachmentsDeduplicates(t *testing.T) {
 func TestImageAttachmentsPreservesOrder(t *testing.T) {
 	html := `<img src="https://quigs.blog/a.png"><img src="https://quigs.blog/b.png">`
 
-	got := imageAttachments(html, []string{"https://example.com/c.jpg"}, nil, attachBase)
+	got := imageAttachments(html, []string{"https://example.com/c.jpg"}, nil, attachBase, imageURLs{})
 
 	wantOrder := []string{
 		"https://quigs.blog/a.png",
@@ -106,13 +106,13 @@ func TestImageAttachmentsPreservesOrder(t *testing.T) {
 }
 
 func TestImageAttachmentsWithNoImages(t *testing.T) {
-	if got := imageAttachments("<p>Just words.</p>", nil, nil, attachBase); len(got) != 0 {
+	if got := imageAttachments("<p>Just words.</p>", nil, nil, attachBase, imageURLs{}); len(got) != 0 {
 		t.Errorf("wanted no attachments, got %+v", got)
 	}
 }
 
 func TestImageAttachmentsOmitsEmptyAltText(t *testing.T) {
-	got := imageAttachments(`<img src="https://quigs.blog/a.png" alt="">`, nil, nil, attachBase)
+	got := imageAttachments(`<img src="https://quigs.blog/a.png" alt="">`, nil, nil, attachBase, imageURLs{})
 
 	if len(got) != 1 {
 		t.Fatalf("wanted 1 attachment, got %d", len(got))

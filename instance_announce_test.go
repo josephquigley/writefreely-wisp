@@ -11,7 +11,6 @@
 package writefreely
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -29,7 +28,7 @@ import (
 
 const announceTestHost = "https://local.example"
 
-// newAnnounceTestApp builds a real, sqlite-backed App with the instance
+// newAnnounceTestApp builds a real, database-backed App (openAppTestDB) with the instance
 // announce actor turned on, one user, and no collections yet.
 //
 // It is deliberately not single-user: single-user mode resolves every alias
@@ -39,13 +38,9 @@ func newAnnounceTestApp(t *testing.T) *App {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "writefreely.db")
-	db, err := sql.Open("sqlite3", dbPath+"?parseTime=true&cached=shared")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.UseSQLite(true)
 	cfg.Database.FileName = dbPath
 	cfg.App.Host = announceTestHost
@@ -53,13 +48,8 @@ func newAnnounceTestApp(t *testing.T) *App {
 	cfg.App.Federation = true
 	cfg.App.InstanceAnnounce = true
 
-	app := &App{
-		db:  &datastore{DB: db, driverName: driverSQLite},
-		cfg: cfg,
-	}
-	if err := adminInitDatabase(app); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	app := &App{cfg: cfg}
+	openAppTestDB(t, app, "sqlite3", dbPath+"?parseTime=true&cached=shared")
 	if err := app.initFederationAllowlist(); err != nil {
 		t.Fatalf("initFederationAllowlist: %v", err)
 	}
@@ -104,8 +94,8 @@ func newTestPost(t *testing.T, app *App, collID int64, postID string, created ti
 	userID := announceTestUserID(t, app)
 	_, err := app.db.Exec(`INSERT INTO posts
 (id, slug, text_appearance, language, rtl, privacy, owner_id, collection_id, created, updated, view_count, title, content)
-VALUES (?, ?, 'norm', 'en', 0, 1, ?, ?, ?, ?, 0, ?, ?)`,
-		postID, postID, userID, collID, created, created, "Title "+postID, "Body of "+postID)
+VALUES (?, ?, 'norm', 'en', ?, 1, ?, ?, ?, ?, 0, ?, ?)`,
+		postID, postID, false, userID, collID, created, created, "Title "+postID, "Body of "+postID)
 	if err != nil {
 		t.Fatalf("insert post %s: %v", postID, err)
 	}
@@ -371,6 +361,7 @@ func TestCollectionForAPRequestResolvesInstanceActor(t *testing.T) {
 // request happens to carry.
 func TestInstanceActorAliasComesFromConfig(t *testing.T) {
 	cfg := config.New()
+	cfg.App.MaxBlogs = testMaxBlogs
 	cfg.App.Host = "https://blog.example.org"
 
 	assert.Equal(t, "blog.example.org", instanceActorAlias(cfg))

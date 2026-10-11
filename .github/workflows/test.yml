@@ -20,11 +20,17 @@ name: Tests
 # requests no secrets and only read access to contents. Do not add secrets to
 # this workflow, and reconsider the trigger before accepting pull requests from
 # outside forks.
+#
+# postgres is the integration branch for the Postgres dialect work. Ticket
+# branches merge into it by pull request, and those pull requests need the
+# same checks as ones into develop. Because pull_request_target reads this
+# file from the base branch, the filter has to be on postgres itself before
+# pull requests into postgres run anything at all.
 on:
   pull_request_target:
-    branches: [develop, main]
+    branches: [develop, main, postgres]
   push:
-    branches: [develop, main]
+    branches: [develop, main, postgres]
 
 permissions:
   contents: read
@@ -60,6 +66,209 @@ jobs:
       # database-sqlite.go sits behind a build tag, so it is only compiled here.
       - run: go build -tags sqlite ./...
       - run: go test ./...
+
+  # The suite against a real Postgres. The variables are what the test
+  # harness reads to pick its database; docs/postgres-testing.md describes
+  # them, and `make test-postgres` sets the same ones locally.
+  #
+  # Required: a failure here fails the run. It was continue-on-error while the
+  # dialect work was incomplete; the release verification ticket (WFPG-17)
+  # removed that once the whole suite was seen green on Postgres 18.
+  test-postgres:
+    name: test-postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: writefreely
+          POSTGRES_PASSWORD: writefreely
+          POSTGRES_DB: writefreely
+        ports:
+          - 5432:5432
+        # -h 127.0.0.1 so the check waits for the real server rather than
+        # the image's socket-only first-start one.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U writefreely -d writefreely"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WF_TEST_DB_TYPE: postgres
+      # A throwaway service container on the runner, not a secret.
+      WF_TEST_PG_DSN: postgres://writefreely:writefreely@127.0.0.1:5432/writefreely?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        if: github.event_name == 'pull_request_target'
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The suite runs once, with the Go process in a zone that is never UTC
+      # and has daylight saving. Every Postgres timestamp is a UTC instant:
+      # the session is pinned to timezone=UTC and the dialect sends UTC. That
+      # guarantee is about a process that is not on UTC, because a bug in
+      # this class (a zone-less local time sent, or a value read back in the
+      # process zone) cannot show while the process is already on UTC, which
+      # the runner is. A second pass on the runner's UTC would add nothing
+      # for it, so there is none: the test job (SQLite) and test-mysql
+      # (MariaDB, plus the SQLite twins) still run the suite with the process
+      # on UTC, so a test that silently assumes a UTC process is still caught
+      # there. What no job runs any more is Postgres with a UTC process,
+      # which for this bug class is the easy case.
+      #
+      # The first command fails the step if Go did not actually pick the
+      # zone up (Go reads TZ and the runner's tzdata itself), so a silently
+      # UTC run cannot pass for a Detroit one. -tags sqlite so the app-level
+      # tests behind that tag (signup, OAuth state, tokens, tags) are
+      # compiled and run against Postgres too.
+      - name: go test (TZ=America/Detroit)
+        env:
+          TZ: America/Detroit
+        run: |
+          cat > "$RUNNER_TEMP/tzcheck.go" <<'EOF'
+          package main
+
+          import (
+          	"fmt"
+          	"os"
+          	"time"
+          )
+
+          func main() {
+          	name, off := time.Now().Zone()
+          	fmt.Printf("Go process time zone: %s (UTC%+d)\n", name, off/3600)
+          	if off == 0 {
+          		os.Exit(1)
+          	}
+          }
+          EOF
+          go run "$RUNNER_TEMP/tzcheck.go"
+          go test -count=1 -tags sqlite ./...
+
+  # The suite against a real MariaDB, through the same harness (WF_TEST_DB_TYPE
+  # selects the engine; docs/database-testing.md). `make test-mysql` runs the
+  # same thing locally, and with MYSQL_IMAGE=mysql:8.4 against MySQL.
+  #
+  # Required: a failure here fails the run. It was continue-on-error until
+  # migration wisp_v2 gave tokens, codes and remote IRIs binary collations and
+  # remoteusers utf8mb4, which cleared the last known MySQL failures.
+  test-mysql:
+    name: test-mysql
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: writefreely
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WF_TEST_DB_TYPE: mysql
+      # A throwaway service container on the runner, not a secret.
+      WF_TEST_MYSQL_DSN: root:writefreely@tcp(127.0.0.1:3306)/
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        if: github.event_name == 'pull_request_target'
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -count=1 -tags sqlite ./...
+
+  # The S3 image store against a real S3-compatible server: a throwaway
+  # Garage, started by the same scripts/test-s3-garage.sh that is used
+  # locally. Not a services: block, because Garage needs a config file
+  # mounted before it starts and a layout, bucket and key created after, and
+  # services start before checkout with no hook for either.
+  #
+  # Those tests skip without WF_TEST_S3_ENDPOINT, and a run where they all
+  # skip looks green. So a skip anywhere in the run fails the job, and so
+  # does a run with no S3 subtest in it, which is what the table tests
+  # (local plus s3) quietly become when the store is not configured.
+  test-s3:
+    name: test-s3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          # The in-job merge below needs real history, not a depth 1 clone,
+          # or git refuses it as unrelated histories.
+          fetch-depth: 0
+      - name: Merge the pull request branch
+        if: github.event_name == 'pull_request_target'
+        run: |
+          git fetch --no-tags origin "$HEAD_REF"
+          git -c user.name=ci -c user.email=ci@localhost \
+            merge --no-edit FETCH_HEAD
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The key and secret are made up per run and die with the container,
+      # so they are not secrets, but the secret is masked anyway.
+      - name: Start Garage
+        run: |
+          vars=$(scripts/test-s3-garage.sh)
+          eval "$vars"
+          if [ -z "${WF_TEST_S3_ENDPOINT:-}" ] || [ -z "${WF_TEST_S3_SECRET_ACCESS_KEY:-}" ]; then
+            echo "test-s3-garage.sh printed no endpoint or secret" >&2
+            exit 1
+          fi
+          echo "::add-mask::$WF_TEST_S3_SECRET_ACCESS_KEY"
+          printf '%s\n' "$vars" | sed 's/^export //' >> "$GITHUB_ENV"
+      # The pattern is every test that reaches the store; the S3-only ones
+      # and the table tests that add an s3 case when it is configured.
+      - name: go test (S3)
+        run: |
+          set -o pipefail
+          go test -count=1 -tags sqlite -v \
+            -run 'S3|ImageStore|ImageSync|StreamImages' . | tee s3-test.log
+          if grep -E -- '--- SKIP' s3-test.log; then
+            echo "S3 tests skipped; the store was not reachable or not configured" >&2
+            exit 1
+          fi
+          s3=$(grep -cE -- '--- PASS: Test[^ ]*/s3 ' s3-test.log || true)
+          if [ "$s3" -eq 0 ]; then
+            echo "no s3 subtest ran; the store was not configured" >&2
+            exit 1
+          fi
+          echo "passed: $(grep -cE -- '--- PASS: ' s3-test.log) tests and subtests, $s3 of them s3 table cases"
+      - name: Stop Garage
+        if: always()
+        run: scripts/test-s3-garage.sh stop
 
   lint:
     name: lint

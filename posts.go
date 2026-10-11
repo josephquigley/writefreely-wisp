@@ -311,7 +311,7 @@ func (p *Post) HasTag(tag string) bool {
 	// Regexp looks for tag and has a non-capturing group at the end looking
 	// for the end of the word.
 	// Assisted by: https://stackoverflow.com/a/35192941/1549194
-	hasTag, _ := regexp.MatchString("#"+tag+`(?:[[:punct:]]|\s|\z)`, p.Content)
+	hasTag, _ := regexp.MatchString("#"+regexp.QuoteMeta(tag)+`(?:[[:punct:]]|\s|\z)`, p.Content)
 	return hasTag
 }
 
@@ -358,7 +358,7 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	// Display reserved page if that is requested resource
 	if t, ok := pages[r.URL.Path[1:]+".tmpl"]; ok {
 		return handleTemplatedPage(app, w, r, t)
-	} else if r.URL.Path == "/sitemap.xml" && !app.cfg.App.SingleUser {
+	} else if r.URL.Path == "/sitemap.xml" && !app.Config().App.SingleUser {
 		return impart.HTTPError{Status: http.StatusNotFound, Message: "Page not found."}
 	} else if (strings.Contains(r.URL.Path, ".") && !isRaw && !isMarkdown) || r.URL.Path == "/robots.txt" || r.URL.Path == "/manifest.json" {
 		// Serve static file
@@ -392,7 +392,7 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var content string
 	var font string
 	var language []byte
-	var rtl []byte
+	var rtl sql.NullBool
 	var views int64
 	var post *AnonymousPost
 	var found bool
@@ -425,10 +425,9 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		found = true
 
 		var d string
-		if len(rtl) == 0 {
+		if !rtl.Valid {
 			d = "auto"
-		} else if rtl[0] == 49 {
-			// TODO: find a cleaner way to get this (possibly NULL) value
+		} else if rtl.Bool {
 			d = "rtl"
 		} else {
 			d = "ltr"
@@ -460,7 +459,7 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 			Direction:   d,
 		}
 		if !isRaw {
-			post.HTMLContent = template.HTML(applyMarkdown([]byte(content), "", app.cfg))
+			post.HTMLContent = template.HTML(applyMarkdown([]byte(content), "", app.Config()))
 			post.Images = extractImages(post.Content)
 		}
 	}
@@ -537,7 +536,7 @@ func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		}{
 			AnonymousPost: post,
 			StaticPage:    pageForReq(app, r),
-			SiteURL:       app.cfg.App.Host,
+			SiteURL:       app.Config().App.Host,
 		}
 		if u = getUserSession(app, r); u != nil {
 			page.Username = u.Username
@@ -680,7 +679,7 @@ func newPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var newPost *PublicPost = &PublicPost{}
 	var coll *Collection
 	if accessToken != "" {
-		newPost, err = app.db.CreateOwnedPost(p, accessToken, collAlias, app.cfg.App.Host)
+		newPost, err = app.db.CreateOwnedPost(p, accessToken, collAlias, app.Config().App.Host)
 	} else {
 		//return ErrNotLoggedIn
 		// TODO: verify user is logged in
@@ -690,7 +689,7 @@ func newPost(app *App, w http.ResponseWriter, r *http.Request) error {
 			if err != nil {
 				return err
 			}
-			coll.hostName = app.cfg.App.Host
+			coll.hostName = app.Config().App.Host
 			if coll.OwnerID != u.ID {
 				return ErrForbiddenCollection
 			}
@@ -712,16 +711,16 @@ func newPost(app *App, w http.ResponseWriter, r *http.Request) error {
 
 	newPost.extractData()
 	newPost.OwnerName = username
-	newPost.URL = newPost.CanonicalURL(app.cfg.App.Host)
+	newPost.URL = newPost.CanonicalURL(app.Config().App.Host)
 
 	// Write success now
 	response := impart.WriteSuccess(w, newPost, http.StatusCreated)
 
 	if newPost.Collection != nil {
-		if app.federationOutboundEnabled() && app.cfg.App.Federation && !newPost.Created.After(time.Now()) {
+		if app.federationOutboundEnabled() && app.Config().App.Federation && !newPost.Created.After(time.Now()) {
 			go federatePost(app, newPost, newPost.Collection.ID, false)
 		}
-		if app.cfg.Email.Enabled() && newPost.Collection.EmailSubsEnabled() {
+		if app.Config().Email.Enabled() && newPost.Collection.EmailSubsEnabled() {
 			go app.db.InsertJob(&PostJob{
 				PostID: newPost.ID,
 				Action: "email",
@@ -733,10 +732,20 @@ func newPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	return response
 }
 
+// normalizePostID is the form a post ID or slug from an API request is looked
+// up in. Both are only ever generated lower-case (id.GenerateFriendlyRandomString
+// draws from [a-z0-9]; slugs go through slug.Make), and MySQL's collation used
+// to forgive a client that upper-cased one. SQLite and Postgres compare
+// exactly, so the API lower-cases at its boundary instead, as the web views
+// already do by redirecting.
+func normalizePostID(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
+}
+
 func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	reqJSON := IsJSON(r)
 	vars := mux.Vars(r)
-	postID := vars["post"]
+	postID := normalizePostID(vars["post"])
 
 	p := AuthenticatedPost{ID: postID}
 	var err error
@@ -838,8 +847,8 @@ func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 
 	if pRes.CollectionID.Valid {
 		coll, err := app.db.GetCollectionBy("id = ?", pRes.CollectionID.Int64)
-		if err == nil && app.federationOutboundEnabled() && app.cfg.App.Federation {
-			coll.hostName = app.cfg.App.Host
+		if err == nil && app.federationOutboundEnabled() && app.Config().App.Federation {
+			coll.hostName = app.Config().App.Host
 			pRes.Collection = &CollectionObj{Collection: *coll}
 			go federatePost(app, pRes, pRes.Collection.ID, true)
 		}
@@ -855,12 +864,12 @@ func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	redirect := "/" + postID + "/meta"
 	if collectionAlias != "" {
 		collPre := "/" + collectionAlias
-		if app.cfg.App.SingleUser {
+		if app.Config().App.SingleUser {
 			collPre = ""
 		}
 		redirect = collPre + "/" + pRes.Slug.String + "/edit/meta"
 	} else {
-		if app.cfg.App.SingleUser {
+		if app.Config().App.SingleUser {
 			redirect = "/d" + redirect
 		}
 	}
@@ -872,7 +881,7 @@ func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 
 func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
-	friendlyID := vars["post"]
+	friendlyID := normalizePostID(vars["post"])
 	editToken := r.FormValue("token")
 
 	var ownerID int64
@@ -937,7 +946,7 @@ func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 				log.Error("Unable to get collection: %v", err)
 				return err
 			}
-			if app.cfg.App.Federation {
+			if app.Config().App.Federation {
 				// First fetch full post for federation
 				pp, err = app.db.GetOwnedPost(friendlyID, ownerID)
 				if err != nil {
@@ -953,6 +962,9 @@ func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 				log.Error("No begin: %v", err)
 				return err
 			}
+			// Release the transaction on every early return. After a
+			// successful Commit this is a no-op.
+			defer t.Rollback()
 			res, err = t.Exec("DELETE FROM posts WHERE id = ? AND owner_id = ?", friendlyID, ownerID)
 		}
 	} else {
@@ -977,9 +989,12 @@ func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 		return impart.HTTPError{http.StatusForbidden, "Post not found, or you're not the owner."}
 	}
 	if t != nil {
-		t.Commit()
+		if err = t.Commit(); err != nil {
+			log.Error("Unable to commit post deletion: %v", err)
+			return err
+		}
 	}
-	if coll != nil && app.federationOutboundEnabled() && app.cfg.App.Federation {
+	if coll != nil && app.federationOutboundEnabled() && app.Config().App.Federation {
 		go deleteFederatedPost(app, pp, collID.Int64)
 	}
 
@@ -1024,12 +1039,19 @@ func addPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return ErrBadJSONArray
 	}
+	if claims != nil {
+		for i := range *claims {
+			if (*claims)[i].AnonymousAuthPost != nil {
+				(*claims)[i].ID = normalizePostID((*claims)[i].ID)
+			}
+		}
+	}
 
 	vars := mux.Vars(r)
 	collAlias := vars["alias"]
 
 	// Update all given posts
-	res, err := app.db.ClaimPosts(app.cfg, ownerID, collAlias, claims)
+	res, err := app.db.ClaimPosts(app.Config(), ownerID, collAlias, claims)
 	if err != nil {
 		return err
 	}
@@ -1038,13 +1060,13 @@ func addPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		if pRes.Code != http.StatusOK {
 			continue
 		}
-		if app.federationOutboundEnabled() && app.cfg.App.Federation {
+		if app.federationOutboundEnabled() && app.Config().App.Federation {
 			if !pRes.Post.Created.After(time.Now()) {
-				pRes.Post.Collection.hostName = app.cfg.App.Host
+				pRes.Post.Collection.hostName = app.Config().App.Host
 				go federatePost(app, pRes.Post, pRes.Post.Collection.ID, false)
 			}
 		}
-		if app.cfg.Email.Enabled() && pRes.Post.Collection.EmailSubsEnabled() {
+		if app.Config().Email.Enabled() && pRes.Post.Collection.EmailSubsEnabled() {
 			go app.db.InsertJob(&PostJob{
 				PostID: pRes.Post.ID,
 				Action: "email",
@@ -1080,6 +1102,9 @@ func dispersePost(app *App, w http.ResponseWriter, r *http.Request) error {
 	err := decoder.Decode(&postIDs)
 	if err != nil {
 		return ErrBadJSONArray
+	}
+	for i := range postIDs {
+		postIDs[i] = normalizePostID(postIDs[i])
 	}
 
 	// Update all given posts
@@ -1152,6 +1177,7 @@ func pinPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	isPinning := r.URL.Path[strings.LastIndex(r.URL.Path, "/"):] == "/pin"
 	res := []PinPostResult{}
 	for _, p := range posts {
+		p.ID = normalizePostID(p.ID)
 		err = app.db.UpdatePostPinState(isPinning, p.ID, coll.ID, userID, p.Position)
 		ppr := PinPostResult{ID: p.ID}
 		if err != nil {
@@ -1183,7 +1209,7 @@ func fetchPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		collID = coll.ID
 	}
 
-	p, err := app.db.GetPost(vars["post"], collID)
+	p, err := app.db.GetPost(normalizePostID(vars["post"]), collID)
 	if err != nil {
 		return err
 	}
@@ -1195,7 +1221,7 @@ func fetchPost(app *App, w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	if coll != nil {
-		coll.hostName = app.cfg.App.Host
+		coll.hostName = app.Config().App.Host
 		_, err = apiCheckCollectionPermissions(app, r, coll)
 		if err != nil {
 			return err
@@ -1231,7 +1257,7 @@ func fetchPost(app *App, w http.ResponseWriter, r *http.Request) error {
 
 func fetchPostProperty(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
-	p, err := app.db.GetPostProperty(vars["post"], 0, vars["property"])
+	p, err := app.db.GetPostProperty(normalizePostID(vars["post"]), 0, vars["property"])
 	if err != nil {
 		return err
 	}
@@ -1267,7 +1293,7 @@ func (pp *PublicPost) DisplayCanonicalURL() string {
 }
 
 func (p *PublicPost) ActivityObject(app *App) *activitystreams.Object {
-	cfg := app.cfg
+	cfg := app.Config()
 	var o *activitystreams.Object
 	if cfg.App.NotesOnly || strings.Index(p.Content, "\n\n") == -1 {
 		o = activitystreams.NewNoteObject()
@@ -1351,7 +1377,7 @@ func (p *PublicPost) ActivityObject(app *App) *activitystreams.Object {
 	}
 	// Mastodon strips <img> from content and renders media only from the
 	// attachment array, so an inline-only image does not display there.
-	o.Attachment = imageAttachments(syndicated, p.Images, extractImageAltText(p.Content), o.URL)
+	o.Attachment = imageAttachments(syndicated, p.Images, extractImageAltText(p.Content), o.URL, newImageURLs(cfg))
 	// Find mentioned users
 	mentionedUsers := make(map[string]string)
 
@@ -1406,7 +1432,7 @@ func (p *PublicPost) PreviewObject(app *App, art *activitystreams.Object) *activ
 		exc = strings.Index(p.Content, "\n\n")
 	}
 	if exc > -1 {
-		p.HTMLExcerpt = template.HTML(applyMarkdown([]byte(p.Content[:exc]+" [...]"), baseURL, app.cfg))
+		p.HTMLExcerpt = template.HTML(applyMarkdown([]byte(p.Content[:exc]+" [...]"), baseURL, app.Config()))
 	} else {
 		p.HTMLExcerpt = p.HTMLContent
 	}
@@ -1499,7 +1525,7 @@ func getRawCollectionPost(app *App, slug, collAlias string) *RawPost {
 	var views int64
 	var err error
 
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		err = app.db.QueryRow("SELECT id, title, content, text_appearance, language, rtl, view_count, created, updated, owner_id FROM posts WHERE slug = ? AND collection_id = 1", slug).Scan(&id, &title, &content, &font, &lang, &isRTL, &views, &created, &updated, &ownerID)
 	} else {
 		err = app.db.QueryRow("SELECT id, title, content, text_appearance, language, rtl, view_count, created, updated, owner_id FROM posts WHERE slug = ? AND collection_id = (SELECT id FROM collections WHERE alias = ?)", slug, collAlias).Scan(&id, &title, &content, &font, &lang, &isRTL, &views, &created, &updated, &ownerID)
@@ -1567,7 +1593,7 @@ func viewCollectionPost(app *App, w http.ResponseWriter, r *http.Request) error 
 	// Normalize the URL, redirecting user to consistent post URL
 	if slug != strings.ToLower(slug) {
 		loc := fmt.Sprintf("/%s", strings.ToLower(slug))
-		if !app.cfg.App.SingleUser {
+		if !app.Config().App.SingleUser {
 			loc = "/" + cr.alias + loc
 		}
 		return impart.HTTPError{http.StatusMovedPermanently, loc}
@@ -1575,7 +1601,7 @@ func viewCollectionPost(app *App, w http.ResponseWriter, r *http.Request) error 
 
 	// Display collection if this is a collection
 	var c *Collection
-	if app.cfg.App.SingleUser {
+	if app.Config().App.SingleUser {
 		c, err = app.db.GetCollectionByID(1)
 	} else {
 		c, err = app.db.GetCollection(cr.alias)
@@ -1592,7 +1618,7 @@ func viewCollectionPost(app *App, w http.ResponseWriter, r *http.Request) error 
 		}
 		return err
 	}
-	c.hostName = app.cfg.App.Host
+	c.hostName = app.Config().App.Host
 
 	silenced, err := app.db.IsUserSilenced(c.OwnerID)
 	if err != nil {
@@ -1663,7 +1689,7 @@ Are you sure it was ever here?` + shortCodeNoSig,
 	// Check if the authenticated user is the post owner
 	p.IsOwner = u != nil && u.ID == p.OwnerID.Int64
 	p.Collection = coll
-	p.IsTopLevel = app.cfg.App.SingleUser
+	p.IsTopLevel = app.Config().App.SingleUser
 
 	// Only allow a post owner or admin to view a post for silenced collections
 	if silenced && !p.IsOwner && (u == nil || !u.IsAdmin()) {
@@ -1710,7 +1736,7 @@ Are you sure it was ever here?` + shortCodeNoSig,
 	} else {
 		p.extractData()
 		p.Content = strings.Replace(p.Content, "<!--more-->", "", 1)
-		if app.cfg.Email.Enabled() && c.EmailSubsEnabled() {
+		if app.Config().Email.Enabled() && c.EmailSubsEnabled() {
 			// TODO: indicate plan is inactive or subs disabled when OWNER is viewing their own post.
 			if u != nil && u.IsEmailSubscriber(app, c.ID) {
 				p.Content = strings.Replace(p.Content, shortCodeEmailSub, `<p id="emailsub">You're subscribed to email updates. <a href="/api/collections/`+c.Alias+`/email/unsubscribe?slug=`+p.Slug.String+`">Unsubscribe</a>.</p>`, -1)
@@ -1720,7 +1746,7 @@ Are you sure it was ever here?` + shortCodeNoSig,
 		}
 		p.Content = strings.Replace(p.Content, "&lt;!--emailsub-->", "<!--emailsub-->", 1)
 		// TODO: move this to function
-		p.formatContent(app.cfg, cr.isCollOwner, true)
+		p.formatContent(app.Config(), cr.isCollOwner, true)
 		tp := CollectionPostPage{
 			PublicPost:     p,
 			StaticPage:     pageForReq(app, r),
@@ -1731,10 +1757,10 @@ Are you sure it was ever here?` + shortCodeNoSig,
 			CollAlias:      c.Alias,
 		}
 		tp.IsAdmin = u != nil && u.IsAdmin()
-		tp.CanInvite = canUserInvite(app.cfg, tp.IsAdmin)
+		tp.CanInvite = canUserInvite(app.Config(), tp.IsAdmin)
 		tp.Alias = c.Alias
 		tp.Honeypot = spam.HoneypotFieldName()
-		tp.EmailSubsEnabled = app.cfg.Email.Enabled() && c.EmailSubsEnabled()
+		tp.EmailSubsEnabled = app.Config().Email.Enabled() && c.EmailSubsEnabled()
 		tp.ShowSubscribePosts = c.ShowSubscribePosts
 		if u != nil {
 			tp.IsSubscriber = u.IsEmailSubscriber(app, c.ID)
@@ -1761,7 +1787,7 @@ Are you sure it was ever here?` + shortCodeNoSig,
 			w.WriteHeader(http.StatusNotFound)
 		}
 		postTmpl := "collection-post"
-		if app.cfg.App.Chorus {
+		if app.Config().App.Chorus {
 			postTmpl = "chorus-collection-post"
 		}
 		if err := templates[postTmpl].ExecuteTemplate(w, "post", tp); err != nil {

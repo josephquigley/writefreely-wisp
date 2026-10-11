@@ -127,6 +127,20 @@ func (u *User) EmailClear(keys *key.Keychain) string {
 	return ""
 }
 
+// forAPI returns a copy of the user that is safe to serialize in an API
+// response. users.email holds ciphertext, so the copy carries the decrypted
+// address instead, or no email at all if there is none or it can't be
+// decrypted. The receiver is left untouched.
+func (u *User) forAPI(keys *key.Keychain) *User {
+	c := *u
+	if clear := c.EmailClear(keys); clear != "" {
+		c.Email = zero.StringFrom(clear)
+	} else {
+		c.Email = zero.String{}
+	}
+	return &c
+}
+
 func (u User) CreatedFriendly() string {
 	/*
 		// TODO: accept a locale in this method and use that for the format

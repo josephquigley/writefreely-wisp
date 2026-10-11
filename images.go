@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -44,7 +45,7 @@ type uploadedImage struct {
 // metadata, and the path it is stored at is derived entirely from the owner's
 // ID and the hash of the stored bytes.
 func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	if !app.cfg.Uploads.Enabled {
+	if !app.Config().Uploads.Enabled {
 		// A disabled feature shouldn't advertise itself.
 		return impart.HTTPError{http.StatusNotFound, "Not found."}
 	}
@@ -52,7 +53,7 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return ErrUserSilenced
 	}
 
-	maxBytes := app.cfg.MaxUploadBytes()
+	maxBytes := app.Config().MaxUploadBytes()
 
 	// Bound the body before parsing it, so an oversized upload is refused
 	// without ever being buffered.
@@ -103,15 +104,22 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 	// The row is written first, because its path is what reserves the name:
 	// the unique constraint settles which of two uploads racing for the same
 	// name that day gets it, and the loser tries the next one.
-	img, err := app.createImageRow(u.ID, sum, header.Filename, mime, ext, len(stored))
+	// The client's name for the file is kept for display. It is free text
+	// from the client, so it is made storable and fitted to its column; the
+	// stored path is derived from it separately and is already bounded.
+	filename := boundedDBText(header.Filename, postImageMaxLengthFilename)
+	img, err := app.createImageRow(u.ID, sum, filename, mime, ext, len(stored))
 	if err != nil {
 		return err
 	}
 
-	if err = app.writeUploadedImage(img.RelPath(), stored); err != nil {
+	if err = app.writeUploadedImage(r.Context(), img.RelPath(), stored); err != nil {
 		log.Error("Failed writing uploaded image: %v", err)
 		if rmErr := app.db.DeletePostImage(img.ID); rmErr != nil {
 			log.Error("Failed removing image row after a failed write: %v", rmErr)
+		}
+		if s3Unreachable(err) {
+			return impart.HTTPError{http.StatusServiceUnavailable, "Image storage isn't answering right now, so that image wasn't saved. Try again in a few minutes."}
 		}
 		return impart.HTTPError{http.StatusInsufficientStorage, "Couldn't store that image."}
 	}
@@ -124,7 +132,7 @@ func handleUploadImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 // references the image; otherwise they stay and the removal is local to the
 // post being edited.
 func handleDeleteImage(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	if !app.cfg.Uploads.Enabled {
+	if !app.Config().Uploads.Enabled {
 		return impart.HTTPError{http.StatusNotFound, "Not found."}
 	}
 
@@ -150,13 +158,8 @@ func handleDeleteImage(app *App, u *User, w http.ResponseWriter, r *http.Request
 		return nil
 	}
 
-	// Delete the row first: an orphaned file is recoverable, but a row
-	// pointing at a missing file is a broken page.
-	if err = app.db.DeletePostImage(img.ID); err != nil {
+	if err = app.deleteImage(r.Context(), img); err != nil {
 		return err
-	}
-	if err = app.removeUploadedImage(img.RelPath()); err != nil {
-		log.Error("Failed removing image file %s: %v", img.RelPath(), err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -225,7 +228,7 @@ var imageURLPattern = regexp.MustCompile(`/` + uploadsDir + `/([0-9]{4}/[0-9]{2}
 // post. Failing to attach must never fail the save, so problems are logged
 // rather than returned.
 func attachPostImages(app *App, ownerID int64, postID, content string) {
-	if !app.cfg.Uploads.Enabled || postID == "" {
+	if !app.Config().Uploads.Enabled || postID == "" {
 		return
 	}
 
@@ -283,7 +286,7 @@ func detachUnusedPostImages(app *App, postID string, referenced map[string]bool)
 // keeping any that another post still references. The post is already gone by
 // the time this runs, so failures are logged rather than returned.
 func cleanUpPostImages(app *App, postID string) {
-	if !app.cfg.Uploads.Enabled {
+	if !app.Config().Uploads.Enabled {
 		return
 	}
 
@@ -309,13 +312,37 @@ func removeImageIfUnreferenced(app *App, img *PostImage, excludingPostID string)
 	if refs > 0 {
 		return
 	}
-	if err = app.db.DeletePostImage(img.ID); err != nil {
+	if err = app.deleteImage(context.Background(), img); err != nil {
 		log.Error("Unable to delete image %s: %v", img.ID, err)
-		return
+		// The row is still here. If it still names a post, that post is gone
+		// or has let go of it, so release it: the orphan sweep only looks at
+		// images attached to nothing, and would never retry this one.
+		if img.PostID.Valid {
+			if derr := app.db.DetachImageFromPost(img.ID); derr != nil {
+				log.Error("Unable to release image %s for the orphan sweep: %v", img.ID, derr)
+			}
+		}
 	}
-	if err = app.removeUploadedImage(img.RelPath()); err != nil {
-		log.Error("Unable to remove image file %s: %v", img.RelPath(), err)
+}
+
+// deleteImage removes an image's stored file and then its row, in that order.
+//
+// The file goes first because the two failures are not equally bad. A row
+// whose file is missing is a broken image that shows up and can be retried:
+// the delete is idempotent, a missing file counts as deleted, so trying again
+// goes straight on to the row. A file whose row is gone is invisible and
+// permanent: the orphan sweep works from rows, so nothing would ever find the
+// file again. If the file cannot be removed the row is kept and the error
+// returned, so the user's retry or the sweep's next tick can finish the job.
+//
+// No transaction is held across the store call; the row delete is one
+// statement of its own.
+func (app *App) deleteImage(ctx context.Context, img *PostImage) error {
+	if err := app.removeUploadedImage(ctx, img.RelPath()); err != nil && !errors.Is(err, errImageNotFound) {
+		log.Error("Failed removing image file %s: %v", img.RelPath(), err)
+		return impart.HTTPError{http.StatusInternalServerError, "Couldn't delete the image."}
 	}
+	return app.db.DeletePostImage(img.ID)
 }
 
 // sweepOrphanedImages removes uploads that were never attached to a post --

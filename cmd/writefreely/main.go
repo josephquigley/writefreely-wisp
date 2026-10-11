@@ -112,7 +112,9 @@ func main() {
 		&cmdUsers,
 		&cmdDB,
 		&cmdConfig,
+		&cmdSettings,
 		&cmdKeys,
+		&cmdImages,
 		&cmdServe,
 	}
 

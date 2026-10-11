@@ -29,59 +29,23 @@ import (
 	"github.com/writeas/web-core/activitypub"
 	"github.com/writeas/web-core/activitystreams"
 	"github.com/writeas/web-core/log"
+	"github.com/writefreely/writefreely/config"
 )
 
-// parseFederationAllowlist turns a comma-separated list of hostnames into a
-// set. Entries are trimmed and lowercased, and empty entries are dropped, so
-// a value of only whitespace or commas yields an empty set.
-//
-// An entry may be a wildcard of the form "*.example.org", which is kept
-// verbatim: federationAllowed looks a wildcard up by the key it builds from
-// the hostname it is checking, so no separate list is needed. Wildcards are
-// only checked for shape here — validateFederationAllowlist rejects the
-// unusable ones, and does so at startup rather than silently at match time.
+// parseFederationAllowlist and validateFederationAllowlist are the
+// allowlist's syntax rules, which live in package config so the setting can
+// be checked when it is saved. The "requires private" rule is across
+// settings and stays in buildFederationAllowlist.
 func parseFederationAllowlist(s string) map[string]bool {
-	allowed := map[string]bool{}
-	for _, part := range strings.Split(s, ",") {
-		host := strings.ToLower(strings.TrimSpace(part))
-		if host != "" {
-			allowed[host] = true
-		}
-	}
-	return allowed
+	return config.ParseFederationAllowlist(s)
 }
 
 // wildcardPrefix marks an allowlist entry that matches subdomains rather
 // than one exact host.
-const wildcardPrefix = "*."
+const wildcardPrefix = config.WildcardPrefix
 
-// validateFederationAllowlist rejects entries whose "*" cannot be honoured as
-// written. Startup is the only place an operator finds out: a malformed
-// wildcard that survived to match time would simply match nothing, and an
-// allowlist that quietly matches nothing looks exactly like one that is
-// working until the day someone expects it to admit a peer.
-//
-// A bare "*" is refused for the opposite reason. It would parse as an exact
-// host named "*", which no hostname is, so it too matches nothing — but an
-// operator who wrote it plainly meant "everything", and the honest way to say
-// that is to leave the allowlist empty.
 func validateFederationAllowlist(allowed map[string]bool) error {
-	for entry := range allowed {
-		suffix, isWildcard := strings.CutPrefix(entry, wildcardPrefix)
-		if !isWildcard {
-			if strings.Contains(entry, "*") {
-				return fmt.Errorf("federation_allowlist entry %q: a wildcard is only meaningful as a leading %q", entry, wildcardPrefix)
-			}
-			continue
-		}
-		if suffix == "" {
-			return fmt.Errorf("federation_allowlist entry %q has no domain after the wildcard", entry)
-		}
-		if strings.Contains(suffix, "*") {
-			return fmt.Errorf("federation_allowlist entry %q: only one leading wildcard is supported", entry)
-		}
-	}
-	return nil
+	return config.ValidateFederationAllowlist(allowed)
 }
 
 // federationAllowlistInertWarning is logged when a federation allowlist is
@@ -99,20 +63,39 @@ const federationAllowlistInertWarning = "WARNING: federation_allowlist is config
 // warning rather than failing startup. That differs from the private-mode
 // case above, where booting anyway would be dangerous rather than inert.
 func (app *App) initFederationAllowlist() error {
-	app.fedAllowlist = parseFederationAllowlist(app.cfg.App.FederationAllowlist)
-	if err := validateFederationAllowlist(app.fedAllowlist); err != nil {
+	allow, err := buildFederationAllowlist(app.cfg)
+	if err != nil {
 		return err
 	}
-	if len(app.fedAllowlist) > 0 && !app.cfg.App.Private {
-		return fmt.Errorf("federation_allowlist requires private = true: refusing to run an allowlist on a public instance")
-	}
-	if len(app.fedAllowlist) > 0 && !app.cfg.App.Federation {
-		log.Info(federationAllowlistInertWarning)
-	}
+	app.fedAllowlist = allow
 	if app.fedKeys == nil {
 		app.fedKeys = newKeyCache()
 	}
 	return nil
+}
+
+// buildFederationAllowlist parses and checks cfg's allowlist. It is pure,
+// so a candidate configuration can be checked before it is saved.
+func buildFederationAllowlist(cfg *config.Config) (map[string]bool, error) {
+	allow := parseFederationAllowlist(cfg.App.FederationAllowlist)
+	if err := validateFederationAllowlist(allow); err != nil {
+		return nil, err
+	}
+	if len(allow) > 0 && !cfg.App.Private {
+		return nil, fmt.Errorf("federation_allowlist requires private = true: refusing to run an allowlist on a public instance")
+	}
+	if len(allow) > 0 && !cfg.App.Federation {
+		log.Info(federationAllowlistInertWarning)
+	}
+	return allow, nil
+}
+
+// federationAllowlist returns the allowlist in force.
+func (app *App) federationAllowlist() map[string]bool {
+	if s := app.settings.Load(); s != nil {
+		return s.fedAllowlist
+	}
+	return app.fedAllowlist
 }
 
 const (
@@ -147,10 +130,11 @@ func newKeyCache() *keyCache {
 // keyCacheLimit caps the number of entries a keyCache holds. allowlistedKey
 // is reached before a caller has proved possession of any private key: the
 // allowlist, date-window and signed-header checks that come before it in
-// verifyAllowlistedSignature all pass without a valid signature. An
-// unauthenticated caller who knows one allowlisted hostname can therefore
-// present an unbounded number of distinct keyIds on that host, so the cache
-// must not grow without bound in response.
+// verifyPeerSignature all pass without a valid signature. An
+// unauthenticated caller who knows one allowlisted hostname — or, under
+// authorized_fetch with no allowlist, any hostname at all — can therefore
+// present an unbounded number of distinct keyIds, so the cache must not grow
+// without bound in response.
 const keyCacheLimit = 1024
 
 // get returns the cached key for keyID. The second return value reports
@@ -203,14 +187,14 @@ func (c *keyCache) set(keyID string, k *rsa.PublicKey, ttl time.Duration) {
 // federationAllowlistActive reports whether a federation allowlist is
 // configured.
 func (app *App) federationAllowlistActive() bool {
-	return len(app.fedAllowlist) > 0
+	return len(app.federationAllowlist()) > 0
 }
 
 // federationOutboundEnabled reports whether this instance may send activities
 // to remote servers. A private instance may, but only when a federation
 // allowlist names the hosts it is allowed to reach.
 func (app *App) federationOutboundEnabled() bool {
-	return !app.cfg.App.Private || app.federationAllowlistActive()
+	return !app.Config().App.Private || app.federationAllowlistActive()
 }
 
 // federationAllowed reports whether the given hostname may federate with this
@@ -230,6 +214,7 @@ func (app *App) federationAllowed(host string) bool {
 	if !app.federationAllowlistActive() {
 		return true
 	}
+	allow := app.federationAllowlist()
 	host = strings.ToLower(host)
 	if host == "" {
 		return false
@@ -240,7 +225,7 @@ func (app *App) federationAllowed(host string) bool {
 	if strings.Contains(host, "*") {
 		return false
 	}
-	if app.fedAllowlist[host] {
+	if allow[host] {
 		return true
 	}
 	// Walk off one label at a time and ask whether a wildcard was configured
@@ -252,7 +237,7 @@ func (app *App) federationAllowed(host string) bool {
 		if !found || after == "" {
 			return false
 		}
-		if app.fedAllowlist[wildcardPrefix+after] {
+		if allow[wildcardPrefix+after] {
 			return true
 		}
 		rest = after
@@ -276,7 +261,7 @@ func (app *App) inboxAllowed(inboxURL string) bool {
 // allowlistedKey returns the RSA public key named by keyID, fetching the
 // owning actor if the key is not cached.
 //
-// The caller must already have checked keyID's host against the allowlist:
+// The caller must already have checked keyID's host with federationAllowed:
 // this function makes an outbound request.
 //
 // The actor is fetched directly rather than through getActor, because a
@@ -298,7 +283,7 @@ func (app *App) allowlistedKey(keyID string) (*rsa.PublicKey, error) {
 	u.Fragment = ""
 	actorIRI := u.String()
 
-	resp, err := resolveIRI(app.cfg.App.Host, actorIRI)
+	resp, err := fetchActorIRI(app.Config().App.Host, actorIRI)
 	if err != nil {
 		app.fedKeys.set(keyID, nil, allowlistKeyErrorTTL)
 		return nil, err
@@ -500,58 +485,74 @@ func verifyDigest(r *http.Request) error {
 
 // verifyAllowlistedSignature admits a request carrying a valid HTTP signature
 // from a host on the federation allowlist. Every failure returns
+// ErrFederationNotAllowed, and so does every request when no allowlist is
+// configured: private mode admits signers only through an allowlist.
+func (app *App) verifyAllowlistedSignature(r *http.Request) error {
+	if !app.federationAllowlistActive() {
+		return ErrFederationNotAllowed
+	}
+	return app.verifyPeerSignature(r)
+}
+
+// verifyPeerSignature admits a request carrying a valid HTTP signature from a
+// host federationAllowed admits: with an allowlist configured, a host on it;
+// without one, any host at all. Every failure returns
 // ErrFederationNotAllowed.
 //
 // The order of these checks is a security property, not an implementation
 // detail. The signing key's host is checked against the allowlist before the
 // key is fetched, so a request from a host that is not on the list never
-// causes an outbound connection to a URL the caller chose.
-func (app *App) verifyAllowlistedSignature(r *http.Request) error {
-	if !app.federationAllowlistActive() || r.Header.Get("Signature") == "" {
+// causes an outbound connection to a URL the caller chose. With no
+// allowlist that protection is gone by definition, since any host may sign;
+// what remains is that the fetch goes through resolveIRI, which refuses
+// non-public addresses, and that the key cache stays bounded by
+// keyCacheLimit however many keyIds a caller invents.
+func (app *App) verifyPeerSignature(r *http.Request) error {
+	if r.Header.Get("Signature") == "" {
 		return ErrFederationNotAllowed
 	}
 
 	v, err := fedsig.NewVerifier(r)
 	if err != nil {
-		log.Info("Federation allowlist: malformed signature: %v", err)
+		log.Info("Signature check: malformed signature: %v", err)
 		return ErrFederationNotAllowed
 	}
 
 	keyID := v.KeyId()
 	u, err := url.Parse(keyID)
 	if err != nil || u.Hostname() == "" {
-		log.Info("Federation allowlist: unusable keyId %q", keyID)
+		log.Info("Signature check: unusable keyId %q", keyID)
 		return ErrFederationNotAllowed
 	}
 	if !app.federationAllowed(u.Hostname()) {
-		log.Info("Federation allowlist: host %s is not on the allowlist", u.Hostname())
+		log.Info("Signature check: host %s is not on the federation allowlist", u.Hostname())
 		return ErrFederationNotAllowed
 	}
 
 	if err := checkRequestDate(r, time.Now()); err != nil {
-		log.Info("Federation allowlist: %v", err)
+		log.Info("Signature check: %v", err)
 		return ErrFederationNotAllowed
 	}
 
 	hasBody := requestHasBody(r)
 	if err := checkSignedHeaders(r, hasBody); err != nil {
-		log.Info("Federation allowlist: %v", err)
+		log.Info("Signature check: %v", err)
 		return ErrFederationNotAllowed
 	}
 
 	pubKey, err := app.allowlistedKey(keyID)
 	if err != nil {
-		log.Info("Federation allowlist: can't get key %s: %v", keyID, err)
+		log.Info("Signature check: can't get key %s: %v", keyID, err)
 		return ErrFederationNotAllowed
 	}
 	if err := v.Verify(pubKey, fedsig.RSA_SHA256); err != nil {
-		log.Info("Federation allowlist: bad signature from %s: %v", keyID, err)
+		log.Info("Signature check: bad signature from %s: %v", keyID, err)
 		return ErrFederationNotAllowed
 	}
 
 	if hasBody {
 		if err := verifyDigest(r); err != nil {
-			log.Info("Federation allowlist: %v", err)
+			log.Info("Signature check: %v", err)
 			return ErrFederationNotAllowed
 		}
 	}

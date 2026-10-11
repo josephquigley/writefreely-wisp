@@ -179,6 +179,10 @@ func applyMarkdownSpecial(data []byte, baseURL string, cfg *config.Config, skipN
 	outHTML = blockReg.ReplaceAllString(outHTML, "<$1>")
 	outHTML = endBlockReg.ReplaceAllString(outHTML, "</$1></$2>")
 	outHTML = disableYoutubeAutoplay(outHTML)
+	// After sanitising, so the policy never needs to know the base's host.
+	// Every page, feed and ActivityPub object that shows a post body renders
+	// it here.
+	outHTML = newImageURLs(cfg).rewriteHTML(outHTML)
 	return outHTML
 }
 
@@ -361,7 +365,7 @@ func handleRenderMarkdown(app *App, w http.ResponseWriter, r *http.Request) erro
 		body = strings.Replace(body, shortCodeMore, `<a href="/">Read more...</a>`, 1)
 		body = alterShortCodeEmailSubForm(body, "example", "slug", true)
 	}
-	rendered := applyMarkdown([]byte(in.RawBody), in.CollectionURL, app.cfg)
+	rendered := applyMarkdown([]byte(in.RawBody), in.CollectionURL, app.Config())
 	out := struct {
 		Body string `json:"body"`
 	}{

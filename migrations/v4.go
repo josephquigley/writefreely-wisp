@@ -19,8 +19,14 @@ import (
 
 func oauth(db *datastore) error {
 	dialect := wf_db.DialectMySQL
-	if db.driverName == driverSQLite {
+	switch db.driverName {
+	case driverSQLite:
 		dialect = wf_db.DialectSQLite
+	case driverMySQL:
+	case driverPostgres:
+		return errBeforePostgresBase("oauth")
+	default:
+		unsupportedDriver("oauth", db.driverName)
 	}
 	return wf_db.RunTransactionWithOptions(context.Background(), db.DB, &sql.TxOptions{}, func(ctx context.Context, tx *sql.Tx) error {
 		createTableUsersOauth, err := dialect.
