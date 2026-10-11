@@ -155,34 +155,24 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-      # The release's bullets wait under [Unreleased] until now; changelog.yml
-      # refused the pull request into main without any. kacl-cli moves them into
-      # a dated section for this version and updates the compare links, and
-      # the result is committed to main so the tag below includes it.
-      #
-      # That commit is pushed with GITHUB_TOKEN, which triggers no workflow,
-      # so it builds no image of its own. The retag below still names the
-      # image built from GITHUB_SHA, the merge itself: the two commits differ
-      # only in CHANGELOG.md.
-      #
-      # A section already named for this version means it was cut by hand,
-      # and is left alone.
-      - name: Release the changelog
+      # The changelog section for this version is cut by `make bump`, in the
+      # commit that sets softwareVer, so it reaches main through the release
+      # pull requests like everything else. main takes pull requests only, so
+      # this job cannot commit there. changelog.yml already refused a pull
+      # request into main without the section; this checks again, before
+      # anything is tagged, in case one arrived some other way.
+      - name: Require the changelog section
         if: steps.decide.outputs.release == 'true'
         env:
           VERSION: ${{ steps.decide.outputs.version }}
           KACL_VERSION: "0.7.0"
         run: |
           pipx install "python-kacl==$KACL_VERSION"
-          if kacl-cli get "${VERSION}+wisp" >/dev/null 2>&1; then
-            echo "CHANGELOG.md already has ${VERSION}+wisp; leaving it"
-            exit 0
-          fi
-          kacl-cli release "${VERSION}+wisp" --modify --auto-link
           kacl-cli verify
-          git add CHANGELOG.md
-          git commit -m "Changelog for ${VERSION}"
-          git push origin HEAD:main
+          kacl-cli get "${VERSION}+wisp" >/dev/null 2>&1 || {
+            echo "::error file=CHANGELOG.md::No ${VERSION}+wisp section. Cut it on develop with make bump, and release again."
+            exit 1
+          }
 
       - name: Create and push the tag
         if: steps.decide.outputs.release == 'true'
@@ -280,14 +270,13 @@ jobs:
           docker buildx imagetools create -t "${IMAGE}:${SERIES_TAG}" "$source"
           docker buildx imagetools create -t "${IMAGE}:latest" "$source"
 
-      # The changelog commit exists only on main, so develop would keep the
-      # bullets under [Unreleased] and list them again in the next release.
-      # Merging main back carries the released section over, and the merge
-      # commit the "Release X to main" pull request created along with it.
+      # Merging main back carries over the merge commit the "Release X to
+      # main" pull request created, so develop stays a descendant of main and
+      # the next release pull request into main merges without a conflict.
       #
       # Last, so a conflict cannot hold up a release that is otherwise
       # complete. If it fails, the release stands: merge main into develop by
-      # hand, keeping develop's [Unreleased] entries and main's new section.
+      # hand.
       - name: Merge main back into develop
         if: steps.decide.outputs.release == 'true'
         env:

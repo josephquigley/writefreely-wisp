@@ -23,6 +23,8 @@ BINARY_NAME=writefreely
 BUILDPATH=build/$(BINARY_NAME)
 DOCKERCMD=docker
 IMAGE_NAME=ghcr.io/josephquigley/writefreely-wisp
+# kacl-cli, the changelog tool CI runs, at the version CI pins.
+KACL ?= uvx --from python-kacl==0.7.0 kacl-cli
 TMPBIN=./tmp
 
 all : build
@@ -81,8 +83,9 @@ build-arm64: deps
 build-docker :
 	$(DOCKERCMD) build --build-arg WRITEFREELY_VERSION=$(VERSTR) -t $(IMAGE_NAME):latest $(if $(VERSTR),-t $(IMAGE_NAME):$(VERSTR),) .
 
-# Prepare a release: bump the version compiled into the binary and commit
-# it. The release itself is the pull request into main, so the same CI that
+# Prepare a release: bump the version compiled into the binary, move the
+# [Unreleased] bullets in CHANGELOG.md into a dated section for it, and commit
+# both. The release itself is the pull request into main, so the same CI that
 # gates feature work gates it.
 #
 #   make bump VERSION=0.18.1
@@ -97,6 +100,12 @@ build-docker :
 # version reaches main, read from app.go there, so the commit only has to
 # arrive through the usual pull request.
 #
+# The changelog is cut here, not by the release job, because main takes pull
+# requests only: the job cannot commit there. kacl-cli writes the compare
+# links from the origin remote, so an ssh remote is rewritten to the https
+# form the existing links use. The commit starts with kacl-skip: because it
+# empties [Unreleased], which changelog.yml would otherwise refuse on develop.
+#
 # Nothing here tags. Merging the pull request into main is what releases:
 # .github/workflows/wisp-release.yml sees a version on main with no tag,
 # tags it, publishes the GitHub Release and retags the image that was
@@ -107,19 +116,24 @@ bump:
 	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "VERSION must look like x.y.z"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "working tree is dirty; commit or stash first"; exit 1; }
 	@if git rev-parse -q --verify "refs/tags/v$(VERSION)+wisp" >/dev/null; then echo "tag v$(VERSION)+wisp already exists"; exit 1; fi
+	@$(KACL) get unreleased | grep -q '^- ' || { echo "[Unreleased] in CHANGELOG.md has no bullets; there is nothing to release"; exit 1; }
 	@sed -i.relbak -E 's/^([[:space:]]*softwareVer = ")[^"]*(")/\1$(VERSION)\2/' app.go && rm -f app.go.relbak
 	@grep -q 'softwareVer = "$(VERSION)"' app.go || { echo "failed to update softwareVer in app.go"; exit 1; }
 	@gofmt -l app.go | grep -q . && { echo "app.go is not gofmt-clean after the edit"; exit 1; } || true
-	git add app.go
-	git commit -m "Release $(VERSION)"
+	$(KACL) release "$(VERSION)+wisp" --modify --auto-link
+	@sed -i.relbak -E 's#^(\[[^]]+\]: )git@github\.com:#\1https://github.com/#' CHANGELOG.md && rm -f CHANGELOG.md.relbak
+	$(KACL) verify
+	git add app.go CHANGELOG.md
+	git commit -m "kacl-skip: release $(VERSION)"
 	@echo
 	@echo "Committed. Release it with:"
 	@echo "    git push"
-	@echo "    gh pr create --base main --title 'Release $(VERSION)'"
+	@echo "    gh pr create --base develop --title 'Release $(VERSION)'"
+	@echo "then, once that merges:"
+	@echo "    gh pr create --base main --head develop --title 'Release $(VERSION) to main'"
 	@echo
-	@echo "The pull request into main needs one bullet under [Unreleased] in"
-	@echo "CHANGELOG.md: one sentence, 35 words at most, summarising the release."
-	@echo "Merging moves it into a section for $(VERSION)+wisp."
+	@echo "The body of the pull request into main becomes the operator notes of"
+	@echo "the GitHub Release."
 	@echo
 	@echo "Merging it publishes v$(VERSION)+wisp. Put anything an operator"
 	@echo "must do (migrations, new config keys) in the pull request body:"
