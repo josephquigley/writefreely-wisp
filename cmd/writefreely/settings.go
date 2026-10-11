@@ -13,6 +13,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/urfave/cli/v2"
@@ -44,11 +45,14 @@ var cmdSettings = cli.Command{
 				}
 				tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 				for _, r := range rows {
-					mark := ""
+					var marks []string
 					if r.Default {
-						mark = "(default)"
+						marks = append(marks, "(default)")
 					}
-					fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Value, mark)
+					if r.Locked {
+						marks = append(marks, "(locked in config.ini)")
+					}
+					fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Value, strings.Join(marks, " "))
 				}
 				return tw.Flush()
 			},
@@ -65,13 +69,16 @@ var cmdSettings = cli.Command{
 				if err != nil {
 					return err
 				}
+				if r.Locked {
+					log.Info("%s is locked in config.ini (locked_settings); edit it there and restart.", r.Name)
+				}
 				fmt.Println(r.Value)
 				return nil
 			},
 		},
 		{
 			Name:      "set",
-			Usage:     "change one setting; running servers apply it on their next request",
+			Usage:     "change one setting; running servers apply it on their next request (refused for a setting config.ini locks)",
 			ArgsUsage: "<name> <value>",
 			Action: func(c *cli.Context) error {
 				if c.NArg() != 2 {

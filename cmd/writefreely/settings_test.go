@@ -76,3 +76,41 @@ func TestSettingsStdoutIsOnlyData(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsCLILocked(t *testing.T) {
+	dir := t.TempDir()
+	ini := filepath.Join(dir, "config.ini")
+	body := "locked_settings = app.private\n[server]\nport = 8080\n[database]\ntype = sqlite3\nfilename = " + filepath.Join(dir, "wf.db") +
+		"\n[app]\nhost = https://blog.example\nprivate = true\nsite_name = CLI Site\n"
+	if err := os.WriteFile(ini, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writefreely.CreateSchema(writefreely.NewApp(ini)); err != nil {
+		t.Fatal(err)
+	}
+	out := runSettings(t, ini, "list")
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "app.private ") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "true") || !strings.Contains(line, "(locked in config.ini)") {
+		t.Errorf("list line for app.private = %q", line)
+	}
+	if strings.Contains(out, "app.site_name  CLI Site  (locked") {
+		t.Errorf("unlocked setting marked locked:\n%s", out)
+	}
+	if got := runSettings(t, ini, "get", "app.private"); got != "true\n" {
+		t.Errorf("get stdout = %q", got)
+	}
+
+	a := &cli.App{
+		Flags:    []cli.Flag{&cli.StringFlag{Name: "c"}},
+		Commands: []*cli.Command{&cmdSettings},
+	}
+	err := a.Run([]string{"writefreely", "-c", ini, "settings", "set", "app.private", "false"})
+	if err == nil || !strings.Contains(err.Error(), "app.private is locked") {
+		t.Errorf("set locked: %v", err)
+	}
+}

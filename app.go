@@ -73,7 +73,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.21.0"
+	softwareVer = "0.21.1"
 
 	// DEPRECATED VARS
 	isSingleUser bool
@@ -112,6 +112,10 @@ type App struct {
 	// settingsMu serialises reloads, so a burst of requests after a save
 	// reloads once.
 	settingsMu sync.Mutex
+
+	// locked is what config.ini's locked_settings names, with each value;
+	// see lockedSettings. nil until first read.
+	locked atomic.Pointer[map[string]string]
 
 	// images is where uploaded images are kept; see imageStore.
 	images     ImageStore
@@ -165,6 +169,7 @@ func (app *App) configAndVersion() (*config.Config, int64) {
 // SetConfig updates the App's Config to the given value.
 func (app *App) SetConfig(cfg *config.Config) {
 	app.cfg = cfg
+	app.locked.Store(nil)
 }
 
 // SetKeys updates the App's Keychain to the given value.
@@ -218,6 +223,12 @@ func (app *App) LoadConfig() error {
 		return err
 	}
 	app.cfg = cfg
+	app.locked.Store(nil)
+	if _, err := app.lockedSettings(); err != nil {
+		log.Error("Unable to load configuration: %v", err)
+		os.Exit(1)
+		return err
+	}
 	if err := app.initFederationAllowlist(); err != nil {
 		log.Error("Unable to load configuration: %v", err)
 		os.Exit(1)

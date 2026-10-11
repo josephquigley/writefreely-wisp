@@ -15,6 +15,9 @@ form dt {
 p.docs {
 	font-size: 0.86em;
 }
+p.locked {
+	margin: 0.25em 0 0;
+}
 input[type=checkbox] {
 	height: 1em;
 	width: 1em;
@@ -38,14 +41,14 @@ select {
 				Site Title
 				<p>Your public site name.</p>
 			</div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="text" name="site_name" id="site_name" class="inline" value="{{.Config.SiteName}}" style="width: 14em;"/></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="text" name="site_name" {{if index $.Locked "app.site_name"}}disabled="disabled"{{end}} id="site_name" class="inline" value="{{.Config.SiteName}}" style="width: 14em;"/>{{if index $.Locked "app.site_name"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}>
 				Site Description
 				<p>Describe your site &mdash; this shows in your site's metadata.</p>
 			</div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="text" name="site_desc" id="site_desc" class="inline" value="{{.Config.SiteDesc}}" style="width: 14em;"/></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="text" name="site_desc" {{if index $.Locked "app.site_description"}}disabled="disabled"{{end}} id="site_desc" class="inline" value="{{.Config.SiteDesc}}" style="width: 14em;"/>{{if index $.Locked "app.site_description"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div>
@@ -66,14 +69,14 @@ select {
 				Landing Page
 				<p>The page that logged-out visitors will see first. This should be an absolute path like: <code>/read</code></p>
 			</div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="text" name="landing" id="landing" class="inline" value="{{.Config.Landing}}" style="width: 14em;"/></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="text" name="landing" {{if index $.Locked "app.landing"}}disabled="disabled"{{end}} id="landing" class="inline" value="{{.Config.Landing}}" style="width: 14em;"/>{{if index $.Locked "app.landing"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}><label for="open_registration">
 					Open Registrations
 					<p>Allow anyone who visits the site to create an account.</p>
 				</label></div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="open_registration" id="open_registration" {{if .Config.OpenRegistration}}checked="checked"{{end}} />
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="open_registration" {{if index $.Locked "app.open_registration"}}disabled="disabled"{{end}} id="open_registration" {{if .Config.OpenRegistration}}checked="checked"{{end}} />{{if index $.Locked "app.open_registration"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}
 			</div>
 		</div>
 		<div class="features row">
@@ -81,7 +84,7 @@ select {
 					Allow account deletion
 					<p>Allow all users to delete their account. Admins can always delete users.</p>
 				</label></div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="open_deletion" id="open_deletion" {{if .Config.OpenDeletion}}checked="checked"{{end}} />
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="open_deletion" {{if index $.Locked "app.open_deletion"}}disabled="disabled"{{end}} id="open_deletion" {{if .Config.OpenDeletion}}checked="checked"{{end}} />{{if index $.Locked "app.open_deletion"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}
 			</div>
 		</div>
 		<div class="features row">
@@ -90,11 +93,11 @@ select {
 					<p>Choose who is allowed to invite new people.</p>
 				</label></div>
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}>
-				<select name="user_invites" id="user_invites">
+				<select name="user_invites" {{if index $.Locked "app.user_invites"}}disabled="disabled"{{end}} id="user_invites">
 					<option value="none" {{if eq .Config.UserInvites ""}}selected="selected"{{end}}>No one</option>
 					<option value="admin" {{if eq .Config.UserInvites "admin"}}selected="selected"{{end}}>Only Admins</option>
 					<option value="user" {{if eq .Config.UserInvites "user"}}selected="selected"{{end}}>All Users</option>
-				</select>
+				</select>{{if index $.Locked "app.user_invites"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}
 			</div>
 		</div>
 		<div class="features row">
@@ -102,14 +105,14 @@ select {
 					Private Instance
 					<p>Limit site access to people with an account.</p>
 				</label></div>
-			<div><input type="checkbox" name="private" id="private" {{if .Config.Private}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="private" {{if index $.Locked "app.private"}}disabled="disabled"{{end}} id="private" {{if .Config.Private}}checked="checked"{{end}} />{{if index $.Locked "app.private"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}><label for="local_timeline">
 					Reader
 					<p>Show a feed of user posts for anyone who chooses to share there.</p>
 				</label></div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="local_timeline" id="local_timeline" {{if .Config.LocalTimeline}}checked="checked"{{end}} /></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="local_timeline" {{if index $.Locked "app.local_timeline"}}disabled="disabled"{{end}} id="local_timeline" {{if .Config.LocalTimeline}}checked="checked"{{end}} />{{if index $.Locked "app.local_timeline"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}><label for="default_visibility">
@@ -117,11 +120,11 @@ select {
 					<p>The default setting for new accounts and blogs.</p>
 				</label></div>
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}>
-				<select name="default_visibility" id="default_visibility">
+				<select name="default_visibility" {{if index $.Locked "app.default_visibility"}}disabled="disabled"{{end}} id="default_visibility">
 					<option value="unlisted" {{if eq .Config.DefaultVisibility "unlisted"}}selected="selected"{{end}}>Unlisted</option>
 					<option value="public" {{if eq .Config.DefaultVisibility "public"}}selected="selected"{{end}}>Public</option>
 					<option value="private" {{if eq .Config.DefaultVisibility "private"}}selected="selected"{{end}}>Private</option>
-				</select>
+				</select>{{if index $.Locked "app.default_visibility"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}
 			</div>
 		</div>
 		<div class="features row">
@@ -129,108 +132,108 @@ select {
 					Maximum Blogs per User
 					<p>Keep things simple by setting this to <strong>1</strong>, unlimited by setting to <strong>0</strong>, or pick another amount.</p>
 				</label></div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="number" name="max_blogs" id="max_blogs" class="inline" min="0" value="{{.Config.MaxBlogs}}"/></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="number" name="max_blogs" {{if index $.Locked "app.max_blogs"}}disabled="disabled"{{end}} id="max_blogs" class="inline" min="0" value="{{.Config.MaxBlogs}}"/>{{if index $.Locked "app.max_blogs"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="federation">
 					Federation
 					<p>Enable accounts on this site to propagate their posts via the ActivityPub protocol.</p>
 				</label></div>
-			<div><input type="checkbox" name="federation" id="federation" {{if .Config.Federation}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="federation" {{if index $.Locked "app.federation"}}disabled="disabled"{{end}} id="federation" {{if .Config.Federation}}checked="checked"{{end}} />{{if index $.Locked "app.federation"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="public_stats">
 					Public Stats
 					<p>Publicly display the number of users and posts on your <strong>About</strong> page.</p>
 				</label></div>
-			<div><input type="checkbox" name="public_stats" id="public_stats" {{if .Config.PublicStats}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="public_stats" {{if index $.Locked "app.public_stats"}}disabled="disabled"{{end}} id="public_stats" {{if .Config.PublicStats}}checked="checked"{{end}} />{{if index $.Locked "app.public_stats"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="monetization">
 					Monetization
 					<p>Enable blogs on this site to receive micro&shy;pay&shy;ments from readers via <a target="wm" href="https://webmonetization.org/">Web Monetization</a>.</p>
 				</label></div>
-			<div><input type="checkbox" name="monetization" id="monetization" {{if .Config.Monetization}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="monetization" {{if index $.Locked "app.monetization"}}disabled="disabled"{{end}} id="monetization" {{if .Config.Monetization}}checked="checked"{{end}} />{{if index $.Locked "app.monetization"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="min_username_len">
 					Minimum Username Length
 					<p>The minimum number of characters allowed in a username. (Recommended: 2 or more.)</p>
 				</label></div>
-			<div><input type="number" name="min_username_len" id="min_username_len" class="inline" min="1" max="100" value="{{.Config.MinUsernameLen}}"/></div>
+			<div><input type="number" name="min_username_len" {{if index $.Locked "app.min_username_len"}}disabled="disabled"{{end}} id="min_username_len" class="inline" min="1" max="100" value="{{.Config.MinUsernameLen}}"/>{{if index $.Locked "app.min_username_len"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="theme">Theme<p>Stylesheet name served to every page.</p></label></div>
-			<div><input type="text" name="theme" id="theme" class="inline" value="{{.Config.Theme}}" style="width: 14em;"/></div>
+			<div><input type="text" name="theme" {{if index $.Locked "app.theme"}}disabled="disabled"{{end}} id="theme" class="inline" value="{{.Config.Theme}}" style="width: 14em;"/>{{if index $.Locked "app.theme"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="editor">Editor<p>Default editor for new posts. Leave empty for the standard one.</p></label></div>
-			<div><input type="text" name="editor" id="editor" class="inline" value="{{.Config.Editor}}" style="width: 14em;"/></div>
+			<div><input type="text" name="editor" {{if index $.Locked "app.editor"}}disabled="disabled"{{end}} id="editor" class="inline" value="{{.Config.Editor}}" style="width: 14em;"/>{{if index $.Locked "app.editor"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="disable_js">Disable JavaScript<p>Serve reader pages without scripts.</p></label></div>
-			<div><input type="checkbox" name="disable_js" id="disable_js" {{if .Config.JSDisabled}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="disable_js" {{if index $.Locked "app.disable_js"}}disabled="disabled"{{end}} id="disable_js" {{if .Config.JSDisabled}}checked="checked"{{end}} />{{if index $.Locked "app.disable_js"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="webfonts">Web Fonts<p>Load the site's web fonts.</p></label></div>
-			<div><input type="checkbox" name="webfonts" id="webfonts" {{if .Config.WebFonts}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="webfonts" {{if index $.Locked "app.webfonts"}}disabled="disabled"{{end}} id="webfonts" {{if .Config.WebFonts}}checked="checked"{{end}} />{{if index $.Locked "app.webfonts"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="simple_nav">Simple Navigation<p>Show a reduced navigation bar.</p></label></div>
-			<div><input type="checkbox" name="simple_nav" id="simple_nav" {{if .Config.SimpleNav}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="simple_nav" {{if index $.Locked "app.simple_nav"}}disabled="disabled"{{end}} id="simple_nav" {{if .Config.SimpleNav}}checked="checked"{{end}} />{{if index $.Locked "app.simple_nav"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="wf_modesty">WriteFreely Modesty<p>Hide "Powered by WriteFreely" links.</p></label></div>
-			<div><input type="checkbox" name="wf_modesty" id="wf_modesty" {{if .Config.WFModesty}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="wf_modesty" {{if index $.Locked "app.wf_modesty"}}disabled="disabled"{{end}} id="wf_modesty" {{if .Config.WFModesty}}checked="checked"{{end}} />{{if index $.Locked "app.wf_modesty"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div{{if .Config.SingleUser}} class="invisible"{{end}}><label for="chorus">Chorus<p>Present the instance as one shared publication.</p></label></div>
-			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="chorus" id="chorus" {{if .Config.Chorus}}checked="checked"{{end}} /></div>
+			<div{{if .Config.SingleUser}} class="invisible"{{end}}><input type="checkbox" name="chorus" {{if index $.Locked "app.chorus"}}disabled="disabled"{{end}} id="chorus" {{if .Config.Chorus}}checked="checked"{{end}} />{{if index $.Locked "app.chorus"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="forest">Forest<p>Hide technical details from writers.</p></label></div>
-			<div><input type="checkbox" name="forest" id="forest" {{if .Config.Forest}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="forest" {{if index $.Locked "app.forest"}}disabled="disabled"{{end}} id="forest" {{if .Config.Forest}}checked="checked"{{end}} />{{if index $.Locked "app.forest"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="disable_drafts">Disable Drafts<p>Posts must belong to a blog.</p></label></div>
-			<div><input type="checkbox" name="disable_drafts" id="disable_drafts" {{if .Config.DisableDrafts}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="disable_drafts" {{if index $.Locked "app.disable_drafts"}}disabled="disabled"{{end}} id="disable_drafts" {{if .Config.DisableDrafts}}checked="checked"{{end}} />{{if index $.Locked "app.disable_drafts"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="notes_only">Notes Only<p>Hide blog features; posts are notes.</p></label></div>
-			<div><input type="checkbox" name="notes_only" id="notes_only" {{if .Config.NotesOnly}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="notes_only" {{if index $.Locked "app.notes_only"}}disabled="disabled"{{end}} id="notes_only" {{if .Config.NotesOnly}}checked="checked"{{end}} />{{if index $.Locked "app.notes_only"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		{{if .UpdateChecksSupported}}
 		<div class="features row">
 			<div><label for="update_checks">Update Checks<p>Check for new WriteFreely releases.</p></label></div>
-			<div><input type="checkbox" name="update_checks" id="update_checks" {{if .Config.UpdateChecks}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="update_checks" {{if index $.Locked "app.update_checks"}}disabled="disabled"{{end}} id="update_checks" {{if .Config.UpdateChecks}}checked="checked"{{end}} />{{if index $.Locked "app.update_checks"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		{{end}}
 		<div class="features row">
 			<div><label for="uploads_enabled">Image Uploads<p>Let writers upload images. This node's upload directory must be writable.</p></label></div>
-			<div><input type="checkbox" name="uploads_enabled" id="uploads_enabled" {{if .Uploads.Enabled}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="uploads_enabled" {{if index $.Locked "uploads.enabled"}}disabled="disabled"{{end}} id="uploads_enabled" {{if .Uploads.Enabled}}checked="checked"{{end}} />{{if index $.Locked "uploads.enabled"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="uploads_max_size_mb">Largest Upload (MB)<p>Per file, not per writer.</p></label></div>
-			<div><input type="number" name="uploads_max_size_mb" id="uploads_max_size_mb" class="inline" min="1" value="{{.Uploads.MaxSizeMB}}"/></div>
+			<div><input type="number" name="uploads_max_size_mb" {{if index $.Locked "uploads.max_size_mb"}}disabled="disabled"{{end}} id="uploads_max_size_mb" class="inline" min="1" value="{{.Uploads.MaxSizeMB}}"/>{{if index $.Locked "uploads.max_size_mb"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<h3 id="federation-settings">Federation</h3>
 		<div class="features row">
 			<div><label for="federation_allowlist">Federation Allowlist
 					<p>Comma-separated hosts allowed to read this instance over ActivityPub. Requires Private. <strong>Changes who receives what.</strong></p>
 				</label></div>
-			<div><input type="text" name="federation_allowlist" id="federation_allowlist" class="inline" value="{{.Config.FederationAllowlist}}" style="width: 20em;"/></div>
+			<div><input type="text" name="federation_allowlist" {{if index $.Locked "app.federation_allowlist"}}disabled="disabled"{{end}} id="federation_allowlist" class="inline" value="{{.Config.FederationAllowlist}}" style="width: 20em;"/>{{if index $.Locked "app.federation_allowlist"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="authorized_fetch">Authorized Fetch
 					<p>Require a valid HTTP signature on every ActivityPub request, public or private. Uses the allowlist when one is set. <strong>Unsigned fetches are refused.</strong></p>
 				</label></div>
-			<div><input type="checkbox" name="authorized_fetch" id="authorized_fetch" {{if .Config.AuthorizedFetch}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="authorized_fetch" {{if index $.Locked "app.authorized_fetch"}}disabled="disabled"{{end}} id="authorized_fetch" {{if .Config.AuthorizedFetch}}checked="checked"{{end}} />{{if index $.Locked "app.authorized_fetch"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<div><label for="instance_announce">Instance Announce
 					<p>Announce every public post under one instance-wide actor. <strong>Publishes a feed of all public writing.</strong></p>
 				</label></div>
-			<div><input type="checkbox" name="instance_announce" id="instance_announce" {{if .Config.InstanceAnnounce}}checked="checked"{{end}} /></div>
+			<div><input type="checkbox" name="instance_announce" {{if index $.Locked "app.instance_announce"}}disabled="disabled"{{end}} id="instance_announce" {{if .Config.InstanceAnnounce}}checked="checked"{{end}} />{{if index $.Locked "app.instance_announce"}}<p class="docs locked">Set in config.ini; change it there.</p>{{end}}</div>
 		</div>
 		<div class="features row">
 			<input type="submit" value="Save Settings" />
