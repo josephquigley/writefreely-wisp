@@ -17,6 +17,9 @@ server sharing the database uses the same values. A change made on one
 takes effect on the others with their next request. Turning image uploads off
 also stops serving images already uploaded, until they are turned back on.
 
+A deployment can instead pin chosen database settings to `config.ini`; see
+[Locking settings in config.ini](#locking-settings-in-configini).
+
 ## Changing settings
 
 From the browser: **Admin → Settings**.
@@ -28,7 +31,7 @@ From a shell, e.g. on a headless install or with `docker compose exec`:
     writefreely settings set  app.private true
     writefreely settings export
 
-`set` refuses a `config.ini` key and says so. `list`, `get` and `export` only
+`set` refuses a `config.ini` key, or a locked setting, and says so. `list`, `get` and `export` only
 read: before the first import they show what `config.ini` says and leave it
 alone. If `config.ini` carries the `settings_location = database` marker but
 the database holds no settings (see Upgrading), they refuse instead, the same
@@ -56,7 +59,8 @@ sharing the database does the same with its own file. If its values
 disagreed with the database, it logs which ones, and the database's
 values win. An imported value that fails validation (a key that was absent,
 say, and so read as zero) is stored as the default instead, with one logged
-line per key.
+line per key. Settings named in `locked_settings` are left out of all of
+this: never imported, never removed, never reported as disagreeing.
 
 If `config.ini` is read-only (a Docker `:ro` mount, a file owned by
 configuration management), WriteFreely logs the keys to remove by hand and
@@ -86,3 +90,76 @@ no settings (say, one restored from a backup taken before the upgrade), stops
 with an error instead of importing the file. Restore the database, or paste
 `settings export` output from a current database into `config.ini` and delete
 the `settings_location` line, and it imports again.
+
+## Locking settings in config.ini
+
+A deployment that writes `config.ini` from its own source (a YAML file,
+configuration management) can make chosen database settings follow that
+file on every start, out of reach of the admin page. Name them in
+`locked_settings`, at the top of the file beside `settings_location`,
+before any `[section]` header:
+
+    locked_settings = app.private, app.federation_allowlist, app.authorized_fetch
+
+    [app]
+    host                 = https://blog.example
+    private              = true
+    federation_allowlist = talk.example, *.peers.example
+    authorized_fetch     = true
+
+Entries are the names `writefreely settings list` prints, separated by
+commas. Spaces around an entry are ignored, an empty entry is skipped, and
+names must match exactly, case included. `locked_settings` is itself a
+`config.ini` key: a running server never writes it.
+
+A locked setting:
+
+* is read from `config.ini` every time WriteFreely starts. To change it,
+  edit the file and restart.
+* is never moved into the database, never removed from `config.ini`, and
+  never reported as disagreeing with the database.
+* wins over whatever the database holds. A value already stored for it stays
+  in the database, unused. Take the name off the list and restart, and the
+  stored value is in force again; the key left in `config.ini` is then an
+  ordinary setting, removed from the file or reported as disagreeing like any
+  other.
+* cannot be changed while locked. `writefreely settings set` refuses it with
+  `<name> is locked: config.ini sets it`. The admin page shows it greyed
+  out, with "Set in config.ini; change it there.", and a submitted form that
+  changes it anyway is refused with the same message and saves nothing.
+* is marked `(locked in config.ini)` by `settings list`. `settings get`
+  prints its value, and says on stderr that it is locked. `settings export`
+  leaves it out, with a comment naming it, because `config.ini` already holds
+  it; pasting the export back adds nothing that clashes.
+
+A locked setting whose key is missing from `config.ini` takes the value the
+instance would run with without that key, which is also what an import would
+store: Go's zero value (false, empty, 0), except `local_timeline`, which is
+true, and `theme`, which is `write`. Where the zero is not a valid value
+(`min_username_len`, `uploads.max_size_mb`), it is the default. Write out
+every key you lock rather than relying on this.
+
+WriteFreely refuses to start, and `writefreely db migrate` and the `settings`
+commands refuse to run, with an error naming the entry, when the list names:
+
+* a setting that does not exist (`app.privat`), or
+* a `config.ini` key such as `app.host` or anything in `[database]`, which
+  lives only in the file already.
+
+It also refuses when a locked key in the file holds a value that does not
+parse or that `settings set` would refuse (`private = maybe`,
+`min_username_len = 0`). Combinations are checked the same way as a save: a
+locked `federation_allowlist` on an instance whose `private` is false stops
+startup.
+
+Every server reads its own `config.ini`. Servers sharing one database should
+carry the same `locked_settings` line and the same values. Nothing compares
+them across servers; each serves what its own file says.
+
+A read-only `config.ini` that holds only locked database settings (plus
+bootstrap keys) has nothing to remove, so the "could not remove" warning of
+[Upgrading](#upgrading) does not appear. Until the file carries the
+`settings_location = database` line, WriteFreely still logs at each start
+that it could not add it. That is a warning only. Add the line once the
+database holds the settings, not before: on an empty database it stops
+startup, as described under Downgrading.
