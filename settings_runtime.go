@@ -32,6 +32,22 @@ func (app *App) configPath() string {
 	return app.cfgFile
 }
 
+// lockedSettings returns the settings config.ini locks, each with the value
+// it locks it to (see config.LockedSettings). It is read once per load of
+// config.ini: LoadConfig and SetConfig clear it, and the first caller after
+// that reads the file again. A config.ini that does not exist locks nothing.
+func (app *App) lockedSettings() (map[string]string, error) {
+	if p := app.locked.Load(); p != nil {
+		return *p, nil
+	}
+	m, err := config.LockedSettings(app.configPath(), app.cfg)
+	if err != nil {
+		return nil, err
+	}
+	app.locked.Store(&m)
+	return m, nil
+}
+
 // loadSettings builds a settings snapshot from the bootstrap
 // configuration and the database, and puts it in force.
 func (app *App) loadSettings(ctx context.Context) error {
@@ -46,6 +62,10 @@ func (app *App) loadSettings(ctx context.Context) error {
 // the instance runs on config.ini as it always did, and Config() keeps
 // returning the bootstrap configuration.
 func (app *App) loadSettingsLocked(ctx context.Context) error {
+	locked, err := app.lockedSettings()
+	if err != nil {
+		return err
+	}
 	ok, err := app.db.settingsTableExists(ctx)
 	if err != nil {
 		return err
@@ -58,7 +78,9 @@ func (app *App) loadSettingsLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg, warnings := config.ApplySettings(app.cfg, rows)
+	// A locked setting takes config.ini's value whatever the database
+	// holds. Its row, if any, stays where it is, ignored.
+	cfg, warnings := config.ApplySettings(app.cfg, config.OverlayLocked(rows, locked))
 	for _, w := range warnings {
 		log.Error("settings: %s", w)
 	}
@@ -177,14 +199,21 @@ const emptyDatabaseRefusal = "config.ini says the settings were moved into the d
 // zero value, and storing config.New()'s default instead would quietly
 // change the instance on upgrade.
 //
+// Settings config.ini locks (see config.LockedSettingsKey) are left out
+// entirely: never imported, never compared for drift, never stripped.
+//
 // It is idempotent and runs at every start and in `db migrate`.
 func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 	var res settingsImport
+	locked, err := app.lockedSettings()
+	if err != nil {
+		return res, err
+	}
 	ok, err := app.db.settingsTableExists(ctx)
 	if err != nil || !ok {
 		return res, err
 	}
-	present, err := config.KeysPresent(app.configPath(), config.DBSettingNames())
+	present, err := config.KeysPresent(app.configPath(), config.UnlockedSettingNames(locked))
 	if err != nil {
 		return res, err
 	}
@@ -214,7 +243,10 @@ func (app *App) importSettings(ctx context.Context) (settingsImport, error) {
 			return res, fmt.Errorf("%s: %v; fix it, then start again", app.configPath(), err)
 		}
 	}
-	effective := app.normalisedSettings()
+	effective := app.normalisedSettings(locked)
+	for name := range locked {
+		delete(effective, name)
+	}
 
 	res.Imported, err = app.db.ClaimSettingsImport(ctx, effective)
 	if err != nil {
@@ -296,6 +328,11 @@ func settingNameError(name, cfgPath string) error {
 	return fmt.Errorf("no setting called %s", name)
 }
 
+// lockedSettingError explains why a locked setting cannot be changed here.
+func lockedSettingError(name, cfgPath string) error {
+	return fmt.Errorf("%s is locked: %s sets it (%s); change it there and restart", name, cfgPath, config.LockedSettingsKey)
+}
+
 // saveSettings validates changes against the settings in force, writes
 // them, and reloads this node at once. Other nodes pick them up on their
 // next request. Nothing is written unless every value, and the
@@ -316,6 +353,10 @@ func (app *App) saveSettingsIf(ctx context.Context, changes map[string]string, e
 	if expected != nil && *expected != snap.version {
 		return errSettingsStale // validating against newer settings would be a guess
 	}
+	locked, err := app.lockedSettings()
+	if err != nil {
+		return err
+	}
 	cur := app.Config()
 	cand := *cur
 	stored := map[string]string{}
@@ -323,6 +364,9 @@ func (app *App) saveSettingsIf(ctx context.Context, changes map[string]string, e
 		s, ok := config.LookupSetting(name)
 		if !ok {
 			return settingNameError(name, app.configPath())
+		}
+		if _, ok := locked[name]; ok {
+			return lockedSettingError(name, app.configPath())
 		}
 		if err := s.Set(&cand, changes[name]); err != nil {
 			return err
@@ -349,11 +393,17 @@ func (app *App) saveSettingsIf(ctx context.Context, changes map[string]string, e
 // registry would reject replaced by its default. An ini that omits a key
 // leaves Go's zero value in app.cfg, which for some settings (a minimum
 // length of 0) is not valid; storing it would make every later load warn.
-func (app *App) normalisedSettings() map[string]string {
+// A locked setting takes its locked value, which config.LockedSettings has
+// already normalised the same way.
+func (app *App) normalisedSettings(locked map[string]string) map[string]string {
 	effective := config.SettingsFrom(app.cfg)
 	defs := config.SettingDefaults()
 	var scratch config.Config
 	for _, name := range config.DBSettingNames() {
+		if v, ok := locked[name]; ok {
+			effective[name] = v
+			continue
+		}
 		s, _ := config.LookupSetting(name)
 		if err := s.Set(&scratch, effective[name]); err != nil {
 			log.Error("settings: %s was %q in %s, which is not valid (%v); storing the default %q", name, effective[name], app.configPath(), err, defs[name])

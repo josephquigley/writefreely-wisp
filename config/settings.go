@@ -90,6 +90,11 @@ var bootstrapKeys = []string{
 	"app.single_user",           // decides which routes exist
 	"app.disable_password_auth", // depends on the OAuth configuration beside it
 	"uploads.dir",               // a path on this node
+
+	// The unnamed top-of-file section: the file's own markers, never a
+	// Config field. See SettingsLocationKey and LockedSettingsKey.
+	"settings_location",
+	"locked_settings",
 }
 
 func intRange(min, max int) func(string) error {

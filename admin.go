@@ -168,6 +168,14 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 	// One snapshot, so the values and their version cannot come from
 	// different reloads.
 	cfg, ver := app.configAndVersion()
+	lockedVals, err := app.lockedSettings()
+	if err != nil {
+		return err
+	}
+	locked := make(map[string]bool, len(lockedVals))
+	for name := range lockedVals {
+		locked[name] = true
+	}
 	p := struct {
 		*UserPage
 		*AdminPage
@@ -180,6 +188,10 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 
 		UpdateChecksSupported bool
 
+		// Locked holds the settings config.ini locks; the page renders
+		// them disabled.
+		Locked map[string]bool
+
 		Message, ConfigMessage string
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
@@ -190,6 +202,8 @@ func handleViewAdminSettings(app *App, u *User, w http.ResponseWriter, r *http.R
 		SettingsVersion: ver,
 
 		UpdateChecksSupported: updateChecksSupported,
+
+		Locked: locked,
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
@@ -585,51 +599,71 @@ func handleAdminUpdateSite(app *App, u *User, w http.ResponseWriter, r *http.Req
 	return impart.HTTPError{http.StatusFound, "/admin/page/" + id + m}
 }
 
-func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *http.Request) error {
-	check := func(field string) string {
-		if r.FormValue(field) == "on" {
-			return "true"
-		}
-		return "false"
-	}
-	invites := r.FormValue("user_invites")
-	if invites == "none" {
-		invites = ""
-	}
-	changes := map[string]string{
-		"app.site_name":            r.FormValue("site_name"),
-		"app.site_description":     r.FormValue("site_desc"),
-		"app.landing":              r.FormValue("landing"),
-		"app.open_registration":    check("open_registration"),
-		"app.open_deletion":        check("open_deletion"),
-		"app.min_username_len":     r.FormValue("min_username_len"),
-		"app.max_blogs":            r.FormValue("max_blogs"),
-		"app.federation":           check("federation"),
-		"app.public_stats":         check("public_stats"),
-		"app.monetization":         check("monetization"),
-		"app.private":              check("private"),
-		"app.local_timeline":       check("local_timeline"),
-		"app.user_invites":         invites,
-		"app.default_visibility":   r.FormValue("default_visibility"),
-		"app.theme":                r.FormValue("theme"),
-		"app.editor":               r.FormValue("editor"),
-		"app.disable_js":           check("disable_js"),
-		"app.webfonts":             check("webfonts"),
-		"app.simple_nav":           check("simple_nav"),
-		"app.wf_modesty":           check("wf_modesty"),
-		"app.chorus":               check("chorus"),
-		"app.forest":               check("forest"),
-		"app.disable_drafts":       check("disable_drafts"),
-		"app.notes_only":           check("notes_only"),
-		"app.federation_allowlist": r.FormValue("federation_allowlist"),
-		"app.authorized_fetch":     check("authorized_fetch"),
-		"app.instance_announce":    check("instance_announce"),
-		"uploads.enabled":          check("uploads_enabled"),
-		"uploads.max_size_mb":      r.FormValue("uploads_max_size_mb"),
-	}
+// adminConfigFields maps each setting on the admin settings form to its
+// form field. A checkbox sends "on" when ticked and nothing otherwise.
+var adminConfigFields = []struct {
+	name, form string
+	checkbox   bool
+}{
+	{"app.site_name", "site_name", false},
+	{"app.site_description", "site_desc", false},
+	{"app.landing", "landing", false},
+	{"app.open_registration", "open_registration", true},
+	{"app.open_deletion", "open_deletion", true},
+	{"app.min_username_len", "min_username_len", false},
+	{"app.max_blogs", "max_blogs", false},
+	{"app.federation", "federation", true},
+	{"app.public_stats", "public_stats", true},
+	{"app.monetization", "monetization", true},
+	{"app.private", "private", true},
+	{"app.local_timeline", "local_timeline", true},
+	{"app.user_invites", "user_invites", false},
+	{"app.default_visibility", "default_visibility", false},
+	{"app.theme", "theme", false},
+	{"app.editor", "editor", false},
+	{"app.disable_js", "disable_js", true},
+	{"app.webfonts", "webfonts", true},
+	{"app.simple_nav", "simple_nav", true},
+	{"app.wf_modesty", "wf_modesty", true},
+	{"app.chorus", "chorus", true},
+	{"app.forest", "forest", true},
+	{"app.disable_drafts", "disable_drafts", true},
+	{"app.notes_only", "notes_only", true},
+	{"app.federation_allowlist", "federation_allowlist", false},
+	{"app.authorized_fetch", "authorized_fetch", true},
+	{"app.instance_announce", "instance_announce", true},
+	{"app.update_checks", "update_checks", true},
+	{"uploads.enabled", "uploads_enabled", true},
+	{"uploads.max_size_mb", "uploads_max_size_mb", false},
+}
 
-	if updateChecksSupported {
-		changes["app.update_checks"] = check("update_checks")
+func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *http.Request) error {
+	r.ParseForm()
+	locked, err := apper.App().lockedSettings()
+	if err != nil {
+		return impart.HTTPError{http.StatusFound, "/admin/settings?cm=" + url.QueryEscape(err.Error()) + "#config"}
+	}
+	changes := map[string]string{}
+	for _, f := range adminConfigFields {
+		if f.name == "app.update_checks" && !updateChecksSupported {
+			continue
+		}
+		v := r.FormValue(f.form)
+		if f.checkbox {
+			v = strconv.FormatBool(v == "on")
+		} else if f.name == "app.user_invites" && v == "none" {
+			v = ""
+		}
+		if lv, ok := locked[f.name]; ok {
+			// The page renders a locked field disabled, so the browser sends
+			// nothing for it. Leave it out, and leave out a value equal to
+			// the locked one; anything else is a change to a locked setting
+			// and goes on to be refused by name.
+			if _, sent := r.Form[f.form]; !sent || sameSettingValue(f.name, v, lv) {
+				continue
+			}
+		}
+		changes[f.name] = v
 	}
 
 	// The version the page was rendered from. A form without one (an old
@@ -640,7 +674,6 @@ func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *htt
 	}
 
 	m := "?cm=Configuration+saved."
-	var err error
 	if expected == nil {
 		err = errSettingsStale
 	} else {
@@ -650,6 +683,20 @@ func handleAdminUpdateConfig(apper Apper, u *User, w http.ResponseWriter, r *htt
 		m = "?cm=" + url.QueryEscape(err.Error())
 	}
 	return impart.HTTPError{http.StatusFound, "/admin/settings" + m + "#config"}
+}
+
+// sameSettingValue reports whether raw, as a form would send it, is the
+// stored value want once the registry has normalised it ("TRUE" is "true").
+func sameSettingValue(name, raw, want string) bool {
+	s, ok := config.LookupSetting(name)
+	if !ok {
+		return false
+	}
+	var c config.Config
+	if err := s.Set(&c, raw); err != nil {
+		return false
+	}
+	return s.Get(&c) == want
 }
 
 func updateAppStats() {
