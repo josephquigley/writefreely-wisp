@@ -83,6 +83,12 @@ jobs:
           # latest belongs to releases, and a release is a retag of one of
           # these builds rather than a build of its own.
           flavor: latest=false
+          # The generated version label is the branch name, and a release only
+          # retags this build, so without this every release image would say
+          # "main". Tools that show which version an image is read it. A label
+          # given here replaces the generated one of the same name.
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}+wisp
 
       - name: Build and push
         uses: docker/build-push-action@v7.3.0
