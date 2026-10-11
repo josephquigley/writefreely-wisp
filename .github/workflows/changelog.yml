@@ -15,11 +15,11 @@ name: Changelog
 # an upstream sync gets through: push an empty commit carrying the prefix.
 #
 # Into main: a pull request into main is a release. wisp-release.yml tags
-# whatever softwareVer app.go names once it merges, and moves the [Unreleased]
-# bullets into a section for that version with kacl-cli. So there must be at
-# least one. A section already named for the version, with the +wisp suffix
-# the tags carry, is accepted too, in case it was cut by hand. There is no
-# opt-out.
+# whatever softwareVer app.go names once it merges, so CHANGELOG.md must
+# already hold a section for that version, with the +wisp suffix the tags
+# carry, and at least one bullet in it. `make bump` cuts that section on
+# develop; main takes pull requests only, so nothing can cut it after the
+# merge. There is no opt-out.
 #
 # Uses pull_request_target and an in-job merge for the same reasons as
 # test.yml: the definition comes from the base branch, and what is checked is
@@ -134,12 +134,10 @@ jobs:
           test -n "$version" || { echo "::error::no softwareVer in app.go"; exit 1; }
           version="$version+wisp"
 
-          if entry=$(kacl-cli get "$version" 2>/dev/null); then
-            where="$version"
-          else
-            entry=$(kacl-cli get unreleased)
-            where="[Unreleased]"
-          fi
+          entry=$(kacl-cli get "$version" 2>/dev/null) || {
+            echo "::error file=CHANGELOG.md::No $version section. Run make bump on develop, which cuts it, and merge that into develop first."
+            exit 1
+          }
 
-          check_bullets "$where" "$entry"
-          echo "$version: $bullets bullet(s) in $where, each at most $MAX_WORDS words."
+          check_bullets "$version" "$entry"
+          echo "$version: $bullets bullet(s), each at most $MAX_WORDS words."
