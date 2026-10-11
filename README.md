@@ -145,6 +145,18 @@ Put anything an operator has to *do* (migrations, new config keys, rebuild steps
 
 Versions carry `+wisp` as SemVer build metadata, so `0.17.3+wisp` is this fork's build of an upstream `0.17.3` line and compares equal to it rather than older. Tags read `v0.17.3+wisp`, which is also why they never collide with the upstream tags this repository inherits. Image tags cannot contain `+`, so the image for that release is tagged `0.17.3-wisp`.
 
+### Promoting a release to a toolkit channel
+
+Deployments made with the paisans toolkit do not follow `latest` or a series tag. They follow a channel tag, `stack-<N>`, where `N` is the toolkit's template contract: the settings and files it renders for WriteFreely. A maintainer moves the channel to a release once it is known to work with what the toolkit renders, and each deployment takes it on its next apply. `N` changes only when a release needs something rendered that an older toolkit does not render, or stops reading something an older toolkit renders.
+
+```
+gh workflow run promote.yml --ref main -f version=0.21.1+wisp -f channel=1
+```
+
+The workflow runs from `main` only (the form offers `develop` first and is refused there). It refuses unless the tag, its published GitHub Release and the `0.21.1-wisp` image all exist, copies that image's manifest to `stack-1` without rebuilding, appends `Promoted to stack-1 on <date>.` to the release notes, and puts the old and new digests in the job summary. It finds which release the channel names now by matching the channel's digest against each release tag's, since the `org.opencontainers.image.version` label reads `main` on every release image. It refuses to move a channel to an older release unless `rollback` is set.
+
+**Rolling back moves the tag, not the data.** A release that ran a one way migration (0.21's move of settings into the database is one) leaves its schema behind when the channel moves back, and the older build may not run on it. Follow the recovery steps in the notes of every release being stepped back over before rolling back past it.
+
 ## Contributing
 
 Issues and pull requests specific to this edition belong on [this repo](https://github.com/josephquigley/writefreely-wisp/issues). Anything that is not specific to the fork is better raised upstream, where it helps everyone.
