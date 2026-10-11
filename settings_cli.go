@@ -13,6 +13,8 @@ package writefreely
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/writeas/web-core/log"
 
@@ -23,12 +25,15 @@ import (
 // value in force equals the built-in default, whether or not the database
 // has a row for it. Imported is false while the settings are still only in
 // config.ini (nothing has been moved into the database), in which case
-// Value is what config.ini says.
+// Value is what config.ini says. Locked is true when config.ini's
+// locked_settings names it: Value is then config.ini's, whatever the
+// database holds, and it cannot be set.
 type SettingRow struct {
 	Name     string
 	Value    string
 	Default  bool
 	Imported bool
+	Locked   bool
 }
 
 const notImportedNote = "settings have not been moved into the database yet; showing config.ini"
@@ -60,6 +65,10 @@ func openSettings(apper Apper, importFirst bool) (*App, error) {
 // says (what an import would store).
 func effectiveSettings(app *App) (map[string]string, bool, error) {
 	ctx := context.Background()
+	locked, err := app.lockedSettings()
+	if err != nil {
+		return nil, false, err
+	}
 	ok, err := app.db.settingsTableExists(ctx)
 	if err != nil {
 		return nil, false, err
@@ -83,9 +92,9 @@ func effectiveSettings(app *App) (map[string]string, bool, error) {
 			return nil, false, errors.New(emptyDatabaseRefusal)
 		}
 		log.Info(notImportedNote)
-		return app.normalisedSettings(), false, nil
+		return app.normalisedSettings(locked), false, nil
 	}
-	cur, _ := config.ApplySettings(app.cfg, rows)
+	cur, _ := config.ApplySettings(app.cfg, config.OverlayLocked(rows, locked))
 	return config.SettingsFrom(cur), true, nil
 }
 
@@ -94,11 +103,16 @@ func settingRows(app *App) ([]SettingRow, error) {
 	if err != nil {
 		return nil, err
 	}
+	locked, err := app.lockedSettings()
+	if err != nil {
+		return nil, err
+	}
 	defs := config.SettingDefaults()
 	var out []SettingRow
 	for _, name := range config.DBSettingNames() {
 		v := vals[name]
-		out = append(out, SettingRow{Name: name, Value: v, Default: v == defs[name], Imported: imported})
+		_, isLocked := locked[name]
+		out = append(out, SettingRow{Name: name, Value: v, Default: v == defs[name], Imported: imported, Locked: isLocked})
 	}
 	return out, nil
 }
@@ -137,7 +151,7 @@ func SettingGet(apper Apper, name string) (SettingRow, error) {
 }
 
 // SettingSet validates and saves one setting. Running servers pick it up
-// on their next request.
+// on their next request. A setting config.ini locks is refused.
 func SettingSet(apper Apper, name, value string) error {
 	if _, ok := config.LookupSetting(name); !ok {
 		return settingNameError(name, apper.App().configPath())
@@ -152,6 +166,10 @@ func SettingSet(apper Apper, name, value string) error {
 
 // SettingsExport renders every setting in force as a config.ini fragment,
 // for pasting back before a downgrade. It contains no secrets.
+//
+// Settings config.ini locks are left out, with a comment naming them:
+// config.ini already holds them (they are never stripped), so pasting them
+// back would only repeat a key under a second [app] header.
 func SettingsExport(apper Apper) (string, error) {
 	app, err := openSettings(apper, false)
 	if err != nil {
@@ -162,5 +180,20 @@ func SettingsExport(apper Apper) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return config.ExportINI(vals)
+	locked, err := app.lockedSettings()
+	if err != nil {
+		return "", err
+	}
+	var skipped []string
+	for _, name := range config.DBSettingNames() {
+		if _, ok := locked[name]; ok {
+			delete(vals, name)
+			skipped = append(skipped, name)
+		}
+	}
+	out, err := config.ExportINI(vals)
+	if err != nil || len(skipped) == 0 {
+		return out, err
+	}
+	return fmt.Sprintf("; Not exported, locked in config.ini (%s): %s\n", config.LockedSettingsKey, strings.Join(skipped, ", ")) + out, nil
 }
