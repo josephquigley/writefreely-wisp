@@ -14,6 +14,10 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ## [Unreleased]
 
+### Added
+
+- `locked_settings` at the top of `config.ini` names database settings that `config.ini` sets on every start, overriding stored values and refused by the admin page and `writefreely settings set`.
+
 ## [0.21.0+wisp] - 2026-10-11
 
 ### Added
