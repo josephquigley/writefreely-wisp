@@ -300,7 +300,7 @@ Read by the image itself:
 | `WRITEFREELY_DOCKER` | set in the image | Tells `--config` it is running in a container: bind `0.0.0.0`, use container asset paths |
 | `WRITEFREELY_DOCKER_PARENT_DIR` | `/usr/share/writefreely` | Asset root the configurator writes into the config |
 | `WRITEFREELY_AUTO_MIGRATE` | `true` | Apply pending migrations on start |
-| `WRITEFREELY_INIT_DB` | `auto` | Create the schema on start. `auto` initializes when the keys also had to be generated, i.e. on a first run. `true` forces it, `false` disables it |
+| `WRITEFREELY_INIT_DB` | `auto` | Create the schema on start. `auto` initializes when the database has no schema yet. `true` forces it, `false` disables it |
 | `WRITEFREELY_CONFIG` | `config.ini` | Config file the entrypoint looks for |
 | `WRITEFREELY_KEYS_DIR` | `keys` | Directory the entrypoint checks for keys |
 
@@ -390,9 +390,9 @@ incomplete one. WriteFreely needs `smtp_host`, `smtp_port`,
 **`migrate: no such table: appcontent`, or `Table 'writefreely.appcontent'
 doesn't exist`.** Migrations ran against a database with no schema, which
 leaves it stamped at a version it never reached. Recreate the database
-from empty and start again; the entrypoint creates the schema on a first
-run, so this should only happen if `WRITEFREELY_INIT_DB=false` was set on
-a fresh instance.
+from empty and start again; the entrypoint creates the schema whenever the
+database has none, so this should only happen if `WRITEFREELY_INIT_DB=false`
+was set on a fresh instance.
 
 **`Invalid database type 'sqlite'. Only 'mysql' and 'sqlite3' are
 supported right now.`** The driver name in `config.ini` is `sqlite3`, not
