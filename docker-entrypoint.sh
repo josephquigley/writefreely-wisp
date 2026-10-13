@@ -12,8 +12,7 @@
 #
 #   WRITEFREELY_AUTO_MIGRATE   run pending migrations on start (default true)
 #   WRITEFREELY_INIT_DB        create the schema on start. Default "auto":
-#                              initialize when this looks like a first run,
-#                              i.e. when the keys had to be generated too.
+#                              initialize when the database has no schema.
 #                              Force with true, disable with false.
 #
 # `--migrate` also moves settings out of config.ini into the database on
@@ -46,27 +45,30 @@ fi
 
 # Generate keys only when they are absent. Regenerating them on an existing
 # instance would invalidate every session and every encrypted value.
-first_run=false
 if [ ! -f "$KEYS_DIR/email.aes256" ]; then
     echo "writefreely: generating encryption keys"
     "$BIN" --gen-keys
-    first_run=true
 fi
 
 # The schema must exist before migrations run. Migrating an empty database
 # does not create it: migrations.Migrate stamps appmigrations at version 0
 # and applies V1 onward, but those migrations assume the base schema, so it
 # fails partway and leaves the database recorded at a version it never
-# reached. Absent keys are the signal that this is a new instance.
+# reached. "auto" asks the database rather than guessing from the keys: a
+# first start can generate the keys and then fail before the schema exists,
+# for instance when the database refuses the connection, and every later
+# start would otherwise find the keys and skip the schema for good.
 init_db="${WRITEFREELY_INIT_DB:-auto}"
-if [ "$init_db" = "auto" ]; then
-    init_db="$first_run"
-fi
-
-if [ "$init_db" = "true" ]; then
+case "$init_db" in
+auto)
+    echo "writefreely: initializing database schema if it has none"
+    "$BIN" --init-db-if-empty
+    ;;
+true)
     echo "writefreely: initializing database schema"
     "$BIN" --init-db
-fi
+    ;;
+esac
 
 # Migrations record what they have applied, so this is a no-op once the
 # database is current.

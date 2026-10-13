@@ -73,7 +73,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.21.1"
+	softwareVer = "0.21.2"
 
 	// DEPRECATED VARS
 	isSingleUser bool
@@ -919,6 +919,37 @@ func CreateSchema(apper Apper) error {
 		return err
 	}
 	return nil
+}
+
+// CreateSchemaIfEmpty creates the schema, as CreateSchema does, only when
+// the database holds none of it, and otherwise does nothing. It is what the
+// container entrypoint runs on every start, so a first start that failed
+// after generating its keys but before creating the schema still gets one
+// on the next.
+func CreateSchemaIfEmpty(apper Apper) error {
+	apper.LoadConfig()
+	connectToDatabase(apper.App())
+	defer shutdown(apper.App())
+	return initDatabaseIfEmpty(apper.App())
+}
+
+// initDatabaseIfEmpty runs adminInitDatabase unless users or appmigrations
+// exists. Either one means a schema is there: users is in every schema
+// WriteFreely has had, and an old MySQL or SQLite database may lack
+// appmigrations until its first migration creates it. A failed check is an
+// error rather than "empty", so an unreachable database is reported as one.
+func initDatabaseIfEmpty(app *App) error {
+	for _, table := range []string{"users", "appmigrations"} {
+		exists, err := app.db.dialectOrDefault().TableExists(context.Background(), app.db.DB, table)
+		if err != nil {
+			return fmt.Errorf("check for table %s: %v", table, err)
+		}
+		if exists {
+			log.Info("Database already has table %s, so it is not initialized again.", table)
+			return nil
+		}
+	}
+	return adminInitDatabase(app)
 }
 
 // Migrate runs all necessary database migrations.

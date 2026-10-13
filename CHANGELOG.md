@@ -14,6 +14,13 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ## [Unreleased]
 
+## [0.21.2+wisp] - 2026-10-13
+
+### Fixed
+
+- The container creates the database schema whenever the database has none, so a first start that failed after generating its keys, such as on a refused connection, no longer leaves migrations failing forever.
+- Published images carry the release version, such as `0.21.2+wisp`, in their `org.opencontainers.image.version` label, where every release so far said `main`.
+
 ## [0.21.1+wisp] - 2026-10-11
 
 ### Added
@@ -127,7 +134,8 @@ changes share a bullet. Detailed notes are on the corresponding
 
 - First Wisp Edition release, adding image uploads, post and pinned-post management, multiple verification links, subscribe-form placement, allowlisted signed federation, and fixes for CSRF over HTTP, single-user links and Docker.
 
-[Unreleased]: https://github.com/josephquigley/writefreely-wisp/compare/v0.21.1+wisp...develop
+[Unreleased]: https://github.com/josephquigley/writefreely-wisp/compare/v0.21.2+wisp...develop
+[0.21.2+wisp]: https://github.com/josephquigley/writefreely-wisp/compare/v0.21.1+wisp...v0.21.2+wisp
 [0.21.1+wisp]: https://github.com/josephquigley/writefreely-wisp/compare/v0.21.0+wisp...v0.21.1+wisp
 [0.21.0+wisp]: https://github.com/josephquigley/writefreely-wisp/compare/v0.20.0+wisp...v0.21.0+wisp
 [0.20.0+wisp]: https://github.com/josephquigley/writefreely-wisp/compare/v0.19.2+wisp...v0.20.0+wisp

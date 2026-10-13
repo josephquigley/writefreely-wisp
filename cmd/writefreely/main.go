@@ -64,6 +64,12 @@ func main() {
 				Hidden: true,
 			},
 			&cli.BoolFlag{
+				Name:   "init-db-if-empty",
+				Value:  false,
+				Usage:  "Initialize app database unless it already has a schema",
+				Hidden: true,
+			},
+			&cli.BoolFlag{
 				Name:   "migrate",
 				Value:  false,
 				Usage:  "Migrate the database",
@@ -138,6 +144,8 @@ func legacyActions(c *cli.Context) error {
 		return writefreely.GenerateKeyFiles(app)
 	case c.IsSet("init-db"):
 		return writefreely.CreateSchema(app)
+	case c.IsSet("init-db-if-empty"):
+		return writefreely.CreateSchemaIfEmpty(app)
 	case c.IsSet("migrate"):
 		return writefreely.Migrate(app)
 	case c.IsSet("create-admin"):
