@@ -16,6 +16,7 @@ changes share a bullet. Detailed notes are on the corresponding
 
 ### Fixed
 
+- The container creates the database schema whenever the database has none, so a first start that failed after generating its keys, such as on a refused connection, no longer leaves migrations failing forever.
 - Published images carry the release version, such as `0.21.2+wisp`, in their `org.opencontainers.image.version` label, where every release so far said `main`.
 
 ## [0.21.1+wisp] - 2026-10-11
